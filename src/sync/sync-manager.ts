@@ -2,6 +2,7 @@ import prisma from '../config/db';
 import { SyncLog, SyncStatus, SyncDirection, DeferredRecord } from './types';
 import { DatabaseSyncer } from './database-syncer';
 import { NetworkChecker } from './network-checker';
+import { sendToRoles } from '../api/v1/services/notificationService';
 
 // Ordered so a table's dependencies are synced before it. The previous
 // critical/operational/transactional grouping was not dependency-ordered and
@@ -12,7 +13,7 @@ import { NetworkChecker } from './network-checker';
 // Order alone is not sufficient — Class references Class through
 // next_class_id, so row order within a table matters too. The deferred-retry
 // pass in performSync covers that, and any ordering mistake here.
-const SYNC_TABLES: string[] = [
+export const SYNC_TABLES: string[] = [
     // No foreign keys
     'AcademicYear',
     'User',
@@ -310,7 +311,79 @@ export class SyncManager {
         }
 
         await this.saveSyncLog(syncLog);
+        await this.checkSyncHealthAndAlert();
         return syncLog;
+    }
+
+    // A run failing outright is not itself alert-worthy -- a single dropped
+    // LAN packet produces one PARTIAL run every few days and self-heals on the
+    // next pass (that is the whole point of holding the cursor back above).
+    // What is alert-worthy is a *streak*: several runs in a row that never
+    // reach COMPLETED, which means whatever is wrong has not cleared on its
+    // own and records are piling up behind the held-back cursor.
+    //
+    // Recomputed from SyncLog on every run rather than kept as in-memory
+    // state, so it is correct across restarts and across the VPS and on-prem
+    // processes independently (each has its own SyncLog).
+    private async checkSyncHealthAndAlert() {
+        // 5-minute auto-sync interval (AUTO_SYNC_INTERVAL) is the assumption
+        // behind the "~N minutes" wording below; a manual /sync/trigger burst
+        // just makes the streak resolve or grow faster, which is fine either way.
+        const ALERT_AT = 3;        // ~15 min of nothing completing
+        const ESCALATE_EVERY = 12; // then a reminder about every ~1 hour while it lasts
+
+        try {
+            const recent = await prisma.syncLog.findMany({
+                orderBy: { start_time: 'desc' },
+                take: ALERT_AT + ESCALATE_EVERY * 6, // several escalations' worth of history
+                select: { status: true }
+            });
+
+            let streak = 0;
+            for (const row of recent) {
+                if (row.status === SyncStatus.COMPLETED) break;
+                streak++;
+            }
+
+            if (streak === 0) {
+                // Recovered. Only worth a notice if it had actually crossed the
+                // alert line before clearing -- otherwise every ordinary clean
+                // run after a single blip would fire a "recovered" message
+                // nobody was ever told was broken.
+                let priorStreak = 0;
+                for (let i = 1; i < recent.length; i++) {
+                    if (recent[i].status === SyncStatus.COMPLETED) break;
+                    priorStreak++;
+                }
+                if (priorStreak >= ALERT_AT) {
+                    await this.alertSuperManagers(
+                        'Database sync recovered',
+                        `Sync is completing normally again after ${priorStreak} run(s) in a row that did not.`,
+                        'NORMAL'
+                    );
+                }
+                return;
+            }
+
+            const firstAlert = streak === ALERT_AT;
+            const escalation = streak > ALERT_AT && (streak - ALERT_AT) % ESCALATE_EVERY === 0;
+            if (firstAlert || escalation) {
+                await this.alertSuperManagers(
+                    'Database sync is failing repeatedly',
+                    `${streak} sync run(s) in a row have not completed cleanly (roughly ${streak * 5} minutes). ` +
+                    `Records on both sides are being held back until this clears, not lost -- but check ` +
+                    `GET /api/sync/logs on this server for what is actually failing.`,
+                    'URGENT'
+                );
+            }
+        } catch (error: any) {
+            // The alert path must never take the sync itself down with it.
+            console.warn(`Sync health check/alert failed: ${error.message}`);
+        }
+    }
+
+    private async alertSuperManagers(title: string, message: string, priority: 'NORMAL' | 'URGENT') {
+        await sendToRoles(['SUPER_MANAGER'], { title, message, category: 'SYSTEM', priority });
     }
 
     // Walks SYNC_TABLES in dependency order and returns the records held back
