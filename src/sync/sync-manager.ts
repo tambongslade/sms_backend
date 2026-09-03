@@ -264,22 +264,39 @@ export class SyncManager {
             //    static ordering gets wrong.
             await this.drainDeferred(deferred, syncLog);
 
-            // 4. Update sync timestamp
-            await this.updateSyncTimestamp();
+            // 4. Only move the cursor past this window when the run was clean.
+            // getLastSyncTimestamp/updateSyncTimestamp is a single global "since"
+            // cursor, not per-table, and it used to advance unconditionally. A
+            // table that failed outright (LAN drop -> connect ETIMEDOUT, seen
+            // repeatedly against the VPS) throws before pushLocalChanges or
+            // pullRemoteChanges ever runs, so nothing for that table was pushed
+            // or pulled this window -- but the next run's `since` still started
+            // after it, so whatever changed on either side during the outage
+            // (a student created on the VPS while the LAN was down, say) is
+            // skipped forever, not just delayed. Not hypothetical: SyncMetadata
+            // shows dozens of 15-90 minute gaps, several on tables including
+            // Student and Enrollment, over the last two weeks.
+            //
+            // Holding the cursor back on any error means the next run rescans
+            // the same window, including tables that already succeeded -- safe,
+            // because every apply here is upsert-by-id-or-natural-key and
+            // idempotent, so re-processing an already-synced record is a no-op.
+            const hadErrors = syncLog.errors.length > 0;
+            if (!hadErrors) {
+                await this.updateSyncTimestamp();
+            }
 
             // Per-table failures are collected into syncLog.errors rather than
             // thrown, so reporting COMPLETED unconditionally hid them: a sync
             // that skipped half its tables still looked healthy. Surface those
             // as PARTIAL so monitoring (§10) can actually alert on them.
-            syncLog.status = syncLog.errors.length > 0
-                ? SyncStatus.PARTIAL
-                : SyncStatus.COMPLETED;
+            syncLog.status = hadErrors ? SyncStatus.PARTIAL : SyncStatus.COMPLETED;
             syncLog.endTime = new Date();
 
-            if (syncLog.errors.length > 0) {
+            if (hadErrors) {
                 console.warn(
                     `Sync PARTIAL: ${syncLog.recordsProcessed} records processed, ` +
-                    `${syncLog.errors.length} issue(s):`
+                    `${syncLog.errors.length} issue(s), cursor held back for retry:`
                 );
                 for (const err of syncLog.errors) console.warn(`  - ${err}`);
             } else {
