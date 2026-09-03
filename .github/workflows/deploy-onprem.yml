@@ -1,0 +1,112 @@
+# Asks the on-prem school server to deploy this commit.
+#
+# This job does not deploy anything itself, and it cannot: the server sits
+# behind the school NAT with no inbound port, so GitHub can never reach it. What
+# it does is park a request on the VPS and then wait to be told what happened.
+#
+#   push -> this job -> ssh VPS (forced command) -> request parked
+#                                                         |
+#                          on-prem agent, polling  <------+
+#                                   |
+#            this job polls status  <---- report ---------+
+#
+# The key in SSIC_VPS_KEY is not a login. Its authorized_keys entry pins it to a
+# single forced command on the VPS, so the worst a leaked copy can do is queue a
+# deploy of a commit that is already on this branch -- it cannot get a shell,
+# open a tunnel, or read anything else on that machine.
+#
+# This repository is public. That is fine: Actions secrets are not exposed to
+# forks or to pull requests from them, and the push trigger below only ever runs
+# on branches of this repository.
+
+name: Deploy to on-prem
+
+on:
+  push:
+    branches:
+      # Keep in step with $Targets.backend.Branch in deploy-onprem.ps1 on the
+      # on-prem box. If the two disagree the job still runs, and the box refuses
+      # the request because the commit is not on the branch it deploys.
+      - deploy/backend-parity-2026-08-27
+  workflow_dispatch:
+
+# One deploy at a time, and never cancelled part way through. There is a single
+# production box at the other end: a cancelled run would leave it building with
+# nothing waiting for the result, and a second run would queue a deploy on top.
+concurrency:
+  group: onprem-deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Generous: the on-prem box runs npm install, tsc, prisma migrate and a
+    # reload of twelve API instances, on a school line.
+    timeout-minutes: 40
+
+    steps:
+      - name: Authorise against the VPS
+        env:
+          SSIC_VPS_KEY: ${{ secrets.SSIC_VPS_KEY }}
+          SSIC_VPS_KNOWN_HOSTS: ${{ secrets.SSIC_VPS_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSIC_VPS_KEY" > ~/.ssh/ssic_deploy
+          chmod 600 ~/.ssh/ssic_deploy
+          # Pinned host key, not accept-new: this job hands a credential to
+          # whatever answers on that address, and on a first connection
+          # accept-new would hand it to an impostor without a murmur.
+          printf '%s\n' "$SSIC_VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Park the deploy request
+        id: request
+        env:
+          SSIC_VPS_HOST: ${{ secrets.SSIC_VPS_HOST }}
+          SSIC_VPS_USER: ${{ secrets.SSIC_VPS_USER }}
+        run: |
+          set -euo pipefail
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          # The full sha, so the box deploys the commit this run was triggered
+          # by rather than whatever the branch has moved on to since.
+          ID=$(ssh -i ~/.ssh/ssic_deploy -o IdentitiesOnly=yes -o BatchMode=yes \
+                   -o ConnectTimeout=20 -o StrictHostKeyChecking=yes \
+                   "${SSIC_VPS_USER}@${SSIC_VPS_HOST}" \
+                   "request backend ${GITHUB_SHA} ${GITHUB_REF_NAME} ${RUN_URL}")
+          echo "Parked request: $ID"
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the on-prem box to report back
+        env:
+          SSIC_VPS_HOST: ${{ secrets.SSIC_VPS_HOST }}
+          SSIC_VPS_USER: ${{ secrets.SSIC_VPS_USER }}
+          REQUEST_ID: ${{ steps.request.outputs.id }}
+        run: |
+          set -uo pipefail
+          # Matched on the request id, never on the commit: a deploy that failed
+          # and rolled back reports the PREVIOUS commit, and that is precisely
+          # the outcome this job must not miss.
+          deadline=$(( SECONDS + 2100 ))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            STATUS=$(ssh -i ~/.ssh/ssic_deploy -o IdentitiesOnly=yes -o BatchMode=yes \
+                         -o ConnectTimeout=20 -o StrictHostKeyChecking=yes \
+                         "${SSIC_VPS_USER}@${SSIC_VPS_HOST}" "status backend" || echo '{}')
+            if [ "$(jq -r '.request_id // ""' <<<"$STATUS")" = "$REQUEST_ID" ]; then
+              echo "$STATUS" | jq .
+              STATE=$(jq -r '.state' <<<"$STATUS")
+              echo "### On-prem deploy: \`$STATE\`" >> "$GITHUB_STEP_SUMMARY"
+              jq -r '.message' <<<"$STATUS" >> "$GITHUB_STEP_SUMMARY"
+              [ "$STATE" = "success" ] && exit 0
+              # A rolled-back deploy is a red run on purpose. The school is still
+              # being served by the previous build, but the commit on this branch
+              # is not what is running, and that must not look like a green tick.
+              exit 1
+            fi
+            sleep 15
+          done
+          # Timing out is not the same as failing, and saying so matters: the box
+          # may still be mid-build, or it may have been switched off at the wall.
+          echo "No report after 35 minutes for request $REQUEST_ID." >&2
+          echo "The on-prem agent may be stopped, or the box offline." >&2
+          echo "Check: Get-Content C:\\Users\\ADMIN\\Projects\\SMS\\logs\\deploy-agent.log -Tail 30" >&2
+          exit 1
