@@ -18,6 +18,7 @@ const CREATOR_ROLES = [
     'BURSAR',
     'SENIOR_DISCIPLINE_MASTER',
     'DEAN_OF_DISCIPLINE',
+    'DISCIPLINE_COORDINATOR',
 ];
 
 router.get('/me/counters', taskController.getMyTaskCounters);

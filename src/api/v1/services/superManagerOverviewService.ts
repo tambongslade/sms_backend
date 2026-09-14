@@ -5,7 +5,7 @@
 
 import prisma from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
-import { getClassMaxStudents } from '../../../utils/capacity';
+import { getClassMaxStudents, SUBCLASS_MAX_STUDENTS } from '../../../utils/capacity';
 
 // -------- helpers --------
 
@@ -303,6 +303,8 @@ export async function getFinancialOverview(academicYearId?: number) {
         recentPaymentsCount,
         controlPaymentsCount,
         activeFeeItems,
+        feesRaw,
+        classesMeta,
     ] = await Promise.all([
         prisma.schoolFees.aggregate({
             where: yearId ? { academic_year_id: yearId } : undefined,
@@ -348,12 +350,211 @@ export async function getFinancialOverview(academicYearId?: number) {
                 ...(yearId ? { academic_year_id: yearId } : {}),
             },
         }),
+        prisma.schoolFees.findMany({
+            where: yearId ? { academic_year_id: yearId } : undefined,
+            select: {
+                amount_expected: true,
+                amount_paid: true,
+                enrollment: {
+                    select: { class_id: true, sub_class_id: true },
+                },
+                payment_transactions: {
+                    select: { payment_method: true, amount: true },
+                },
+            },
+        }),
+        prisma.class.findMany({
+            select: {
+                id: true,
+                name: true,
+                first_term_fee: true,
+                second_term_fee: true,
+                third_term_fee: true,
+                sub_classes: { select: { id: true, name: true } },
+            },
+        }),
     ]);
 
     const expected = feeAgg._sum.amount_expected || 0;
     const collected = feeAgg._sum.amount_paid || 0;
     const totalExpenditures = expendituresByCategory.reduce((s, e) => s + (e._sum.amount || 0), 0);
     const totalPayments = paymentsByMethod.reduce((s, p) => s + (p._sum.amount || 0), 0);
+
+    // Per-class + per-subclass fee aggregation. Enrollments without a sub_class
+    // fold into a synthetic "Unassigned" subclass bucket (id -1) so bursars can
+    // see money owed by students awaiting subclass placement.
+    const UNASSIGNED_SUBCLASS_ID = -1;
+    const UNASSIGNED_SUBCLASS_NAME = 'Unassigned';
+
+    interface SubClassAcc {
+        subClassId: number;
+        subClassName: string;
+        expected: number;
+        collected: number;
+        studentCount: number;
+        studentsPaid: number;
+        studentsPartial: number;
+        studentsUnpaid: number;
+        methodTotals: Map<string, { totalAmount: number; transactionCount: number }>;
+    }
+    interface ClassAcc {
+        classId: number;
+        className: string;
+        expected: number;
+        collected: number;
+        studentCount: number;
+        studentsPaid: number;
+        studentsPartial: number;
+        studentsUnpaid: number;
+        subMap: Map<number, SubClassAcc>;
+    }
+
+    // Installment schedule per class — 1st and 2nd term fees define the
+    // amounts we'd expect a student to have paid at each installment. Payments
+    // fill installments FIFO (1st → 2nd → the remainder).
+    const installmentByClass = new Map<number, { first: number; second: number }>();
+    for (const cls of classesMeta) {
+        installmentByClass.set(cls.id, {
+            first: cls.first_term_fee || 0,
+            second: cls.second_term_fee || 0,
+        });
+    }
+
+    let firstExpected = 0;
+    let firstCollected = 0;
+    let secondExpected = 0;
+    let secondCollected = 0;
+
+    const classById = new Map<number, ClassAcc>();
+    // Prime the map from schema so classes with zero fee records still surface.
+    for (const cls of classesMeta) {
+        const subMap = new Map<number, SubClassAcc>();
+        for (const sc of cls.sub_classes) {
+            subMap.set(sc.id, {
+                subClassId: sc.id,
+                subClassName: sc.name,
+                expected: 0,
+                collected: 0,
+                studentCount: 0,
+                studentsPaid: 0,
+                studentsPartial: 0,
+                studentsUnpaid: 0,
+                methodTotals: new Map(),
+            });
+        }
+        classById.set(cls.id, {
+            classId: cls.id,
+            className: cls.name,
+            expected: 0,
+            collected: 0,
+            studentCount: 0,
+            studentsPaid: 0,
+            studentsPartial: 0,
+            studentsUnpaid: 0,
+            subMap,
+        });
+    }
+
+    for (const fee of feesRaw) {
+        const classId = fee.enrollment?.class_id;
+        if (classId == null) continue;
+        const clsAcc = classById.get(classId);
+        if (!clsAcc) continue;
+
+        const subClassId = fee.enrollment?.sub_class_id ?? UNASSIGNED_SUBCLASS_ID;
+        let subAcc = clsAcc.subMap.get(subClassId);
+        if (!subAcc) {
+            subAcc = {
+                subClassId,
+                subClassName: subClassId === UNASSIGNED_SUBCLASS_ID ? UNASSIGNED_SUBCLASS_NAME : `Subclass #${subClassId}`,
+                expected: 0,
+                collected: 0,
+                studentCount: 0,
+                studentsPaid: 0,
+                studentsPartial: 0,
+                studentsUnpaid: 0,
+                methodTotals: new Map(),
+            };
+            clsAcc.subMap.set(subClassId, subAcc);
+        }
+
+        const exp = fee.amount_expected || 0;
+        const paid = fee.amount_paid || 0;
+
+        clsAcc.expected += exp;
+        clsAcc.collected += paid;
+        clsAcc.studentCount += 1;
+        subAcc.expected += exp;
+        subAcc.collected += paid;
+        subAcc.studentCount += 1;
+
+        const schedule = installmentByClass.get(classId) || { first: 0, second: 0 };
+        firstExpected += schedule.first;
+        firstCollected += Math.min(paid, schedule.first);
+        secondExpected += schedule.second;
+        secondCollected += Math.min(Math.max(0, paid - schedule.first), schedule.second);
+
+        // Payment status buckets — "paid" means fully covered; "partial" is any
+        // non-zero payment short of the expected amount; "unpaid" is nothing paid.
+        const isPaid = exp > 0 && paid >= exp;
+        const isPartial = paid > 0 && paid < exp;
+        const isUnpaid = paid <= 0;
+        if (isPaid) { clsAcc.studentsPaid += 1; subAcc.studentsPaid += 1; }
+        else if (isPartial) { clsAcc.studentsPartial += 1; subAcc.studentsPartial += 1; }
+        else if (isUnpaid) { clsAcc.studentsUnpaid += 1; subAcc.studentsUnpaid += 1; }
+
+        for (const tx of fee.payment_transactions) {
+            const key = tx.payment_method;
+            const current = subAcc.methodTotals.get(key) || { totalAmount: 0, transactionCount: 0 };
+            current.totalAmount += tx.amount || 0;
+            current.transactionCount += 1;
+            subAcc.methodTotals.set(key, current);
+        }
+    }
+
+    const feesByClass = Array.from(classById.values())
+        .map(cls => ({
+            classId: cls.classId,
+            className: cls.className,
+            expected: cls.expected,
+            collected: cls.collected,
+            outstanding: Math.max(cls.expected - cls.collected, 0),
+            collectionRate: toPct(cls.collected, cls.expected),
+            studentCount: cls.studentCount,
+            studentsPaid: cls.studentsPaid,
+            studentsPartial: cls.studentsPartial,
+            studentsUnpaid: cls.studentsUnpaid,
+            subClasses: Array.from(cls.subMap.values())
+                .filter(sc => sc.studentCount > 0 || sc.subClassId !== UNASSIGNED_SUBCLASS_ID)
+                .map(sc => ({
+                    subClassId: sc.subClassId,
+                    subClassName: sc.subClassName,
+                    expected: sc.expected,
+                    collected: sc.collected,
+                    outstanding: Math.max(sc.expected - sc.collected, 0),
+                    collectionRate: toPct(sc.collected, sc.expected),
+                    studentCount: sc.studentCount,
+                    studentsPaid: sc.studentsPaid,
+                    studentsPartial: sc.studentsPartial,
+                    studentsUnpaid: sc.studentsUnpaid,
+                    paymentsByMethod: Array.from(sc.methodTotals.entries())
+                        .map(([method, v]) => ({
+                            method,
+                            totalAmount: v.totalAmount,
+                            transactionCount: v.transactionCount,
+                        }))
+                        .sort((a, b) => b.totalAmount - a.totalAmount),
+                }))
+                .sort((a, b) => a.subClassName.localeCompare(b.subClassName)),
+        }))
+        .sort((a, b) => a.className.localeCompare(b.className));
+
+    const buildInstallmentBucket = (exp: number, col: number) => ({
+        expected: exp,
+        collected: col,
+        outstanding: Math.max(exp - col, 0),
+        collectionRate: toPct(col, exp),
+    });
 
     return {
         summary: {
@@ -368,6 +569,11 @@ export async function getFinancialOverview(academicYearId?: number) {
             pendingFinanceRequests,
             activeFeeItems,
             controlPaymentsRecorded: controlPaymentsCount,
+            byInstallment: {
+                first: buildInstallmentBucket(firstExpected, firstCollected),
+                second: buildInstallmentBucket(secondExpected, secondCollected),
+                total: buildInstallmentBucket(expected, collected),
+            },
         },
         paymentsByMethod: paymentsByMethod.map(p => ({
             method: p.payment_method,
@@ -384,6 +590,7 @@ export async function getFinancialOverview(academicYearId?: number) {
             status: f.status,
             count: f._count.id,
         })),
+        feesByClass,
         lastUpdated: new Date().toISOString(),
     };
 }
@@ -393,6 +600,11 @@ export async function getFinancialOverview(academicYearId?: number) {
 // ============================================================
 export async function getStaffOverview(academicYearId?: number) {
     const yearId = await resolveYearId(academicYearId);
+
+    // "Staff" here = any user who holds at least one non-PARENT role. This
+    // excludes parent-only accounts (which are portal users, not personnel)
+    // but keeps parents who also work here (e.g. parent-teacher) in the count.
+    const staffWhere = { user_roles: { some: { role: { not: 'PARENT' as const } } } };
 
     const [
         usersByRole,
@@ -409,15 +621,16 @@ export async function getStaffOverview(academicYearId?: number) {
         }),
         prisma.user.groupBy({
             by: ['status'],
+            where: staffWhere,
             _count: { id: true },
         }),
-        prisma.user.count(),
+        prisma.user.count({ where: staffWhere }),
         prisma.user.findMany({
             where: { user_roles: { some: { role: 'TEACHER' } } },
             select: { id: true, total_hours_per_week: true },
         }),
         prisma.user.count({
-            where: { created_at: { gte: startOfMonth() } },
+            where: { created_at: { gte: startOfMonth() }, ...staffWhere },
         }),
         prisma.roleAssignment.groupBy({
             by: ['role_type'],
@@ -988,12 +1201,20 @@ export async function getEnrollmentOverview(academicYearId?: number) {
     const classUtilization = classes.map(cls => {
         const current = cls.sub_classes.reduce((s, sc) => s + sc.enrollments.length, 0);
         const maxStudents = getClassMaxStudents(cls.sub_classes.length);
+        const subClasses = cls.sub_classes.map(sc => ({
+            subClassId: sc.id,
+            subClassName: sc.name,
+            maxStudents: SUBCLASS_MAX_STUDENTS,
+            currentStudents: sc.enrollments.length,
+            utilizationRate: toPct(sc.enrollments.length, SUBCLASS_MAX_STUDENTS),
+        }));
         return {
             classId: cls.id,
             className: cls.name,
             maxStudents,
             currentStudents: current,
             utilizationRate: toPct(current, maxStudents),
+            subClasses,
         };
     });
 

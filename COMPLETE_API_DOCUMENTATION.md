@@ -2316,13 +2316,23 @@ POST /api/v1/auth/login
 ```
 
 **Request Body:**
+
+Provide exactly one of `identifier`, `email`, `phone`, or `matricule` — plus the password.
+`identifier` is a single-input convenience: contains `@` → treated as email, digits (with optional `+`) → phone, otherwise → matricule. Phone login is staff-only; parents must use matricule.
+
 ```typescript
 {
-  email?: string;      // Optional if matricule provided
-  matricule?: string;  // Optional if email provided
+  identifier?: string; // Email, phone, or matricule (auto-detected)
+  email?: string;      // Staff or student email
+  phone?: string;      // Staff phone number — "+237XXXXXXXXX" or "XXXXXXXXX"
+  matricule?: string;  // Parent matricule
   password: string;    // Required
 }
 ```
+
+**Error cases specific to phone login:**
+- `401` `"Multiple accounts share this phone number. Please sign in with your email."` — the phone matches more than one staff account.
+- `401` `"Invalid phone number"` — fewer than 8 digits after normalization.
 
 **Response (Success - 200):**
 ```typescript
@@ -2330,7 +2340,8 @@ POST /api/v1/auth/login
   success: true;
   data: {
     token: string;
-    expiresIn: string; // "24h"
+    expiresIn: string; // "120d"
+    mustChangePassword: boolean; // true → force user to change password before allowing any other action
     user: {
       id: number;
       name: string;
@@ -2343,6 +2354,7 @@ POST /api/v1/auth/login
       idCardNum?: string;
       photo?: string;
       status: string;
+      mustChangePassword: boolean; // Mirrors the top-level flag
       createdAt: string;
       updatedAt: string;
       userRoles: Array<{
@@ -2358,6 +2370,12 @@ POST /api/v1/auth/login
 }
 ```
 
+**First-login flow (all parents on 2026-09-04 and all bursar-created parents):**
+Accounts created with the shared default password `password123` are flagged
+`mustChangePassword: true`. The token is still issued so the client can call
+`POST /auth/change-password` immediately, but the frontend MUST gate every
+other request behind a "Set your new password" screen until the flag clears.
+
 **Error Response (401):**
 ```typescript
 {
@@ -2365,6 +2383,42 @@ POST /api/v1/auth/login
   error: "Invalid credentials";
 }
 ```
+
+### Change Password
+```http
+POST /api/v1/auth/change-password
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```typescript
+{
+  currentPassword?: string; // Required for normal changes; OMIT on forced first-login change
+  newPassword: string;      // Minimum 8 characters, must differ from current
+}
+```
+
+**Behavior:**
+- Normal path — `currentPassword` is required and must match.
+- First-login path — when the authenticated user has `mustChangePassword: true`,
+  `currentPassword` may be omitted. The flag is cleared on success.
+- On success the current token is blacklisted; the client must sign in again.
+
+**Response (Success - 200):**
+```typescript
+{
+  success: true;
+  message: "Password changed successfully. Please sign in again.";
+}
+```
+
+**Error Responses:**
+- `400` `"newPassword is required"`
+- `400` `"newPassword must be at least 8 characters long"`
+- `400` `"Current password is required"` (normal flow, missing field)
+- `400` `"Current password is incorrect"`
+- `400` `"New password must be different from the current password"`
+- `401` `"Unauthorized"` (no/invalid token)
 
 ### Register User
 ```http
@@ -2695,6 +2749,326 @@ GET /api/v1/parents/announcements?limit=10
   }>;
 }
 ```
+
+---
+
+### Multi-Child Family View (Authenticated Parent)
+```http
+GET /api/v1/parents/me/children
+Authorization: Bearer <parent JWT>
+```
+
+Requires the caller to be authenticated with the `PARENT` role. Returns every
+child linked to that parent plus a rollup summary for the whole family (total
+fees owed across children, any-child-at-risk flag, active discipline count).
+
+**Query Parameters:**
+```typescript
+{ academicYearId?: number; }
+```
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: {
+    parentId: number;
+    academicYearId: number | null;
+    familySummary: {
+      totalChildren: number;
+      fees: { totalExpected: number; totalPaid: number; outstanding: number; };
+      attendance: { totalUnexcusedAbsences: number; anyChildAtRisk: boolean; };
+      discipline: { totalActiveIssues: number; };
+    };
+    children: Array<{
+      studentId: number;
+      matricule: string;
+      name: string;
+      gender: string;
+      dateOfBirth: string;
+      relationship: 'FATHER' | 'MOTHER' | 'GUARDIAN' | 'SIBLING' | null;
+      enrollment: { academicYearId: number; className: string; subclassName: string; } | null;
+      fees: {
+        totalExpected: number; totalPaid: number; outstanding: number;
+        dueDate: string | null; daysOverdue: number;
+        urgency: 'PAID' | 'OK' | 'OVERDUE';
+      };
+      attendance: { totalAbsences: number; unexcusedAbsences: number; atRisk: boolean; };
+      discipline: { activeIssues: number; };
+    }>;
+  };
+}
+```
+
+**Errors:** `401 Unauthorized`, `403 Forbidden` (not a PARENT).
+
+---
+
+### Child Timetable (weekly schedule)
+```http
+GET /api/v1/parents/:matricule/timetable?academicYearId=..
+```
+
+Returns the child's weekly `TeacherPeriod` schedule, both as a flat `periods`
+list and grouped by `days` in Monday→Sunday order for direct rendering.
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: {
+    student: { id: number; matricule: string; name: string; };
+    enrollment: { academicYearId: number; className: string; subclassName: string; } | null;
+    periods: Array<{
+      teacherPeriodId: number;
+      dayOfWeek: 'MONDAY' | 'TUESDAY' | ... | 'SUNDAY';
+      periodName: string;
+      periodSequence: number;
+      startTime: string;   // "08:00"
+      endTime: string;     // "08:45"
+      periodType: 'TEACHING' | 'BREAK' | 'PREP';
+      subject: { id: number; name: string; category: string; } | null;
+      teacher: { id: number; name: string; matricule: string; } | null;
+    }>;
+    days: Array<{ day: string; periods: [...] }>;
+  };
+}
+```
+
+If the child has no enrollment in the requested year, `enrollment` is `null`
+and `periods`/`days` are empty arrays (not an error).
+
+---
+
+### Discipline — Warnings
+```http
+GET /api/v1/parents/:matricule/warnings?academicYearId=..
+```
+
+Progressive warnings (`StudentWarning`) issued to the child, ordered newest first.
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: {
+    summary: { total: number; active: number; resolved: number; highestLevel: number; };
+    items: Array<{
+      id: number;
+      warningLevel: number;
+      reason: 'ABSENCE_THRESHOLD' | 'BEHAVIOR' | 'ACADEMIC' | ...;
+      description: string;
+      triggerAbsenceCount: number | null;
+      issuedBy: string | null;
+      resolved: boolean;
+      resolvedAt: string | null;
+      resolvedNotes: string | null;
+      createdAt: string;
+    }>;
+  };
+}
+```
+
+### Discipline — Summons
+```http
+GET /api/v1/parents/:matricule/summons?academicYearId=..
+```
+
+`ParentSummons` records auto-created on consecutive/cumulative unexcused
+absences or issued manually by DM/admin.
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: {
+    summary: {
+      total: number;
+      pending: number;
+      actionRequired: boolean;   // true if any PENDING/SCHEDULED summons has a future or missing date
+    };
+    items: Array<{
+      id: number;
+      reason: string;
+      triggerType: 'CONSECUTIVE_ABSENCES' | 'CUMULATIVE_ABSENCES' | 'MANUAL';
+      scheduledDate: string | null;
+      status: 'PENDING' | 'SCHEDULED' | 'COMPLETED' | 'MISSED' | 'CANCELLED';
+      attended: boolean | null;
+      meetingNotes: string | null;
+      parentName: string | null;
+      createdBy: string | null;
+      createdAt: string;
+    }>;
+  };
+}
+```
+
+### Discipline — Disciplinary Actions
+```http
+GET /api/v1/parents/:matricule/disciplinary-actions?academicYearId=..
+```
+
+Suspensions, work duties, dismissals, disciplinary council referrals.
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: {
+    summary: { total: number; active: number; pending: number; completed: number; };
+    items: Array<{
+      id: number;
+      actionType: 'SUSPENSION' | 'WORK_DUTY' | 'SUSPENDED_WITH_CHORES' | 'PUNISHMENT'
+                | 'DISMISSAL' | 'SUSPENDED_DISMISSAL' | 'END_OF_YEAR_DISMISSAL'
+                | 'DISCIPLINARY_COUNCIL';
+      status: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+      days: number | null;
+      startDate: string | null;
+      endDate: string | null;
+      reason: string;
+      notes: string | null;
+      decidedBy: string | null;
+      linkedIssue: { id: number; issueType: string; description: string; } | null;
+      createdAt: string;
+    }>;
+  };
+}
+```
+
+### Discipline — Saturday Punishments
+```http
+GET /api/v1/parents/:matricule/saturday-punishments?academicYearId=..
+```
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: {
+    summary: { total: number; pending: number; served: number; };
+    items: Array<{
+      id: number;
+      reason: string;
+      scheduledDate: string | null;
+      servedDate: string | null;
+      status: 'PENDING' | 'SERVED' | 'SKIPPED';
+      notes: string | null;
+      assignedBy: string | null;
+      createdAt: string;
+    }>;
+  };
+}
+```
+
+---
+
+### Health Visits (Nurse log, paginated)
+```http
+GET /api/v1/parents/:matricule/health-visits?page=1&limit=20&academicYearId=..
+```
+
+Portal-mode paginated nurse-visit history. Also exposes the student's health
+conditions and medical notes at the top for the frontend to render as an
+allergy/condition banner.
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: {
+    student: {
+      id: number; matricule: string; name: string;
+      healthConditions: Array<'SICKLE_CELL' | 'ASTHMATIC' | 'EPILEPTIC' | 'DIABETIC' | 'ALLERGY' | 'HYPERTENSION' | 'OTHER'>;
+      medicalNotes: string | null;
+    };
+    meta: { page: number; limit: number; total: number; totalPages: number; };
+    items: Array<{
+      id: number;
+      visitDate: string;
+      reason: string;
+      treatmentGiven: string | null;
+      medicationGiven: string | null;
+      sentHome: boolean;
+      notes: string | null;
+      period: { name: string; dayOfWeek: string; startTime: string; endTime: string; } | null;
+      loggedBy: string | null;
+    }>;
+  };
+}
+```
+
+Authenticated parents can also call `GET /api/v1/nurses/students/:studentId/health-profile`
+directly — the `PARENT` role is now permitted on that endpoint. Service-side
+scoping ensures they only see their own children.
+
+---
+
+### Response Shape Changes (Existing Endpoints)
+
+The following existing endpoints now return additional fields. Old fields
+are unchanged, so this is fully backwards-compatible.
+
+**`GET /api/v1/parents/:matricule/details`** — `attendance` and `fees` are richer:
+
+```typescript
+attendance: {
+  presentDays: number;
+  absentDays: number;   // now = count of CLASS_ABSENCE only
+  lateDays: number;     // now = count of MORNING_LATENESS (was hardcoded to 5)
+  attendanceRate: number;
+}
+
+fees: {
+  totalExpected: number;
+  totalPaid: number;
+  outstandingBalance: number;
+  dueDate: string | null;                             // NEW
+  daysOverdue: number;                                // NEW
+  urgency: 'PAID' | 'OK' | 'DUE_SOON' | 'OVERDUE';   // NEW
+  lastPaymentDate?: string;
+  paymentHistory: Array<PaymentRecord>;
+  items: Array<{                                      // NEW itemized breakdown
+    id: number;
+    name: string;
+    description: string | null;
+    scope: 'ALL' | 'CLASS' | 'SUBCLASS' | 'STUDENT';
+    amountExpected: number;
+    amountPaid: number;
+    outstanding: number;
+    status: 'PAID' | 'PARTIAL' | 'UNPAID';
+  }>;
+}
+```
+
+**`GET /api/v1/parents/:matricule/analytics`** — `attendanceAnalytics` now returns:
+
+```typescript
+attendanceAnalytics: {
+  overallAttendanceRate: string;
+  totalAbsences: number;
+  classAbsences: number;         // NEW
+  morningLateness: number;       // NEW
+  excusedCount: number;          // NEW
+  unexcusedCount: number;        // NEW
+  atRisk: boolean;               // NEW — true when unexcusedCount >= 3
+  monthlyTrends: [...];
+  attendanceStatus: string;
+  recentAbsences: Array<{        // NEW extra fields
+    id: number;
+    date: string;
+    type: 'CLASS_ABSENCE' | 'MORNING_LATENESS';
+    isExcused: boolean;
+    excuseReason: string | null;
+    excusedAt: string | null;
+    makeupStatus: 'NONE' | 'PENDING' | 'COMPLETED' | 'WAIVED';
+    makeupCompletedAt: string | null;
+  }>;
+}
+```
+
+**`GET /api/v1/parents/:matricule/overview`** — the `academic.sequenceAverages`
+array (already returned) exposes per-sequence class ranking that the frontend
+should now surface: `rank`, `totalStudents`, `decision`.
 
 ---
 
@@ -7454,10 +7828,26 @@ Creates a new academic year. If terms are not provided, it defaults to creating 
       "startDate": "2025-09-01",
       "endDate": "2025-12-19",
       "feeDeadline": "2025-10-15"
+    },
+    {
+      // Holiday term example — no fee deadline, must list classIds
+      "name": "Christmas Break (Form 1 & 2)",
+      "startDate": "2025-12-20",
+      "endDate": "2026-01-05",
+      "isHoliday": true,
+      "classIds": [1, 2]
     }
   ]
 }
 ```
+
+**Term fields:**
+- `name` (string, required)
+- `startDate` (ISO date, required)
+- `endDate` (ISO date, required)
+- `feeDeadline` (ISO date, optional — required for non-holiday terms if you want fee tracking)
+- `isHoliday` (boolean, optional, default `false`) — marks the term as a holiday period
+- `classIds` (number[], required when `isHoliday: true`) — the classes the holiday applies to
 
 **Response (201):**
 ```typescript
@@ -7475,10 +7865,32 @@ Creates a new academic year. If terms are not provided, it defaults to creating 
         "name": "Term 1",
         "startDate": "2025-09-01T00:00:00.000Z",
         "endDate": "2025-12-19T00:00:00.000Z",
-        "feeDeadline": "2025-10-15T00:00:00.000Z"
+        "feeDeadline": "2025-10-15T00:00:00.000Z",
+        "isHoliday": false,
+        "termClasses": []
+      },
+      {
+        "id": 3,
+        "name": "Christmas Break (Form 1 & 2)",
+        "startDate": "2025-12-20T00:00:00.000Z",
+        "endDate": "2026-01-05T00:00:00.000Z",
+        "feeDeadline": null,
+        "isHoliday": true,
+        "termClasses": [
+          { "classId": 1 },
+          { "classId": 2 }
+        ]
       }
     ]
   }
+}
+```
+
+**Error Response (400):**
+```typescript
+{
+  "success": false,
+  "error": "Holiday terms must specify at least one class in classIds"
 }
 ```
 
@@ -7621,7 +8033,10 @@ Adds a new term to an existing academic year.
   "name": "Term 2",
   "startDate": "2025-01-06",
   "endDate": "2025-04-04",
-  "feeDeadline": "2025-02-15"
+  "feeDeadline": "2025-02-15",
+  // Optional: add a holiday term instead of a teaching term
+  "isHoliday": false,
+  "classIds": [] // required when isHoliday === true
 }
 ```
 
@@ -7636,7 +8051,9 @@ Adds a new term to an existing academic year.
     "startDate": "2025-01-06T00:00:00.000Z",
     "endDate": "2025-04-04T00:00:00.000Z",
     "feeDeadline": "2025-02-15T00:00:00.000Z",
-    "academicYearId": 1
+    "isHoliday": false,
+    "academicYearId": 1,
+    "termClasses": []
   }
 }
 ```
@@ -10087,6 +10504,106 @@ Authorization: Bearer <token>
   };
 }
 ```
+
+### Get Sync Status
+Shows the most recent database-sync run against the remote peer, live peer
+reachability, and the auto-sync configuration read from environment.
+
+```http
+GET /api/v1/system/sync/status
+Authorization: Bearer <token>
+```
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: {
+    lastSync: null | {
+      id: number;
+      syncId: string;
+      startTime: string;                 // ISO
+      endTime: string | null;
+      status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "PARTIAL" | "FAILED";
+      direction: "PUSH" | "PULL" | "BIDIRECTIONAL";
+      recordsProcessed: number;
+      conflicts: any[];
+      errors: string[];
+      createdAt: string;
+    };
+    isOnline: boolean;                   // remote peer reachable right now
+    remotePeerConfigured: boolean;       // REMOTE_SYNC_URL is set
+    autoSyncEnabled: boolean;            // AUTO_SYNC_INTERVAL > 0
+    autoSyncIntervalMinutes: number | null;
+    serverId: string;
+    syncInFlight: boolean;               // true while a manual /trigger is running
+  };
+}
+```
+
+### List Recent Sync Runs
+```http
+GET /api/v1/system/sync/logs?limit=20
+Authorization: Bearer <token>
+```
+
+**Query Parameters:**
+| Parameter | Type   | Default | Notes                   |
+|-----------|--------|---------|-------------------------|
+| limit     | number | 20      | Clamped to 1..100       |
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: Array<{
+    id: number;
+    syncId: string;
+    startTime: string;
+    endTime: string | null;
+    status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "PARTIAL" | "FAILED";
+    direction: "PUSH" | "PULL" | "BIDIRECTIONAL";
+    recordsProcessed: number;
+    conflicts: any[];
+    errors: string[];
+    createdAt: string;
+  }>;
+}
+```
+
+### Trigger Manual Sync
+Runs a bidirectional sync against the remote peer synchronously. Overlapping
+calls are coalesced — a second call while one is in flight returns the same
+result. Returns `409` when `REMOTE_SYNC_URL` is not configured.
+
+```http
+POST /api/v1/system/sync/trigger
+Authorization: Bearer <token>
+```
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  message: "Manual sync run finished";
+  data: {
+    syncLog: {
+      id: string;                       // in-memory run id from SyncManager
+      startTime: string;
+      endTime: string | null;
+      status: "COMPLETED" | "PARTIAL" | "FAILED";
+      direction: "BIDIRECTIONAL";
+      recordsProcessed: number;
+      conflicts: any[];
+      errors: string[];
+    };
+  };
+}
+```
+
+**Error Responses:**
+- `409` — `REMOTE_SYNC_URL` is not configured on this server.
+- `500` — sync failed; `error` field carries the reason.
 
 ---
 

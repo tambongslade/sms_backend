@@ -179,6 +179,77 @@ export async function getDMRollCallStatus(
     };
 }
 
+// Roles allowed to see every subclass in the roll-call picker, mirroring
+// the bypass set in validateDMSubClassAccess so the FE list stays honest.
+const DM_SCOPE_BYPASS_ROLES = new Set<string>([
+    'SUPER_MANAGER',
+    'MANAGER',
+    'PRINCIPAL',
+    'VICE_PRINCIPAL',
+    'SENIOR_DISCIPLINE_MASTER',
+    'DEAN_OF_DISCIPLINE',
+]);
+
+/**
+ * Sub-classes the caller may record DM roll calls for. Bypass roles see the
+ * whole school; a plain DM sees only what they're assigned to in the current
+ * academic year. Mirrors validateDMSubClassAccess so the picker is honest.
+ */
+export async function listAccessibleSubClasses(userId: number, roles: string[], academicYearId?: number) {
+    const yearId = academicYearId ?? (await getAcademicYearId());
+    if (!yearId) {
+        throw new Error('No current academic year is set');
+    }
+
+    const canSeeAll = roles.some((r) => DM_SCOPE_BYPASS_ROLES.has(r));
+    if (canSeeAll) {
+        return prisma.subClass.findMany({
+            include: { class: { select: { id: true, name: true } } },
+            orderBy: [{ class: { name: 'asc' } }, { name: 'asc' }],
+        });
+    }
+
+    // Plain DM: pull sub-classes from their RoleAssignment rows for the year.
+    const assignments = await prisma.roleAssignment.findMany({
+        where: {
+            user_id: userId,
+            role_type: 'DISCIPLINE_MASTER',
+            academic_year_id: yearId,
+            sub_class_id: { not: null },
+        },
+        select: { sub_class_id: true },
+    });
+    const ids = Array.from(new Set(assignments.map((a) => a.sub_class_id!).filter(Boolean)));
+    if (ids.length === 0) return [];
+    return prisma.subClass.findMany({
+        where: { id: { in: ids } },
+        include: { class: { select: { id: true, name: true } } },
+        orderBy: [{ class: { name: 'asc' } }, { name: 'asc' }],
+    });
+}
+
+/**
+ * Pick the current roll-call slot from wall-clock time in the school's
+ * timezone (defaults to Africa/Douala, UTC+1 year-round, no DST):
+ *   before 12:00  -> SLOT_2  (morning walk after 2nd period)
+ *   12:00-14:59   -> SLOT_5  (after the lunch break, post-5th period)
+ *   15:00 onwards -> SLOT_8  (final walk after 8th period)
+ * Override with SCHOOL_TZ if the deployment ever moves.
+ */
+export function pickCurrentSlot(now: Date = new Date()): RollCallSlot {
+    const timeZone = process.env.SCHOOL_TZ || 'Africa/Douala';
+    const hour = Number(
+        new Intl.DateTimeFormat('en-US', {
+            timeZone,
+            hour: '2-digit',
+            hour12: false,
+        }).format(now)
+    );
+    if (hour < 12) return 'SLOT_2';
+    if (hour < 15) return 'SLOT_5';
+    return 'SLOT_8';
+}
+
 /**
  * Slot-specific timestamp used when creating auto-linked StudentAbsence rows so
  * that per-slot audit still shows a distinct time even though the underlying

@@ -405,4 +405,37 @@ export const getDefaultersReport = async (req: Request, res: Response): Promise<
             error: error.message
         });
     }
-}; 
+};
+
+/**
+ * Reset a parent's password back to the default `password123`.
+ * POST /api/v1/bursar/parents/:parentId/reset-password
+ */
+export const resetParentPassword = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const parentId = parseInt(req.params.parentId, 10);
+        if (Number.isNaN(parentId)) {
+            res.status(400).json({
+                success: false,
+                error: 'Invalid parentId parameter'
+            });
+            return;
+        }
+
+        const actorId = (req as any).user?.id;
+
+        const result = await bursarService.resetParentPassword(parentId, actorId);
+
+        res.status(200).json({
+            success: true,
+            data: result
+        });
+    } catch (error: any) {
+        console.error('Error resetting parent password:', error);
+        const statusCode = error?.statusCode ?? 500;
+        res.status(statusCode).json({
+            success: false,
+            error: error.message
+        });
+    }
+};

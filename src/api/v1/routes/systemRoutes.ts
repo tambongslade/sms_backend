@@ -80,4 +80,25 @@ router.get('/info', systemController.getSystemInfo);
  */
 router.post('/maintenance-mode', systemController.toggleMaintenanceMode);
 
-export default router; 
+/**
+ * @route GET /api/v1/system/sync/status
+ * @desc Show the most recent sync run + live peer reachability + auto-sync config
+ * @access SUPER_MANAGER only
+ */
+router.get('/sync/status', systemController.getSyncStatus);
+
+/**
+ * @route GET /api/v1/system/sync/logs
+ * @desc List recent sync runs (default 20, max 100)
+ * @access SUPER_MANAGER only
+ */
+router.get('/sync/logs', systemController.getSyncLogs);
+
+/**
+ * @route POST /api/v1/system/sync/trigger
+ * @desc Manually run a bidirectional sync against the remote peer
+ * @access SUPER_MANAGER only
+ */
+router.post('/sync/trigger', systemController.triggerSync);
+
+export default router;

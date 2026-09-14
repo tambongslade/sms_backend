@@ -726,3 +726,33 @@ export const updateSummons = async (req: Request, res: Response): Promise<any> =
         return res.status(400).json({ success: false, error: error.message });
     }
 };
+
+/**
+ * Daily overview for the Dean of Discipline dashboard. Returns
+ *   - lateTodayCount        (StudentAbsence rows of type MORNING_LATENESS created today)
+ *   - dailyAbsencesCount    (StudentAbsence rows of type CLASS_ABSENCE created today)
+ *   - disciplinaryActionsTodayCount
+ *   - personsOfInterest[]   (top N enrollments with >= threshold absences this academic year)
+ *
+ * Query params:
+ *   - academic_year_id (optional, defaults to current)
+ *   - date (YYYY-MM-DD, optional, defaults to today)
+ *   - poi_threshold (integer, default 5)
+ *   - poi_limit     (integer, default 10)
+ */
+export const getDailyOverview = async (req: any, res: Response): Promise<any> => {
+    try {
+        const overview = await disciplineService.getDailyOverview({
+            academic_year_id: req.finalQuery.academic_year_id ? Number(req.finalQuery.academic_year_id) : undefined,
+            date: req.query.date as string | undefined,
+            from: req.query.from as string | undefined,
+            to: req.query.to as string | undefined,
+            poi_threshold: req.query.poi_threshold ? Number(req.query.poi_threshold) : undefined,
+            poi_limit: req.query.poi_limit ? Number(req.query.poi_limit) : undefined,
+        });
+        return res.json({ success: true, data: overview });
+    } catch (err: any) {
+        console.error('Error getting daily overview:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+};

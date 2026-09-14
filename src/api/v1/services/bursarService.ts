@@ -175,7 +175,9 @@ export async function createStudentWithParent(data: StudentWithParentData): Prom
         }
 
         // Hash password for parent (shared default; sent back per parent for handover).
-        const hashedPassword = await bcrypt.hash('defaultPassword123', 10);
+        // must_change_password=true is set on the user so the parent is forced to
+        // pick a private password on their very first sign-in.
+        const hashedPassword = await bcrypt.hash('password123', 10);
 
         const result = await prisma.$transaction(async (tx) => {
             // 1. Create student
@@ -226,6 +228,7 @@ export async function createStudentWithParent(data: StudentWithParentData): Prom
                         // Address is no longer collected; column is required so default to empty.
                         address: p.address?.trim() || '',
                         password: hashedPassword,
+                        must_change_password: true,
                         gender: Gender.Male, // Default, editable later
                         date_of_birth: new Date('1980-01-01'),
                         matricule: parentMatricule
@@ -294,7 +297,7 @@ export async function createStudentWithParent(data: StudentWithParentData): Prom
                 // Primary parent kept for callers that still expect a single `parent` field.
                 parent: {
                     ...parentsCreated[0],
-                    temporary_password: 'defaultPassword123'
+                    temporary_password: 'password123'
                 },
                 parents: parentsCreated,
                 enrollment: {
@@ -360,7 +363,7 @@ export async function createParentForStudent(
 
     const parentMatricule = await generateStaffMatricule([Role.PARENT]);
     const generatedEmail = `parent.${phone.replace(/[^\d+]/g, '')}.${student.id}.${Date.now()}@school.local`;
-    const hashedPassword = await bcrypt.hash('defaultPassword123', 10);
+    const hashedPassword = await bcrypt.hash('password123', 10);
     const relationshipEnum = normalizeRelationship(data.relationship);
 
     const result = await prisma.$transaction(async (tx) => {
@@ -372,6 +375,7 @@ export async function createParentForStudent(
                 whatsapp_number: whatsappNumber,
                 address: data.address?.trim() || '',
                 password: hashedPassword,
+                must_change_password: true,
                 gender: Gender.Male,
                 date_of_birth: new Date('1980-01-01'),
                 matricule: parentMatricule,
@@ -401,8 +405,60 @@ export async function createParentForStudent(
             phone: result.phone,
             whatsapp_number: result.whatsapp_number,
             relationship: relationshipEnum ?? null,
-            temporary_password: 'defaultPassword123',
+            temporary_password: 'password123',
         },
+    };
+}
+
+/**
+ * Reset a parent's password back to the default `password123` and force
+ * them to change it on next login. Used by front-desk staff when a parent
+ * forgets the password they set after first sign-in.
+ */
+export async function resetParentPassword(
+    parentId: number,
+    actorId: number,
+): Promise<{ parent_id: number; matricule: string; name: string; temporary_password: 'password123' }> {
+    const user = await prisma.user.findUnique({
+        where: { id: parentId },
+        include: {
+            user_roles: {
+                where: { role: Role.PARENT },
+            },
+        },
+    });
+
+    if (!user) {
+        const err: any = new Error(`Parent with ID ${parentId} not found`);
+        err.statusCode = 404;
+        throw err;
+    }
+
+    if (!user.user_roles || user.user_roles.length === 0) {
+        const err: any = new Error('User is not a parent');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const hashedPassword = await bcrypt.hash('password123', 10);
+
+    await prisma.user.update({
+        where: { id: user.id },
+        data: {
+            password: hashedPassword,
+            must_change_password: true,
+        },
+    });
+
+    console.log(
+        `[PARENT_PASSWORD_RESET] parent_id=${user.id} actor_id=${actorId} matricule=${user.matricule ?? ''}`,
+    );
+
+    return {
+        parent_id: user.id,
+        matricule: user.matricule ?? '',
+        name: user.name,
+        temporary_password: 'password123',
     };
 }
 

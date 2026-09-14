@@ -2,6 +2,7 @@ import prisma from '../../../config/db';
 import { MessageStatus } from '@prisma/client';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
 import { sendNotification } from './notificationService';
+import { notifyIfReceiverIsParent } from './parentService';
 
 export interface CreateMessageData {
     senderId: number;
@@ -98,6 +99,13 @@ export async function sendDirectMessage(data: CreateMessageData) {
             action_url: `/messages/${message.id}`,
         });
 
+        // Parent inbox integration: this generic DM path is used by both
+        // staff-to-staff and staff-to-parent conversations. We can't tell here
+        // whether it's a "staff replies to parent" case without a role lookup,
+        // so the helper below role-checks the receiver and only fires the
+        // parent-portal notification when the receiver actually holds PARENT.
+        await notifyIfReceiverIsParent(data.receiverId, data.senderId, message.id, data.subject, sender.name);
+
         console.log(`✅ Message sent and notification delivered to ${receiver.name}`);
 
         return message;
@@ -162,6 +170,10 @@ export async function sendSimpleMessage(data: {
             entity_id: message.id,
             action_url: `/messages/${message.id}`,
         });
+
+        // Parent inbox integration — see comment in sendDirectMessage. Same
+        // rationale: generic send site, so role-check the receiver.
+        await notifyIfReceiverIsParent(data.receiverId, data.senderId, message.id, data.subject, sender.name);
 
         return {
             success: true,

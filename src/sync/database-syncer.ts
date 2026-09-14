@@ -126,6 +126,29 @@ export class DatabaseSyncer {
     return model;
   }
 
+  // Whether an incoming record is older than what we already have and should
+  // be ignored rather than overwrite our fresher state.
+  //
+  // The receive path used to call updateRecord unconditionally, and because
+  // Prisma preserves an explicit updated_at in a mutation payload, a peer
+  // pushing a stale copy silently rewound both the row's data AND its
+  // updated_at back to the peer's old timestamp. That is how the VPS lost
+  // fresh admin password resets: the school node still held the pre-reset
+  // User row, pushed it up on the next sync, and the receive handler wrote it
+  // over the reset — hash, must_change_password, server_id, updated_at, all
+  // reverted, with nothing in the log to explain it.
+  //
+  // Strict "greater than": equal timestamps are not stale (same write, just
+  // acknowledged), and missing timestamps fall through to the old behaviour
+  // rather than block writes on tables that never had updated_at.
+  private isIncomingStale(local: any, incoming: any): boolean {
+    if (!local || !incoming) return false;
+    const localAt = local.updated_at ? new Date(local.updated_at).getTime() : NaN;
+    const incomingAt = incoming.updated_at ? new Date(incoming.updated_at).getTime() : NaN;
+    if (Number.isNaN(localAt) || Number.isNaN(incomingAt)) return false;
+    return localAt > incomingAt;
+  }
+
   async syncTable(tableName: string, lastSync: Date): Promise<SyncResult> {
     const result: SyncResult = {
       recordsProcessed: 0,
@@ -258,8 +281,17 @@ export class DatabaseSyncer {
             // No conflict - update. Addressed by the LOCAL id: when the match
             // came from the natural key the two ids differ, and using the
             // remote's would update a different row, or none.
-            await this.updateRecord(model, String(localRecord.id), remoteRecord);
-            result.recordsProcessed++;
+            if (this.isIncomingStale(localRecord, remoteRecord)) {
+              // Same overwrite risk as the receive path — a checksum match
+              // still routes here, but same-server pulls with an older payload
+              // would clobber a fresher local write.
+              console.log(
+                `[SYNC] Skipping stale pull ${tableName}[${localRecord.id}]: local updated_at ${localRecord.updated_at?.toISOString?.() ?? localRecord.updated_at} > remote ${remoteRecord.updated_at}`
+              );
+            } else {
+              await this.updateRecord(model, String(localRecord.id), remoteRecord);
+              result.recordsProcessed++;
+            }
           }
         }
 
@@ -483,6 +515,12 @@ export class DatabaseSyncer {
         // Addressed by the LOCAL id: where the match came from the natural key
         // the two ids differ, and writing the peer's would update a different
         // row, or none at all.
+        if (this.isIncomingStale(existing, record)) {
+          console.log(
+            `[SYNC] Skipping stale ${tableName}[${existing.id}] from peer: local updated_at ${existing.updated_at?.toISOString?.() ?? existing.updated_at} > incoming ${record.updated_at}`
+          );
+          return;
+        }
         await this.updateRecord(model, String(existing.id), record);
       } else {
         await this.insertRecord(model, record);

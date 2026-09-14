@@ -69,4 +69,13 @@ router.get('/defaulters-report',
     bursarController.getDefaultersReport
 );
 
-export default router; 
+// POST /bursar/parents/:parentId/reset-password - Reset a parent's password back to the default
+// Used when a parent forgets the password they set after first login.
+// BURSAR, PRINCIPAL, VICE_PRINCIPAL, SUPER_MANAGER, MANAGER can perform the reset.
+router.post('/parents/:parentId/reset-password',
+    authenticate,
+    authorize(['BURSAR', 'PRINCIPAL', 'VICE_PRINCIPAL', 'SUPER_MANAGER', 'MANAGER']),
+    bursarController.resetParentPassword
+);
+
+export default router;

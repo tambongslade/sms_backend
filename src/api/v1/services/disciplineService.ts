@@ -1783,3 +1783,126 @@ export async function updateParentSummons(
         },
     });
 }
+
+/**
+ * Aggregate discipline metrics for a role's overview dashboard.
+ *
+ * Ranges: pass `from` + `to` (ISO date, inclusive) for arbitrary windows.
+ * Backward-compat: if only `date` is given, the range is that single day.
+ * With neither, defaults to today. All counts stay scoped to the current
+ * academic year unless `academic_year_id` overrides it.
+ *
+ * Field names still say "today"/"daily" — callers depend on that shape.
+ * When the range is wider than a day, the counts are the totals across it.
+ */
+export async function getDailyOverview(opts: {
+    academic_year_id?: number;
+    date?: string;
+    from?: string;
+    to?: string;
+    poi_threshold?: number;
+    poi_limit?: number;
+} = {}) {
+    const yearId = opts.academic_year_id ?? await getAcademicYearId();
+    if (!yearId) {
+        return {
+            date: opts.date ?? null,
+            from: opts.from ?? null,
+            to: opts.to ?? null,
+            academic_year_id: null,
+            lateTodayCount: 0,
+            dailyAbsencesCount: 0,
+            disciplinaryActionsTodayCount: 0,
+            personsOfInterest: [],
+        };
+    }
+
+    // Resolve the [dayStart, dayEnd] window from whichever of from/to/date the caller provided.
+    const rangeSource: Date = opts.from ? new Date(opts.from) : (opts.date ? new Date(opts.date) : new Date());
+    const rangeEnd: Date = opts.to ? new Date(opts.to) : (opts.date ? new Date(opts.date) : new Date());
+    const dayStart = new Date(rangeSource); dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(rangeEnd); dayEnd.setHours(23, 59, 59, 999);
+
+    const threshold = opts.poi_threshold && opts.poi_threshold > 0 ? opts.poi_threshold : 5;
+    const limit = opts.poi_limit && opts.poi_limit > 0 ? opts.poi_limit : 10;
+
+    // Late arrivals today (MORNING_LATENESS)
+    const lateTodayCountPromise = prisma.studentAbsence.count({
+        where: {
+            absence_type: 'MORNING_LATENESS',
+            created_at: { gte: dayStart, lte: dayEnd },
+            enrollment: { academic_year_id: yearId },
+        },
+    });
+
+    // Class absences today (CLASS_ABSENCE, unexcused)
+    const dailyAbsencesPromise = prisma.studentAbsence.count({
+        where: {
+            absence_type: 'CLASS_ABSENCE',
+            created_at: { gte: dayStart, lte: dayEnd },
+            enrollment: { academic_year_id: yearId },
+        },
+    });
+
+    // Disciplinary actions logged today (regardless of approval state)
+    const actionsTodayPromise = prisma.disciplinaryAction.count({
+        where: {
+            created_at: { gte: dayStart, lte: dayEnd },
+            enrollment: { academic_year_id: yearId },
+        },
+    });
+
+    // Persons of Interest: enrollments with the most unexcused CLASS_ABSENCE this year, above threshold
+    const poiRaw = await prisma.studentAbsence.groupBy({
+        by: ['enrollment_id'],
+        where: {
+            absence_type: 'CLASS_ABSENCE',
+            is_excused: false,
+            enrollment: { academic_year_id: yearId },
+        },
+        _count: { enrollment_id: true },
+        orderBy: { _count: { enrollment_id: 'desc' } },
+        take: limit * 3, // over-fetch so we can filter by threshold cleanly
+    });
+
+    const poiFiltered = poiRaw.filter((r) => r._count.enrollment_id >= threshold).slice(0, limit);
+    let personsOfInterest: any[] = [];
+    if (poiFiltered.length > 0) {
+        const enrollments = await prisma.enrollment.findMany({
+            where: { id: { in: poiFiltered.map((r) => r.enrollment_id) } },
+            include: {
+                student: { select: { id: true, name: true, matricule: true } },
+                sub_class: { select: { id: true, name: true, class: { select: { id: true, name: true } } } },
+            },
+        });
+        const byId = new Map(enrollments.map((e) => [e.id, e]));
+        personsOfInterest = poiFiltered.map((r) => {
+            const e = byId.get(r.enrollment_id);
+            return {
+                enrollment_id: r.enrollment_id,
+                absence_count: r._count.enrollment_id,
+                student: e?.student ?? null,
+                sub_class: e?.sub_class
+                    ? { id: e.sub_class.id, name: e.sub_class.name, class: e.sub_class.class }
+                    : null,
+            };
+        });
+    }
+
+    const [lateTodayCount, dailyAbsencesCount, disciplinaryActionsTodayCount] = await Promise.all([
+        lateTodayCountPromise,
+        dailyAbsencesPromise,
+        actionsTodayPromise,
+    ]);
+
+    return {
+        date: dayStart.toISOString().slice(0, 10),
+        from: dayStart.toISOString().slice(0, 10),
+        to: dayEnd.toISOString().slice(0, 10),
+        academic_year_id: yearId,
+        lateTodayCount,
+        dailyAbsencesCount,
+        disciplinaryActionsTodayCount,
+        personsOfInterest,
+    };
+}

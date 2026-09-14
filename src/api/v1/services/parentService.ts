@@ -5,7 +5,8 @@ import {
     User,
     AcademicYear,
     Enrollment,
-    QuizStatus
+    QuizStatus,
+    HealthCondition
 } from '@prisma/client';
 import prisma from '../../../config/db';
 import { getCurrentAcademicYear, getAcademicYearId } from '../../../utils/academicYear';
@@ -70,8 +71,21 @@ export interface ChildDetails {
         total_expected: number;
         total_paid: number;
         outstanding_balance: number;
+        due_date?: Date | null;
+        days_overdue?: number;
+        urgency?: 'PAID' | 'OK' | 'DUE_SOON' | 'OVERDUE';
         last_payment_date?: Date;
         payment_history: PaymentRecord[];
+        items?: Array<{
+            id: number;
+            name: string;
+            description: string | null;
+            scope: string;
+            amount_expected: number;
+            amount_paid: number;
+            outstanding: number;
+            status: 'PAID' | 'PARTIAL' | 'UNPAID';
+        }>;
     };
     discipline: {
         total_issues: number;
@@ -355,9 +369,10 @@ export async function getChildDetails(parentId: number, studentId: number, acade
 
         // Calculate attendance data
         const totalSchoolDays = 180; // Academic year days
-        const absentDays = currentEnrollment?.absences?.length || 0;
-        const presentDays = totalSchoolDays - absentDays;
-        const lateDays = 5; // Placeholder
+        const allAbsences = currentEnrollment?.absences ?? [];
+        const lateDays = allAbsences.filter(a => a.absence_type === 'MORNING_LATENESS').length;
+        const absentDays = allAbsences.filter(a => a.absence_type === 'CLASS_ABSENCE').length;
+        const presentDays = Math.max(0, totalSchoolDays - absentDays);
         const attendanceRate = (presentDays / totalSchoolDays) * 100;
 
         // Process academic performance
@@ -921,8 +936,12 @@ async function calculateAttendanceAnalytics(enrollmentId: number, academicYearId
     });
 
     const totalSchoolDays = 180; // Estimate for academic year
+    const classAbsences = absences.filter(a => a.absence_type === 'CLASS_ABSENCE');
+    const lateArrivals = absences.filter(a => a.absence_type === 'MORNING_LATENESS');
+    const excused = absences.filter(a => a.is_excused);
+    const unexcused = absences.filter(a => !a.is_excused);
     const totalAbsences = absences.length;
-    const attendanceRate = ((totalSchoolDays - totalAbsences) / totalSchoolDays) * 100;
+    const attendanceRate = ((totalSchoolDays - classAbsences.length) / totalSchoolDays) * 100;
 
     // Calculate trends
     const currentMonth = new Date().getMonth();
@@ -944,11 +963,22 @@ async function calculateAttendanceAnalytics(enrollmentId: number, academicYearId
     return {
         overall_attendance_rate: attendanceRate.toFixed(1),
         total_absences: totalAbsences,
+        class_absences: classAbsences.length,
+        morning_lateness: lateArrivals.length,
+        excused_count: excused.length,
+        unexcused_count: unexcused.length,
+        at_risk: unexcused.length >= 3, // 3+ unexcused = summons trigger threshold
         monthly_trends: monthlyAttendance,
         attendance_status: getAttendanceStatus(attendanceRate),
-        recent_absences: absences.slice(-5).map(absence => ({
+        recent_absences: absences.slice(-10).reverse().map(absence => ({
+            id: absence.id,
             date: absence.created_at.toISOString().split('T')[0],
-            type: absence.absence_type
+            type: absence.absence_type,
+            is_excused: absence.is_excused,
+            excuse_reason: absence.excuse_reason ?? null,
+            excused_at: absence.excused_at ?? null,
+            makeup_status: absence.makeup_status,
+            makeup_completed_at: absence.makeup_completed_at ?? null
         }))
     };
 }
@@ -1660,9 +1690,10 @@ export async function getChildDetailsByMatricule(
     const currentEnrollment = enrollments[0];
 
     const totalSchoolDays = 180;
-    const absentDays = currentEnrollment?.absences?.length || 0;
-    const presentDays = totalSchoolDays - absentDays;
-    const lateDays = 5;
+    const allAbsences = currentEnrollment?.absences ?? [];
+    const lateDays = allAbsences.filter(a => a.absence_type === 'MORNING_LATENESS').length;
+    const absentDays = allAbsences.filter(a => a.absence_type === 'CLASS_ABSENCE').length;
+    const presentDays = Math.max(0, totalSchoolDays - absentDays);
     const attendanceRate = (presentDays / totalSchoolDays) * 100;
 
     const subjectPerformanceMap = new Map<number, SubjectPerformance>();
@@ -1699,6 +1730,20 @@ export async function getChildDetailsByMatricule(
     const fees = currentEnrollment?.school_fees?.[0];
     const totalExpected = fees?.amount_expected || 0;
     const totalPaid = fees?.amount_paid || 0;
+    const outstandingBalance = totalExpected - totalPaid;
+    const dueDate = fees?.due_date ?? null;
+    const now = new Date();
+    const daysOverdue = dueDate && outstandingBalance > 0
+        ? Math.max(0, Math.floor((now.getTime() - new Date(dueDate).getTime()) / (24 * 60 * 60 * 1000)))
+        : 0;
+    const feeUrgency: 'PAID' | 'OK' | 'DUE_SOON' | 'OVERDUE' = outstandingBalance <= 0
+        ? 'PAID'
+        : daysOverdue > 0
+            ? 'OVERDUE'
+            : dueDate && (new Date(dueDate).getTime() - now.getTime()) / (24 * 60 * 60 * 1000) <= 14
+                ? 'DUE_SOON'
+                : 'OK';
+
     const paymentHistory: PaymentRecord[] = fees?.payment_transactions?.map(t => ({
         id: t.id,
         amount: t.amount,
@@ -1707,6 +1752,12 @@ export async function getChildDetailsByMatricule(
         receipt_number: t.receipt_number || undefined,
         recorded_by: t.recorded_by?.name || 'Unknown'
     })) || [];
+
+    // Itemized fee breakdown (tuition vs transport vs PTA etc.)
+    // Fee items match the student's academic year via ALL / CLASS / SUBCLASS / STUDENT scope.
+    const feeItemsBreakdown = currentEnrollment
+        ? await buildFeeItemsBreakdown(currentEnrollment.id, student.id, currentEnrollment.class_id, currentEnrollment.sub_class_id, currentEnrollment.academic_year_id)
+        : [];
 
     const disciplineRecords: DisciplineRecord[] = currentEnrollment?.discipline_issues?.map(i => ({
         id: i.id,
@@ -1749,9 +1800,13 @@ export async function getChildDetailsByMatricule(
         fees: {
             total_expected: totalExpected,
             total_paid: totalPaid,
-            outstanding_balance: totalExpected - totalPaid,
+            outstanding_balance: outstandingBalance,
+            due_date: dueDate,
+            days_overdue: daysOverdue,
+            urgency: feeUrgency,
             last_payment_date: paymentHistory[0]?.payment_date,
-            payment_history: paymentHistory
+            payment_history: paymentHistory,
+            items: feeItemsBreakdown
         },
         discipline: {
             total_issues: disciplineRecords.length,
@@ -1906,4 +1961,934 @@ export async function sendMessageToStaffFromMatricule(
             content: data.message
         }
     });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PARENT INBOX (threading + read receipts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fire an in-app notification to a receiver ONLY if they currently hold the
+ * PARENT role. Used at generic staff-side Message.create sites where we can't
+ * cheaply tell whether the receiver is a parent or another staff member — the
+ * role check keeps the notification narrowly scoped to the parent inbox
+ * feature. Failures are swallowed so notification hiccups can never break the
+ * underlying message-send flow.
+ */
+export async function notifyIfReceiverIsParent(
+    receiverId: number,
+    senderId: number,
+    messageId: number,
+    subject: string,
+    senderName?: string
+): Promise<void> {
+    try {
+        const isParent = await prisma.userRole.findFirst({
+            where: { user_id: receiverId, role: 'PARENT' as any },
+            select: { id: true },
+        });
+        if (!isParent) return;
+        const title = senderName ? `New message from ${senderName}` : 'New message';
+        await notificationService.sendNotification({
+            user_id: receiverId,
+            sender_id: senderId,
+            title,
+            message: subject ? `${title}: ${subject}` : title,
+            category: 'GENERAL',
+            priority: 'HIGH',
+            entity_type: 'Message',
+            entity_id: messageId,
+            action_url: `/parents/messages/${messageId}`,
+        });
+    } catch (err) {
+        console.error('notifyIfReceiverIsParent failed:', err);
+    }
+}
+
+/**
+ * Paginated inbox for the parent linked to `matricule`. Returns messages the
+ * parent RECEIVED, newest first, with sender name + reply count. Set
+ * `unreadOnly` to filter to messages the parent has not yet marked as read.
+ */
+export async function getParentInboxByMatricule(
+    matricule: string,
+    opts: { page?: number; limit?: number; unreadOnly?: boolean } = {}
+): Promise<{ data: any[]; meta: { total: number; page: number; limit: number; totalPages: number } }> {
+    const parentId = await resolveLinkedParentIdByMatricule(matricule);
+    const page = Math.max(1, opts.page ?? 1);
+    const limit = Math.min(100, Math.max(1, opts.limit ?? 20));
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.MessageWhereInput = {
+        receiver_id: parentId,
+        deleted_by_receiver: false,
+        ...(opts.unreadOnly ? { read_at: null } : {}),
+    };
+
+    const [total, rows] = await Promise.all([
+        prisma.message.count({ where }),
+        prisma.message.findMany({
+            where,
+            orderBy: { created_at: 'desc' },
+            skip,
+            take: limit,
+            include: {
+                sender: { select: { id: true, name: true, matricule: true } },
+                _count: { select: { replies: true } },
+            },
+        }),
+    ]);
+
+    const data = rows.map(row => ({
+        id: row.id,
+        subject: row.subject,
+        content: row.content,
+        sender_id: row.sender_id,
+        sender_name: row.sender?.name ?? null,
+        sender_matricule: row.sender?.matricule ?? null,
+        parent_message_id: row.parent_message_id,
+        read_at: row.read_at,
+        status: row.status,
+        created_at: row.created_at,
+        reply_count: row._count?.replies ?? 0,
+    }));
+
+    return {
+        data,
+        meta: {
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit) || 1,
+        },
+    };
+}
+
+/**
+ * Reply to an existing message. The parent must be either the sender or the
+ * receiver of the referenced message. The reply is written with
+ * sender_id = parent, receiver_id = the OTHER party on the original thread,
+ * subject prefixed with `Re: ` (only once) and parent_message_id linking back.
+ */
+export async function replyToMessageAsParent(
+    matricule: string,
+    messageId: number,
+    body: string
+): Promise<any> {
+    if (!body || !body.trim()) {
+        const err: any = new Error('Reply body is required');
+        err.statusCode = 400;
+        throw err;
+    }
+    const parentId = await resolveLinkedParentIdByMatricule(matricule);
+    const original = await prisma.message.findUnique({
+        where: { id: messageId },
+        include: { sender: { select: { id: true, name: true } } },
+    });
+    if (!original) {
+        const err: any = new Error('Message not found');
+        err.statusCode = 404;
+        throw err;
+    }
+    if (original.sender_id !== parentId && original.receiver_id !== parentId) {
+        const err: any = new Error('Not authorized to reply to this message');
+        err.statusCode = 403;
+        throw err;
+    }
+
+    const otherPartyId = original.sender_id === parentId ? original.receiver_id : original.sender_id;
+    const rePrefixed = /^re:\s*/i.test(original.subject)
+        ? original.subject
+        : `Re: ${original.subject}`;
+
+    return prisma.message.create({
+        data: {
+            sender_id: parentId,
+            receiver_id: otherPartyId,
+            subject: rePrefixed,
+            content: body.trim(),
+            parent_message_id: original.id,
+        },
+    });
+}
+
+/**
+ * Mark an incoming message as read. Only the receiver can mark. Idempotent —
+ * repeated calls just refresh read_at.
+ */
+export async function markParentMessageAsRead(
+    matricule: string,
+    messageId: number
+): Promise<any> {
+    const parentId = await resolveLinkedParentIdByMatricule(matricule);
+    const msg = await prisma.message.findUnique({
+        where: { id: messageId },
+        select: { id: true, receiver_id: true },
+    });
+    if (!msg) {
+        const err: any = new Error('Message not found');
+        err.statusCode = 404;
+        throw err;
+    }
+    if (msg.receiver_id !== parentId) {
+        const err: any = new Error('Not authorized to mark this message as read');
+        err.statusCode = 403;
+        throw err;
+    }
+    return prisma.message.update({
+        where: { id: messageId },
+        data: { read_at: new Date(), status: 'READ' as any },
+    });
+}
+
+/**
+ * Return the full thread for a message: the target message, its ancestor
+ * chain (walked via parent_message_id up to the root), and its direct
+ * replies. The parent must be either the sender or receiver of the target
+ * message.
+ */
+export async function getParentMessageThread(
+    matricule: string,
+    messageId: number
+): Promise<{ message: any; ancestors: any[]; replies: any[] }> {
+    const parentId = await resolveLinkedParentIdByMatricule(matricule);
+
+    const senderSelect = { select: { id: true, name: true, matricule: true } };
+    const receiverSelect = { select: { id: true, name: true, matricule: true } };
+
+    const target = await prisma.message.findUnique({
+        where: { id: messageId },
+        include: { sender: senderSelect, receiver: receiverSelect },
+    });
+    if (!target) {
+        const err: any = new Error('Message not found');
+        err.statusCode = 404;
+        throw err;
+    }
+    if (target.sender_id !== parentId && target.receiver_id !== parentId) {
+        const err: any = new Error('Not authorized to view this thread');
+        err.statusCode = 403;
+        throw err;
+    }
+
+    // Walk ancestors up via parent_message_id. Guard against pathological
+    // loops with a hard cap.
+    const ancestors: any[] = [];
+    let cursor = target.parent_message_id;
+    const guard = new Set<number>();
+    while (cursor && !guard.has(cursor) && ancestors.length < 50) {
+        guard.add(cursor);
+        const anc: any = await prisma.message.findUnique({
+            where: { id: cursor },
+            include: { sender: senderSelect, receiver: receiverSelect },
+        });
+        if (!anc) break;
+        ancestors.unshift(anc);
+        cursor = anc.parent_message_id;
+    }
+
+    const replies = await prisma.message.findMany({
+        where: { parent_message_id: target.id },
+        orderBy: { created_at: 'asc' },
+        include: { sender: senderSelect, receiver: receiverSelect },
+    });
+
+    return { message: target, ancestors, replies };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FEE ITEMS BREAKDOWN
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function buildFeeItemsBreakdown(
+    enrollmentId: number,
+    studentId: number,
+    classId: number | null,
+    subClassId: number | null,
+    academicYearId: number
+) {
+    const items = await prisma.feeItem.findMany({
+        where: {
+            academic_year_id: academicYearId,
+            is_active: true,
+            OR: [
+                { scope: 'ALL' },
+                ...(classId ? [{ scope: 'CLASS' as const, class_id: classId }] : []),
+                ...(subClassId ? [{ scope: 'SUBCLASS' as const, sub_class_id: subClassId }] : []),
+                { scope: 'STUDENT' as const, student_id: studentId },
+            ],
+        },
+        orderBy: { id: 'asc' },
+    });
+
+    if (items.length === 0) return [];
+
+    const payments = await prisma.feeItemPayment.findMany({
+        where: {
+            enrollment_id: enrollmentId,
+            fee_item_id: { in: items.map(i => i.id) },
+        },
+    });
+
+    return items.map(item => {
+        const paidForItem = payments
+            .filter(p => p.fee_item_id === item.id)
+            .reduce((sum, p) => sum + p.amount, 0);
+        const outstanding = Math.max(0, item.amount - paidForItem);
+        const status: 'PAID' | 'PARTIAL' | 'UNPAID' =
+            outstanding <= 0 ? 'PAID' : paidForItem > 0 ? 'PARTIAL' : 'UNPAID';
+        return {
+            id: item.id,
+            name: item.name,
+            description: item.description ?? null,
+            scope: item.scope as string,
+            amount_expected: item.amount,
+            amount_paid: paidForItem,
+            outstanding,
+            status,
+        };
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DISCIPLINE DETAIL ENDPOINTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function resolveEnrollmentIdByMatricule(
+    matricule: string,
+    academicYearId?: number
+): Promise<{ enrollmentId: number; academicYearId: number }> {
+    const student = await resolveStudentByMatricule(matricule);
+    const yearId = academicYearId ?? (await getCurrentAcademicYear())?.id;
+    const enrollment = await prisma.enrollment.findFirst({
+        where: {
+            student_id: student.id,
+            ...(yearId ? { academic_year_id: yearId } : {}),
+        },
+        orderBy: { created_at: 'desc' },
+    });
+    if (!enrollment) {
+        const err: any = new Error('No enrollment found for this student in the requested academic year');
+        err.statusCode = 404;
+        throw err;
+    }
+    return { enrollmentId: enrollment.id, academicYearId: enrollment.academic_year_id };
+}
+
+export async function getChildWarningsByMatricule(matricule: string, academicYearId?: number) {
+    const { enrollmentId } = await resolveEnrollmentIdByMatricule(matricule, academicYearId);
+    const warnings = await prisma.studentWarning.findMany({
+        where: { enrollment_id: enrollmentId },
+        include: { issued_by: { select: { id: true, name: true } } },
+        orderBy: { created_at: 'desc' },
+    });
+    const activeCount = warnings.filter(w => !w.resolved).length;
+    return {
+        summary: {
+            total: warnings.length,
+            active: activeCount,
+            resolved: warnings.length - activeCount,
+            highest_level: warnings.reduce((max, w) => Math.max(max, w.warning_level), 0),
+        },
+        items: warnings.map(w => ({
+            id: w.id,
+            warning_level: w.warning_level,
+            reason: w.reason,
+            description: w.description,
+            trigger_absence_count: w.trigger_absence_count,
+            issued_by: w.issued_by?.name ?? null,
+            resolved: w.resolved,
+            resolved_at: w.resolved_at,
+            resolved_notes: w.resolved_notes,
+            created_at: w.created_at,
+        })),
+    };
+}
+
+export async function getChildSummonsByMatricule(matricule: string, academicYearId?: number) {
+    const { enrollmentId } = await resolveEnrollmentIdByMatricule(matricule, academicYearId);
+    const summons = await prisma.parentSummons.findMany({
+        where: { enrollment_id: enrollmentId },
+        include: {
+            created_by: { select: { id: true, name: true } },
+            parent: { select: { id: true, name: true } },
+        },
+        orderBy: { created_at: 'desc' },
+    });
+    const now = new Date();
+    return {
+        summary: {
+            total: summons.length,
+            pending: summons.filter(s => s.status === 'PENDING' || s.status === 'SCHEDULED').length,
+            action_required: summons.some(s =>
+                (s.status === 'PENDING' || s.status === 'SCHEDULED') &&
+                (!s.scheduled_date || new Date(s.scheduled_date).getTime() >= now.getTime())
+            ),
+        },
+        items: summons.map(s => ({
+            id: s.id,
+            reason: s.reason,
+            trigger_type: s.trigger_type,
+            scheduled_date: s.scheduled_date,
+            status: s.status,
+            attended: s.attended,
+            meeting_notes: s.meeting_notes,
+            parent_name: s.parent?.name ?? null,
+            created_by: s.created_by?.name ?? null,
+            created_at: s.created_at,
+        })),
+    };
+}
+
+export async function getChildDisciplinaryActionsByMatricule(matricule: string, academicYearId?: number) {
+    const { enrollmentId } = await resolveEnrollmentIdByMatricule(matricule, academicYearId);
+    const actions = await prisma.disciplinaryAction.findMany({
+        where: { enrollment_id: enrollmentId },
+        include: {
+            decided_by: { select: { id: true, name: true } },
+            discipline_issue: { select: { id: true, issue_type: true, description: true } },
+        },
+        orderBy: { created_at: 'desc' },
+    });
+    return {
+        summary: {
+            total: actions.length,
+            active: actions.filter(a => a.status === 'ACTIVE').length,
+            pending: actions.filter(a => a.status === 'PENDING').length,
+            completed: actions.filter(a => a.status === 'COMPLETED').length,
+        },
+        items: actions.map(a => ({
+            id: a.id,
+            action_type: a.action_type,
+            status: a.status,
+            days: a.days,
+            start_date: a.start_date,
+            end_date: a.end_date,
+            reason: a.reason,
+            notes: a.notes,
+            decided_by: a.decided_by?.name ?? null,
+            linked_issue: a.discipline_issue ? {
+                id: a.discipline_issue.id,
+                issue_type: a.discipline_issue.issue_type,
+                description: a.discipline_issue.description,
+            } : null,
+            created_at: a.created_at,
+        })),
+    };
+}
+
+export async function getChildSaturdayPunishmentsByMatricule(matricule: string, academicYearId?: number) {
+    const { enrollmentId } = await resolveEnrollmentIdByMatricule(matricule, academicYearId);
+    const punishments = await prisma.saturdayPunishment.findMany({
+        where: { enrollment_id: enrollmentId },
+        include: { assigned_by: { select: { id: true, name: true } } },
+        orderBy: { created_at: 'desc' },
+    });
+    return {
+        summary: {
+            total: punishments.length,
+            pending: punishments.filter(p => p.status === 'PENDING').length,
+            served: punishments.filter(p => p.status === 'SERVED').length,
+        },
+        items: punishments.map(p => ({
+            id: p.id,
+            reason: p.reason,
+            scheduled_date: p.scheduled_date,
+            served_date: p.served_date,
+            status: p.status,
+            notes: p.notes,
+            assigned_by: p.assigned_by?.name ?? null,
+            created_at: p.created_at,
+        })),
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NURSE VISIT LOG (paginated, portal-mode)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function getChildNurseVisitsByMatricule(
+    matricule: string,
+    opts: { page?: number; limit?: number; academicYearId?: number } = {}
+) {
+    const student = await resolveStudentByMatricule(matricule);
+    const page = Math.max(1, Number(opts.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(opts.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    // NurseVisitLog is linked via enrollment (not student directly), so we
+    // resolve the child's enrollment ids first and query by them.
+    const enrollments = await prisma.enrollment.findMany({
+        where: {
+            student_id: student.id,
+            ...(opts.academicYearId ? { academic_year_id: opts.academicYearId } : {}),
+        },
+        select: { id: true },
+    });
+    const enrollmentIds = enrollments.map(e => e.id);
+
+    const where: Prisma.NurseVisitLogWhereInput = enrollmentIds.length > 0
+        ? { enrollment_id: { in: enrollmentIds } }
+        : { id: -1 }; // no enrollments → return empty
+
+    const [total, visits] = await Promise.all([
+        prisma.nurseVisitLog.count({ where }),
+        prisma.nurseVisitLog.findMany({
+            where,
+            include: {
+                logged_by: { select: { id: true, name: true } },
+                period: { select: { id: true, name: true, day_of_week: true, start_time: true, end_time: true } },
+            },
+            orderBy: { visit_date: 'desc' },
+            skip,
+            take: limit,
+        }),
+    ]);
+
+    return {
+        student: {
+            id: student.id,
+            matricule: student.matricule,
+            name: student.name,
+            health_conditions: student.health_conditions,
+            medical_notes: student.medical_notes,
+        },
+        meta: {
+            page,
+            limit,
+            total,
+            total_pages: Math.max(1, Math.ceil(total / limit)),
+        },
+        items: visits.map(v => ({
+            id: v.id,
+            visit_date: v.visit_date,
+            reason: v.reason,
+            treatment_given: v.treatment_given,
+            medication_given: v.medication_given,
+            sent_home: v.sent_home,
+            notes: v.notes,
+            period: v.period ? {
+                name: v.period.name,
+                day_of_week: v.period.day_of_week,
+                start_time: v.period.start_time,
+                end_time: v.period.end_time,
+            } : null,
+            logged_by: v.logged_by?.name ?? null,
+        })),
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TIMETABLE (weekly schedule)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function getChildTimetableByMatricule(matricule: string, academicYearId?: number) {
+    const student = await resolveStudentByMatricule(matricule);
+    const yearId = academicYearId ?? (await getCurrentAcademicYear())?.id;
+    if (!yearId) {
+        const err: any = new Error('No academic year available');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const enrollment = await prisma.enrollment.findFirst({
+        where: { student_id: student.id, academic_year_id: yearId },
+        include: {
+            sub_class: { select: { id: true, name: true, class: { select: { id: true, name: true } } } },
+        },
+        orderBy: { created_at: 'desc' },
+    });
+
+    if (!enrollment || !enrollment.sub_class_id) {
+        return {
+            student: { id: student.id, matricule: student.matricule, name: student.name },
+            enrollment: null,
+            periods: [],
+            days: [],
+        };
+    }
+
+    const teacherPeriods = await prisma.teacherPeriod.findMany({
+        where: {
+            sub_class_id: enrollment.sub_class_id,
+            academic_year_id: yearId,
+        },
+        include: {
+            subject: { select: { id: true, name: true, category: true } },
+            teacher: { select: { id: true, name: true, matricule: true } },
+            period: {
+                select: {
+                    id: true,
+                    name: true,
+                    day_of_week: true,
+                    start_time: true,
+                    end_time: true,
+                    type: true,
+                    sequence: true,
+                },
+            },
+        },
+    });
+
+    const rows = teacherPeriods
+        .filter(tp => !!tp.period)
+        .map(tp => ({
+            teacher_period_id: tp.id,
+            day_of_week: tp.period!.day_of_week,
+            period_name: tp.period!.name,
+            period_sequence: tp.period!.sequence,
+            start_time: tp.period!.start_time,
+            end_time: tp.period!.end_time,
+            period_type: tp.period!.type,
+            subject: tp.subject ? { id: tp.subject.id, name: tp.subject.name, category: tp.subject.category } : null,
+            teacher: tp.teacher ? { id: tp.teacher.id, name: tp.teacher.name, matricule: tp.teacher.matricule } : null,
+        }));
+
+    const dayOrder = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
+    rows.sort((a, b) => {
+        const da = dayOrder.indexOf(a.day_of_week);
+        const db = dayOrder.indexOf(b.day_of_week);
+        if (da !== db) return da - db;
+        if (a.period_sequence !== b.period_sequence) return a.period_sequence - b.period_sequence;
+        return a.start_time.localeCompare(b.start_time);
+    });
+
+    const grouped: Record<string, typeof rows> = {};
+    for (const r of rows) {
+        (grouped[r.day_of_week] ||= []).push(r);
+    }
+
+    return {
+        student: { id: student.id, matricule: student.matricule, name: student.name },
+        enrollment: {
+            academic_year_id: yearId,
+            class_name: enrollment.sub_class!.class?.name ?? null,
+            subclass_name: enrollment.sub_class!.name,
+        },
+        periods: rows,
+        days: dayOrder
+            .filter(d => grouped[d]?.length)
+            .map(d => ({ day: d, periods: grouped[d] })),
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-CHILD (authenticated) — GET /parents/me/children
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function getLinkedChildrenForParent(parentId: number, academicYearId?: number) {
+    const yearId = academicYearId ?? (await getCurrentAcademicYear())?.id;
+
+    const links = await prisma.parentStudent.findMany({
+        where: { parent_id: parentId },
+        include: {
+            student: {
+                include: {
+                    enrollments: {
+                        where: yearId ? { academic_year_id: yearId } : undefined,
+                        orderBy: { created_at: 'desc' },
+                        include: {
+                            sub_class: { include: { class: true } },
+                            school_fees: true,
+                            absences: true,
+                            discipline_issues: true,
+                        },
+                    },
+                },
+            },
+        },
+    });
+
+    let familyTotalExpected = 0;
+    let familyTotalPaid = 0;
+    let familyTotalOutstanding = 0;
+    let familyActiveDisciplineIssues = 0;
+    let familyUnexcusedAbsences = 0;
+
+    const children = links.map(link => {
+        const s = link.student;
+        const enr = s.enrollments[0];
+        const fees = enr?.school_fees?.[0];
+        const totalExpected = fees?.amount_expected ?? 0;
+        const totalPaid = fees?.amount_paid ?? 0;
+        const outstanding = Math.max(0, totalExpected - totalPaid);
+        const unexcused = enr?.absences?.filter(a => !a.is_excused).length ?? 0;
+        const disciplineIssues = enr?.discipline_issues?.length ?? 0;
+
+        familyTotalExpected += totalExpected;
+        familyTotalPaid += totalPaid;
+        familyTotalOutstanding += outstanding;
+        familyActiveDisciplineIssues += disciplineIssues;
+        familyUnexcusedAbsences += unexcused;
+
+        const now = new Date();
+        const dueDate = fees?.due_date ?? null;
+        const daysOverdue = dueDate && outstanding > 0
+            ? Math.max(0, Math.floor((now.getTime() - new Date(dueDate).getTime()) / (24 * 60 * 60 * 1000)))
+            : 0;
+
+        return {
+            student_id: s.id,
+            matricule: s.matricule,
+            name: s.name,
+            gender: s.gender,
+            date_of_birth: s.date_of_birth,
+            relationship: link.relationship,
+            enrollment: enr ? {
+                academic_year_id: enr.academic_year_id,
+                class_name: enr.sub_class?.class?.name ?? null,
+                subclass_name: enr.sub_class?.name ?? null,
+            } : null,
+            fees: {
+                total_expected: totalExpected,
+                total_paid: totalPaid,
+                outstanding,
+                due_date: dueDate,
+                days_overdue: daysOverdue,
+                urgency: outstanding <= 0
+                    ? 'PAID'
+                    : daysOverdue > 0
+                        ? 'OVERDUE'
+                        : 'OK',
+            },
+            attendance: {
+                total_absences: enr?.absences?.length ?? 0,
+                unexcused_absences: unexcused,
+                at_risk: unexcused >= 3,
+            },
+            discipline: {
+                active_issues: disciplineIssues,
+            },
+        };
+    });
+
+    return {
+        parent_id: parentId,
+        academic_year_id: yearId ?? null,
+        family_summary: {
+            total_children: children.length,
+            fees: {
+                total_expected: familyTotalExpected,
+                total_paid: familyTotalPaid,
+                outstanding: familyTotalOutstanding,
+            },
+            attendance: {
+                total_unexcused_absences: familyUnexcusedAbsences,
+                any_child_at_risk: children.some(c => c.attendance.at_risk),
+            },
+            discipline: {
+                total_active_issues: familyActiveDisciplineIssues,
+            },
+        },
+        children,
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SELF-SERVICE PROFILE UPDATES (portal — matricule-gated, unauthenticated)
+//
+// Parents can maintain their own contact block and a small demographic slice
+// of the child's record. Email is deliberately excluded from the parent-side
+// patch because it is the login identifier — changing it must go through
+// bursar/admin flows so the audit trail is preserved.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const trimOrUndefined = (value: unknown): string | undefined => {
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : undefined;
+};
+
+const sanitizeUser = (user: User) => {
+    const { password, ...safe } = user;
+    return safe;
+};
+
+/**
+ * Validate that a phone-like string contains at least 8 digits.
+ * Local formatting characters (spaces, dashes, +, parens) are allowed but
+ * ignored for the digit count.
+ */
+const isValidPhone = (value: string): boolean => {
+    const digits = value.replace(/\D/g, '');
+    return digits.length >= 8;
+};
+
+export interface ParentContactPatch {
+    phone?: string;
+    whatsapp_number?: string;
+    address?: string;
+}
+
+/**
+ * Update the contact info (phone, whatsapp, address) of the FIRST linked
+ * parent for the given child matricule. Returns the sanitized user profile
+ * (password stripped). Email is intentionally NOT updatable here.
+ */
+export async function updateParentContactFromMatricule(
+    matricule: string,
+    patch: ParentContactPatch
+): Promise<Omit<User, 'password'>> {
+    const parentId = await resolveLinkedParentIdByMatricule(matricule);
+
+    const data: Prisma.UserUpdateInput = {};
+
+    if (patch.phone !== undefined) {
+        const phone = trimOrUndefined(patch.phone);
+        if (!phone || !isValidPhone(phone)) {
+            const err: any = new Error('phone must contain at least 8 digits');
+            err.statusCode = 400;
+            throw err;
+        }
+        data.phone = phone;
+    }
+
+    if (patch.whatsapp_number !== undefined) {
+        // Allow explicit clearing via empty string
+        if (typeof patch.whatsapp_number === 'string' && patch.whatsapp_number.trim() === '') {
+            data.whatsapp_number = null;
+        } else {
+            const whatsapp = trimOrUndefined(patch.whatsapp_number);
+            if (!whatsapp || !isValidPhone(whatsapp)) {
+                const err: any = new Error('whatsappNumber must contain at least 8 digits');
+                err.statusCode = 400;
+                throw err;
+            }
+            data.whatsapp_number = whatsapp;
+        }
+    }
+
+    if (patch.address !== undefined) {
+        const address = trimOrUndefined(patch.address);
+        if (!address) {
+            const err: any = new Error('address must not be empty');
+            err.statusCode = 400;
+            throw err;
+        }
+        data.address = address;
+    }
+
+    if (Object.keys(data).length === 0) {
+        const err: any = new Error('No updatable fields provided (phone, whatsappNumber, address)');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const updated = await prisma.user.update({
+        where: { id: parentId },
+        data
+    });
+
+    return sanitizeUser(updated);
+}
+
+export interface ChildProfilePatch {
+    residence?: string;
+    health_conditions?: HealthCondition[];
+    medical_notes?: string | null;
+}
+
+const VALID_HEALTH_CONDITIONS = new Set<string>([
+    'SICKLE_CELL',
+    'ASTHMATIC',
+    'EPILEPTIC',
+    'DIABETIC',
+    'ALLERGY',
+    'HYPERTENSION',
+    'OTHER'
+]);
+
+/**
+ * Update a small demographic slice of the child's record: residence,
+ * health_conditions, medical_notes. Empty-string medical_notes clears
+ * the field. Every element of health_conditions must be a valid enum value.
+ */
+export async function updateChildProfileFromMatricule(
+    matricule: string,
+    patch: ChildProfilePatch
+): Promise<Student> {
+    const student = await resolveStudentByMatricule(matricule);
+
+    const data: Prisma.StudentUpdateInput = {};
+
+    if (patch.residence !== undefined) {
+        const residence = trimOrUndefined(patch.residence);
+        if (!residence) {
+            const err: any = new Error('residence must not be empty');
+            err.statusCode = 400;
+            throw err;
+        }
+        data.residence = residence;
+    }
+
+    if (patch.health_conditions !== undefined) {
+        if (!Array.isArray(patch.health_conditions)) {
+            const err: any = new Error('healthConditions must be an array');
+            err.statusCode = 400;
+            throw err;
+        }
+        const invalid = patch.health_conditions.filter(
+            c => typeof c !== 'string' || !VALID_HEALTH_CONDITIONS.has(c)
+        );
+        if (invalid.length) {
+            const err: any = new Error(
+                `Invalid healthConditions: ${invalid.join(', ')}. ` +
+                `Allowed: ${Array.from(VALID_HEALTH_CONDITIONS).join(', ')}`
+            );
+            err.statusCode = 400;
+            throw err;
+        }
+        // Dedupe while preserving order
+        const seen = new Set<HealthCondition>();
+        const deduped: HealthCondition[] = [];
+        for (const c of patch.health_conditions) {
+            if (!seen.has(c)) { seen.add(c); deduped.push(c); }
+        }
+        data.health_conditions = { set: deduped };
+    }
+
+    if (patch.medical_notes !== undefined) {
+        if (patch.medical_notes === null || (typeof patch.medical_notes === 'string' && patch.medical_notes.trim() === '')) {
+            data.medical_notes = null;
+        } else if (typeof patch.medical_notes === 'string') {
+            data.medical_notes = patch.medical_notes.trim();
+        } else {
+            const err: any = new Error('medicalNotes must be a string or null');
+            err.statusCode = 400;
+            throw err;
+        }
+    }
+
+    if (Object.keys(data).length === 0) {
+        const err: any = new Error('No updatable fields provided (residence, healthConditions, medicalNotes)');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    return prisma.student.update({
+        where: { id: student.id },
+        data
+    });
+}
+
+/**
+ * Aggregate parent contact block + student demographic block for the parent
+ * portal's profile screen (two editable panels rendered side by side).
+ */
+export async function getParentAndChildProfileFromMatricule(matricule: string): Promise<{
+    parent: Omit<User, 'password'>;
+    student: Student;
+}> {
+    const student = await resolveStudentByMatricule(matricule);
+    const parentId = await resolveLinkedParentIdByMatricule(matricule);
+    const parent = await prisma.user.findUnique({ where: { id: parentId } });
+    if (!parent) {
+        const err: any = new Error('Linked parent user not found');
+        err.statusCode = 404;
+        throw err;
+    }
+    return {
+        parent: sanitizeUser(parent),
+        student
+    };
 }

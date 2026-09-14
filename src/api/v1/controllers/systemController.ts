@@ -1,5 +1,40 @@
 import { Request, Response } from 'express';
 import * as systemService from '../services/systemService';
+import prisma from '../../../config/db';
+import { SyncManager } from '../../../sync/sync-manager';
+import { NetworkChecker } from '../../../sync/network-checker';
+
+// Module-scope singletons. SyncManager is stateless with respect to a single
+// performSync() call, so re-using one instance across requests is safe and
+// avoids re-instantiating dependencies (DatabaseSyncer, NetworkChecker) on
+// every admin call.
+const adminSyncManager = new SyncManager();
+const adminNetworkChecker = new NetworkChecker();
+
+// Guard so two overlapping /system/sync/trigger calls don't fire two full
+// bidirectional passes at once — a Super Manager double-clicking the button
+// would otherwise race two workers against the same peer.
+let syncInFlight: Promise<any> | null = null;
+
+function parseSyncLogRow(row: any) {
+    return {
+        id: row.id,
+        syncId: row.sync_id,
+        startTime: row.start_time,
+        endTime: row.end_time,
+        status: row.status,
+        direction: row.direction,
+        recordsProcessed: row.records_processed,
+        conflicts: safeParseJson(row.conflicts, []),
+        errors: safeParseJson(row.errors, []),
+        createdAt: row.created_at
+    };
+}
+
+function safeParseJson<T>(raw: string | null | undefined, fallback: T): T {
+    if (!raw) return fallback;
+    try { return JSON.parse(raw) as T; } catch { return fallback; }
+}
 
 /**
  * Get current system settings
@@ -301,6 +336,116 @@ export async function toggleMaintenanceMode(req: Request, res: Response): Promis
         res.status(500).json({
             success: false,
             error: 'Failed to toggle maintenance mode'
+        });
+    }
+}
+
+/**
+ * Get database synchronization status for the Super Manager console.
+ * Reports the most recent sync run (from SyncLog) plus live peer reachability
+ * and the auto-sync schedule configured via env.
+ */
+export async function getSyncStatus(req: Request, res: Response): Promise<void> {
+    try {
+        const lastLogRow = await prisma.syncLog.findFirst({
+            orderBy: { start_time: 'desc' }
+        });
+
+        const isOnline = await adminNetworkChecker.isOnline();
+
+        const autoSyncIntervalMinutes = Number.parseInt(process.env.AUTO_SYNC_INTERVAL || '5', 10);
+        const remotePeerConfigured = Boolean(process.env.REMOTE_SYNC_URL);
+
+        res.status(200).json({
+            success: true,
+            data: {
+                lastSync: lastLogRow ? parseSyncLogRow(lastLogRow) : null,
+                isOnline,
+                remotePeerConfigured,
+                autoSyncEnabled: Number.isFinite(autoSyncIntervalMinutes) && autoSyncIntervalMinutes > 0,
+                autoSyncIntervalMinutes: Number.isFinite(autoSyncIntervalMinutes) ? autoSyncIntervalMinutes : null,
+                serverId: process.env.SERVER_ID || 'local',
+                syncInFlight: syncInFlight !== null
+            }
+        });
+    } catch (error: any) {
+        console.error('Error fetching sync status:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch sync status'
+        });
+    }
+}
+
+/**
+ * Manually trigger a bidirectional sync run with the remote peer.
+ * Coalesces overlapping requests so a double-click does not fire two passes.
+ */
+export async function triggerSync(req: Request, res: Response): Promise<void> {
+    try {
+        if (!process.env.REMOTE_SYNC_URL) {
+            res.status(409).json({
+                success: false,
+                error: 'REMOTE_SYNC_URL is not configured on this server'
+            });
+            return;
+        }
+
+        if (!syncInFlight) {
+            syncInFlight = adminSyncManager.performSync().finally(() => {
+                syncInFlight = null;
+            });
+        }
+
+        const syncLog = await syncInFlight;
+
+        res.status(200).json({
+            success: true,
+            message: 'Manual sync run finished',
+            data: {
+                syncLog: {
+                    id: syncLog.id,
+                    startTime: syncLog.startTime,
+                    endTime: syncLog.endTime,
+                    status: syncLog.status,
+                    direction: syncLog.direction,
+                    recordsProcessed: syncLog.recordsProcessed,
+                    conflicts: syncLog.conflicts,
+                    errors: syncLog.errors
+                }
+            }
+        });
+    } catch (error: any) {
+        console.error('Error triggering sync:', error);
+        res.status(500).json({
+            success: false,
+            error: error?.message || 'Failed to trigger sync'
+        });
+    }
+}
+
+/**
+ * Return recent sync runs (default 20, max 100).
+ */
+export async function getSyncLogs(req: Request, res: Response): Promise<void> {
+    try {
+        const rawLimit = Number.parseInt((req.query.limit as string) || '20', 10);
+        const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 20;
+
+        const rows = await prisma.syncLog.findMany({
+            orderBy: { start_time: 'desc' },
+            take: limit
+        });
+
+        res.status(200).json({
+            success: true,
+            data: rows.map(parseSyncLogRow)
+        });
+    } catch (error: any) {
+        console.error('Error fetching sync logs:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch sync logs'
         });
     }
 } 

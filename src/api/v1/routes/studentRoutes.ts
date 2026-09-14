@@ -99,14 +99,14 @@ router.post('/promote',
 // GET /students/:id/siblings - Return other students who share a parent
 router.get('/:id/siblings',
     authenticate,
-    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER', 'DEAN_OF_DISCIPLINE', 'TEACHER', 'BURSAR', 'SECRETARY', 'PARENT']),
+    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR', 'TEACHER', 'BURSAR', 'SECRETARY', 'PARENT']),
     studentController.getStudentSiblings
 );
 
 // GET /students/:id/previous-schools - Full history of prior schools
 router.get('/:id/previous-schools',
     authenticate,
-    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER', 'DEAN_OF_DISCIPLINE', 'BURSAR', 'SECRETARY']),
+    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR', 'BURSAR', 'SECRETARY']),
     studentController.listPreviousSchools
 );
 

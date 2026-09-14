@@ -109,8 +109,69 @@ export interface SearchPersonnelParams {
 export const PERSONNEL_ROLES: Role[] = [
     'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'CONTROLLER',
     'TEACHER', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER', 'DEAN_OF_DISCIPLINE',
+    'DISCIPLINE_COORDINATOR',
     'DEAN_OF_STUDIES', 'FEE_AUDITOR', 'SECRETARY', 'NURSE', 'GUIDANCE_COUNSELOR', 'HOD'
 ];
+
+// Roles the DISCIPLINE_COORDINATOR is allowed to manage as personnel.
+// The coordinator is a scoped personnel-management role: it can hit the same
+// /users/* endpoints as a Principal, but only against users whose entire role
+// set falls within this list. Enforced in assertPersonnelScope below so that
+// route middleware alone cannot be bypassed via API surface changes.
+export const DISCIPLINE_COORDINATOR_MANAGED_ROLES: Role[] = [
+    'DISCIPLINE_MASTER',
+    'SENIOR_DISCIPLINE_MASTER',
+    'DEAN_OF_DISCIPLINE',
+];
+
+// Roles that bypass the coordinator's target-scope filter — i.e. these are the
+// senior admins for whom /users/* is unrestricted. If the actor holds any of
+// these, no scope check is performed.
+const PERSONNEL_MANAGEMENT_BYPASS_ROLES: Role[] = [
+    'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY',
+];
+
+export async function assertPersonnelScope(actorRoles: Role[], targetUserId: number): Promise<void> {
+    if (actorRoles.some(r => PERSONNEL_MANAGEMENT_BYPASS_ROLES.includes(r))) return;
+
+    if (!actorRoles.includes('DISCIPLINE_COORDINATOR')) {
+        const err: any = new Error('Not authorized to manage this user');
+        err.statusCode = 403;
+        throw err;
+    }
+
+    const target = await prisma.user.findUnique({
+        where: { id: targetUserId },
+        include: { user_roles: { select: { role: true } } },
+    });
+    if (!target) {
+        const err: any = new Error(`User ${targetUserId} not found`);
+        err.statusCode = 404;
+        throw err;
+    }
+    const targetRoles = target.user_roles.map(r => r.role);
+    const outOfScope = targetRoles.filter(r => !DISCIPLINE_COORDINATOR_MANAGED_ROLES.includes(r));
+    if (outOfScope.length > 0) {
+        const err: any = new Error(
+            `DISCIPLINE_COORDINATOR can only manage users whose roles are within [${DISCIPLINE_COORDINATOR_MANAGED_ROLES.join(', ')}]; ` +
+            `target holds: ${outOfScope.join(', ')}`
+        );
+        err.statusCode = 403;
+        throw err;
+    }
+}
+
+export function assertRoleWithinCoordinatorScope(actorRoles: Role[], role: Role): void {
+    if (actorRoles.some(r => PERSONNEL_MANAGEMENT_BYPASS_ROLES.includes(r))) return;
+    if (!actorRoles.includes('DISCIPLINE_COORDINATOR')) return;
+    if (!DISCIPLINE_COORDINATOR_MANAGED_ROLES.includes(role)) {
+        const err: any = new Error(
+            `DISCIPLINE_COORDINATOR may only touch roles within [${DISCIPLINE_COORDINATOR_MANAGED_ROLES.join(', ')}]; refusing '${role}'`
+        );
+        err.statusCode = 403;
+        throw err;
+    }
+}
 
 const SORTABLE_FIELDS = new Set([
     'id', 'name', 'email', 'matricule', 'phone', 'gender', 'status',
@@ -546,6 +607,89 @@ export async function updateUser(id: number, data: Partial<User>): Promise<User>
             ...(normalizedStatus && { status: normalizedStatus as UserStatus })
         },
     });
+}
+
+/**
+ * Admin-driven password reset for a personnel account (non-parent).
+ * If `newPassword` is provided, the account gets that password and
+ * `must_change_password` is cleared. If omitted, the account is reset
+ * to the shared default `password123` and forced to change on next sign-in.
+ *
+ * Parent accounts must go through `POST /bursar/parents/:parentId/reset-password`
+ * to keep the parent handover flow (temp password + WhatsApp) in one place.
+ */
+const DEFAULT_PERSONNEL_TEMP_PASSWORD = 'password123';
+
+export async function resetPersonnelPassword(
+    userId: number,
+    actorId: number,
+    newPassword?: string,
+): Promise<{ user_id: number; matricule: string; name: string; must_change_password: boolean; temporary_password?: string }> {
+    const user = await prisma.user.findUnique({
+        where: { id: userId },
+        include: { user_roles: { select: { role: true } } },
+    });
+
+    if (!user) {
+        const err: any = new Error(`User with ID ${userId} not found`);
+        err.statusCode = 404;
+        throw err;
+    }
+
+    const roles = user.user_roles.map(r => r.role);
+    const isParentOnly = roles.length > 0 && roles.every(r => r === Role.PARENT);
+    if (isParentOnly) {
+        const err: any = new Error(
+            'This account is a parent — use POST /bursar/parents/:parentId/reset-password',
+        );
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const usingTemp = !newPassword;
+    const passwordToSet = newPassword ?? DEFAULT_PERSONNEL_TEMP_PASSWORD;
+    const hashed = await bcrypt.hash(passwordToSet, 10);
+
+    await prisma.user.update({
+        where: { id: user.id },
+        data: {
+            password: hashed,
+            must_change_password: usingTemp,
+        },
+    });
+
+    // Audit trail: never log the actual password — only whether the default was used.
+    try {
+        await prisma.auditLog.create({
+            data: {
+                user_id: actorId,
+                action: 'PASSWORD_RESET',
+                table_name: 'User',
+                record_id: String(user.id),
+                new_values: {
+                    target_user_id: user.id,
+                    target_matricule: user.matricule,
+                    target_roles: roles,
+                    used_default_password: usingTemp,
+                    must_change_password: usingTemp,
+                },
+            },
+        });
+    } catch (err) {
+        console.error('Audit log write failed for PASSWORD_RESET:', err);
+    }
+
+    console.log(
+        `[PERSONNEL_PASSWORD_RESET] user_id=${user.id} actor_id=${actorId} matricule=${user.matricule ?? ''} used_default=${usingTemp}`,
+    );
+
+    return {
+        user_id: user.id,
+        matricule: user.matricule ?? '',
+        name: user.name,
+        must_change_password: usingTemp,
+        ...(usingTemp && { temporary_password: DEFAULT_PERSONNEL_TEMP_PASSWORD }),
+    };
 }
 
 // Fields a user is allowed to change on their own profile via PUT /users/me.
@@ -999,6 +1143,111 @@ export async function removeDisciplineMasterFromSubclass(
             role_type: 'DISCIPLINE_MASTER',
             sub_class_id: subClassId,
             academic_year_id: yearId
+        }
+    });
+}
+
+/**
+ * Assigns a DM to every sub-class of a given Class for the target academic year.
+ * Idempotent per (user, sub_class, year): skips sub-classes already assigned.
+ */
+export async function assignDisciplineMasterToClass(
+    userId: number,
+    classId: number,
+    academicYearId?: number
+): Promise<RoleAssignment[]> {
+    const yearId = academicYearId ?? await getAcademicYearId();
+    if (!yearId) {
+        throw new Error('Academic Year ID is required but could not be determined.');
+    }
+
+    const user = await prisma.user.findFirst({
+        where: {
+            id: userId,
+            user_roles: { some: { role: Role.DISCIPLINE_MASTER } }
+        }
+    });
+    if (!user) {
+        throw new Error(`User ${userId} not found or does not have the DISCIPLINE_MASTER role.`);
+    }
+
+    const klass = await prisma.class.findUnique({
+        where: { id: classId },
+        include: { sub_classes: { select: { id: true } } }
+    });
+    if (!klass) {
+        throw new Error(`Class ${classId} not found.`);
+    }
+    if (klass.sub_classes.length === 0) {
+        return [];
+    }
+
+    // Find existing assignments to avoid duplicate creates
+    const existing = await prisma.roleAssignment.findMany({
+        where: {
+            user_id: userId,
+            role_type: 'DISCIPLINE_MASTER',
+            academic_year_id: yearId,
+            sub_class_id: { in: klass.sub_classes.map(sc => sc.id) }
+        },
+        select: { sub_class_id: true }
+    });
+    const existingIds = new Set(existing.map(e => e.sub_class_id));
+    const toCreate = klass.sub_classes.filter(sc => !existingIds.has(sc.id));
+
+    if (toCreate.length === 0) {
+        return prisma.roleAssignment.findMany({
+            where: {
+                user_id: userId,
+                role_type: 'DISCIPLINE_MASTER',
+                academic_year_id: yearId,
+                sub_class_id: { in: klass.sub_classes.map(sc => sc.id) }
+            }
+        });
+    }
+
+    await prisma.roleAssignment.createMany({
+        data: toCreate.map(sc => ({
+            user_id: userId,
+            role_type: 'DISCIPLINE_MASTER' as const,
+            sub_class_id: sc.id,
+            academic_year_id: yearId
+        }))
+    });
+
+    return prisma.roleAssignment.findMany({
+        where: {
+            user_id: userId,
+            role_type: 'DISCIPLINE_MASTER',
+            academic_year_id: yearId,
+            sub_class_id: { in: klass.sub_classes.map(sc => sc.id) }
+        }
+    });
+}
+
+/**
+ * Removes every DM sub-class assignment under a Class for the given year.
+ */
+export async function removeDisciplineMasterFromClass(
+    userId: number,
+    classId: number,
+    academicYearId?: number
+): Promise<void> {
+    const yearId = academicYearId ?? await getAcademicYearId();
+    if (!yearId) return;
+
+    const klass = await prisma.class.findUnique({
+        where: { id: classId },
+        include: { sub_classes: { select: { id: true } } }
+    });
+    if (!klass || klass.sub_classes.length === 0) return;
+
+    await prisma.roleAssignment.deleteMany({
+        where: {
+            user_id: userId,
+            role_type: 'DISCIPLINE_MASTER',
+            academic_year_id: yearId,
+            sub_class_id: { in: klass.sub_classes.map(sc => sc.id) }
         }
     });
 }
