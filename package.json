@@ -4,7 +4,7 @@
   "description": "School Management System with Database Synchronization",
   "main": "dist/server.js",
   "scripts": {
-    "build": "npm install && rimraf dist && tsc && prisma generate && npm run postbuild",
+    "build": "npm install && rimraf dist && prisma generate && tsc && npm run postbuild",
     "start": "node dist/server.js",
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "db:generate": "prisma generate",
