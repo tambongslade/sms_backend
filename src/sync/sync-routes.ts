@@ -131,17 +131,6 @@ router.post('/sync/receive/:tableName', requireSyncAuth, async (req: Request, re
     // the next local insert is handed an id the sender already used.
     await dbSyncer.resyncSequence(tableName);
 
-    // Rolling per-table/per-sender counter -- see SyncReceiptStat's schema
-    // comment. This is what lets a RECEIVER node's Data Sync page show real
-    // activity instead of nothing (it never writes a SyncLog row of its own).
-    if (records.length > 0) {
-      await prisma.syncReceiptStat.upsert({
-        where: { table_name_sender_server_id: { table_name: tableName, sender_server_id: sender || 'unknown' } },
-        create: { table_name: tableName, sender_server_id: sender || 'unknown', total_records: records.length },
-        update: { total_records: { increment: records.length }, last_received_at: new Date() },
-      });
-    }
-
     res.json({
       success: true,
       processed: records.length
@@ -177,6 +166,60 @@ router.get('/sync/changes/:tableName', requireSyncAuth, async (req: Request, res
       success: false,
       error: error.message
     });
+  }
+});
+
+// Per-table cursor snapshot. Ops uses this to see which tables are stuck and
+// how far back their windows are, without dumping the whole SyncLog.
+router.get('/sync/cursors', requireSyncAuth, async (req: Request, res: Response) => {
+  try {
+    const cursors = await prisma.syncCursor.findMany({ orderBy: { cursor: 'asc' } });
+    res.json({ cursors });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Dead-letter view. Records that keep failing across ticks, with the strike
+// counter and last error. Filter by table or direction; anything with
+// strikes >= 5 is quarantined (no longer blocks its table's cursor) but
+// still gets attempted every tick for auto-recovery.
+router.get('/sync/dead-letters', requireSyncAuth, async (req: Request, res: Response) => {
+  try {
+    const { table, direction, quarantinedOnly } = req.query;
+    const where: any = {};
+    if (typeof table === 'string' && table.length > 0) where.table_name = table;
+    if (direction === 'push' || direction === 'pull') where.direction = direction;
+    if (quarantinedOnly === 'true') where.strikes = { gte: 5 };
+    const failures = await prisma.syncFailure.findMany({
+      where,
+      orderBy: [{ strikes: 'desc' }, { last_attempt: 'desc' }],
+      take: 500
+    });
+    res.json({ failures });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Force-clear a specific dead-letter entry. Deletes the SyncFailure row so
+// the next tick retries fresh -- useful once the underlying data problem
+// (missing parent Enrollment, natural-key conflict) has been fixed manually
+// and you do not want to wait for the record's updated_at to change.
+router.post('/sync/dead-letters/:tableName/:recordId/clear', requireSyncAuth, async (req: Request, res: Response) => {
+  try {
+    const { tableName, recordId } = req.params;
+    const id = parseInt(recordId);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ success: false, error: 'recordId must be an integer' });
+    }
+    const rawDirection = req.query.direction;
+    const where: any = { table_name: tableName, record_id: id };
+    if (rawDirection === 'push' || rawDirection === 'pull') where.direction = rawDirection;
+    const result = await prisma.syncFailure.deleteMany({ where });
+    res.json({ success: true, cleared: result.count });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
