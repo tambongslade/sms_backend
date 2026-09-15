@@ -376,7 +376,8 @@ export const getDefaultersReport = async (req: Request, res: Response): Promise<
             minimumAmount,
             classId,
             subClassId,
-            includeDetails
+            includeDetails,
+            installment
         } = req.query as Record<string, string | undefined>;
 
         const toNumber = (v: string | undefined) => {
@@ -385,12 +386,17 @@ export const getDefaultersReport = async (req: Request, res: Response): Promise<
             return Number.isNaN(n) ? undefined : n;
         };
 
+        const validInstallment = installment === 'first' || installment === 'second' || installment === 'third'
+            ? installment
+            : undefined;
+
         const defaulters = await bursarService.getDefaultersReport({
             academicYearId: toNumber(academicYearId),
             minimumAmount: toNumber(minimumAmount),
             classId: toNumber(classId),
             subClassId: toNumber(subClassId),
-            includeDetails: includeDetails === 'true'
+            includeDetails: includeDetails === 'true',
+            installment: validInstallment
         });
 
         res.status(200).json({

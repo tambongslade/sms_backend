@@ -725,6 +725,11 @@ export interface DefaultersReportOptions {
     classId?: number;
     subClassId?: number;
     includeDetails?: boolean;
+    // Filters the list to students who still owe something specifically on
+    // this installment. Installments are derived, not stored: payments fill
+    // them FIFO (1st term's amount first, then 2nd, then 3rd/remainder) --
+    // same rule superManagerOverviewService.ts uses for its collection chart.
+    installment?: 'first' | 'second' | 'third';
 }
 
 export async function getDefaultersReport(options: DefaultersReportOptions = {}): Promise<any> {
@@ -754,7 +759,12 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
                     id: true,
                     class_id: true,
                     sub_class_id: true,
-                    class: { select: { id: true, name: true } },
+                    class: {
+                        select: {
+                            id: true, name: true,
+                            first_term_fee: true, second_term_fee: true, third_term_fee: true,
+                        }
+                    },
                     sub_class: { select: { id: true, name: true } },
                     student: {
                         select: {
@@ -787,6 +797,10 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
         studentName: string;
         matricule: string;
         outstanding: number;
+        totalPaid: number;
+        // 1st/2nd/3rd term fee for the enrollment's class -- the schedule
+        // payments get applied against FIFO to derive per-installment owing.
+        schedule: { first: number; second: number; third: number };
         oldestDueDate: Date | null;
         parentPhone?: string;
     }
@@ -800,6 +814,7 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
         const existing = perEnrollment.get(row.enrollment_id);
         if (existing) {
             existing.outstanding += balance;
+            existing.totalPaid += row.amount_paid || 0;
             if (row.due_date && (!existing.oldestDueDate || row.due_date < existing.oldestDueDate)) {
                 existing.oldestDueDate = row.due_date;
             }
@@ -819,6 +834,12 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
             studentName: student?.name || 'Unknown',
             matricule: student?.matricule || '',
             outstanding: balance,
+            totalPaid: row.amount_paid || 0,
+            schedule: {
+                first: enrollment?.class?.first_term_fee || 0,
+                second: enrollment?.class?.second_term_fee || 0,
+                third: enrollment?.class?.third_term_fee || 0,
+            },
             oldestDueDate: row.due_date ?? null,
             parentPhone: firstParent?.whatsapp_number || firstParent?.phone || undefined
         });
@@ -830,14 +851,38 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
 
     const defaulters = Array.from(perEnrollment.values()).filter(d => d.outstanding >= minAmount && d.outstanding > 0);
 
-    // Group by class
+    // Same FIFO rule as superManagerOverviewService.ts's collection chart:
+    // a payment covers the 1st term's fee first, then the 2nd, then the 3rd.
+    // What's left of the class schedule after that is what's still owed on
+    // each installment.
+    const installmentBreakdown = (d: DefaulterAgg) => {
+        const { first, second, third } = d.schedule;
+        const paidToFirst = Math.min(d.totalPaid, first);
+        const paidToSecond = Math.min(Math.max(d.totalPaid - first, 0), second);
+        const paidToThird = Math.min(Math.max(d.totalPaid - first - second, 0), third);
+        return {
+            first: { expected: first, paid: paidToFirst, outstanding: Math.max(first - paidToFirst, 0) },
+            second: { expected: second, paid: paidToSecond, outstanding: Math.max(second - paidToSecond, 0) },
+            third: { expected: third, paid: paidToThird, outstanding: Math.max(third - paidToThird, 0) },
+        };
+    };
+
+    let defaultersForList = defaulters;
+    if (options.installment) {
+        defaultersForList = defaulters.filter(
+            d => installmentBreakdown(d)[options.installment!].outstanding > 0
+        );
+    }
+
+    // Grouped from whatever's actually in the (possibly installment-filtered)
+    // list, so this summary always matches what the student list below it shows.
     const byClassMap = new Map<string, {
         classId: number | null;
         className: string;
         defaultersCount: number;
         outstandingAmount: number;
     }>();
-    for (const d of defaulters) {
+    for (const d of defaultersForList) {
         const key = String(d.classId ?? `name:${d.className}`);
         const bucket = byClassMap.get(key) || {
             classId: d.classId,
@@ -851,37 +896,27 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
     }
     const byClass = Array.from(byClassMap.values()).sort((a, b) => b.outstandingAmount - a.outstandingAmount);
 
-    // Group by amount range
-    const ranges: Array<{ range: string; min: number; max: number | null }> = [
-        { range: '0-10000', min: 0, max: 10000 },
-        { range: '10001-50000', min: 10001, max: 50000 },
-        { range: '50001-100000', min: 50001, max: 100000 },
-        { range: '100000+', min: 100001, max: null }
-    ];
-    const byAmountRange = ranges.map(r => {
-        const inBucket = defaulters.filter(d =>
-            d.outstanding >= r.min && (r.max === null || d.outstanding <= r.max)
-        );
-        return {
-            range: r.range,
-            count: inBucket.length,
-            totalAmount: inBucket.reduce((s, d) => s + d.outstanding, 0)
-        };
-    });
-
     const now = Date.now();
     const DAY_MS = 1000 * 60 * 60 * 24;
 
-    const students = defaulters
-        .sort((a, b) => b.outstanding - a.outstanding)
+    const students = defaultersForList
+        .sort((a, b) => {
+            // Class name first (natural sort so "Form 2" sorts before "Form 10"),
+            // then highest outstanding within the class -- matches the grouped-
+            // by-class list the frontend renders.
+            const byClass = a.className.localeCompare(b.className, undefined, { numeric: true, sensitivity: 'base' });
+            return byClass !== 0 ? byClass : b.outstanding - a.outstanding;
+        })
         .map(d => {
             const base: any = {
                 studentId: d.studentId,
                 studentName: d.studentName,
                 matricule: d.matricule,
+                classId: d.classId,
                 className: d.className,
                 subClassName: d.subClassName,
                 outstandingAmount: d.outstanding,
+                installments: installmentBreakdown(d),
                 dueDate: d.oldestDueDate ? d.oldestDueDate.toISOString() : null,
                 daysOverdue: d.oldestDueDate
                     ? Math.max(0, Math.floor((now - d.oldestDueDate.getTime()) / DAY_MS))
@@ -893,13 +928,12 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
             return base;
         });
 
-    const totalOutstanding = defaulters.reduce((s, d) => s + d.outstanding, 0);
+    const totalOutstanding = defaultersForList.reduce((s, d) => s + d.outstanding, 0);
 
     return {
-        totalDefaulters: defaulters.length,
+        totalDefaulters: defaultersForList.length,
         totalOutstanding,
         byClass,
-        byAmountRange,
         students
     };
 }
