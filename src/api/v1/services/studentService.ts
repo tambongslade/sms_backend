@@ -1914,6 +1914,12 @@ export async function unenrollStudent(
                     saturday_punishments: true,
                     broken_properties: true,
                     disciplinary_actions: true,
+                    dm_roll_call_entries: true,
+                    teacher_roll_call_entries: true,
+                    seized_items: true,
+                    nurse_visit_logs: true,
+                    student_warnings: true,
+                    parent_summons: true,
                 },
             },
         },
@@ -1924,6 +1930,14 @@ export async function unenrollStudent(
     }
 
     const counts = enrollment._count;
+    // Every one of Enrollment's FK-referencing relations has to be checked here,
+    // not just the ones that came to mind when this was written -- an
+    // unchecked one doesn't skip the block, it turns into a raw P2003 postgres
+    // error out of the delete transaction below instead. Confirmed the hard
+    // way: dm_roll_call_entries wasn't in this list, and unenrolling a student
+    // with a discipline-master roll-call entry on their enrollment threw
+    // "Foreign key constraint violated: (not available)" -- a 500, not the
+    // clean ENROLLMENT_HAS_ACADEMIC_RECORDS this function exists to return.
     const hasAcademicRecords =
         counts.marks > 0 ||
         counts.student_sequence_averages > 0 ||
@@ -1931,7 +1945,13 @@ export async function unenrollStudent(
         counts.absences > 0 ||
         counts.saturday_punishments > 0 ||
         counts.broken_properties > 0 ||
-        counts.disciplinary_actions > 0;
+        counts.disciplinary_actions > 0 ||
+        counts.dm_roll_call_entries > 0 ||
+        counts.teacher_roll_call_entries > 0 ||
+        counts.seized_items > 0 ||
+        counts.nurse_visit_logs > 0 ||
+        counts.student_warnings > 0 ||
+        counts.parent_summons > 0;
 
     const hasFinancialRecords =
         counts.payment_transactions > 0 ||
