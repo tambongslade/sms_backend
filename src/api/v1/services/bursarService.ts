@@ -914,6 +914,7 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
                 matricule: d.matricule,
                 classId: d.classId,
                 className: d.className,
+                subClassId: d.subClassId,
                 subClassName: d.subClassName,
                 outstandingAmount: d.outstanding,
                 installments: installmentBreakdown(d),
