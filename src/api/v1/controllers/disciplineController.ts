@@ -432,6 +432,7 @@ export const listAbsences = async (req: Request, res: Response): Promise<any> =>
             to: q.to,
             is_excused: q.is_excused === 'true' ? true : q.is_excused === 'false' ? false : undefined,
             sub_class_id: q.sub_class_id ? parseInt(q.sub_class_id) : undefined,
+            slot: q.slot as any,
             page: q.page ? parseInt(q.page) : undefined,
             limit: q.limit ? parseInt(q.limit) : undefined,
         });
@@ -770,6 +771,7 @@ export const getDailyOverview = async (req: any, res: Response): Promise<any> =>
             date: req.query.date as string | undefined,
             from: req.query.from as string | undefined,
             to: req.query.to as string | undefined,
+            slot: req.query.slot as any,
             poi_threshold: req.query.poi_threshold ? Number(req.query.poi_threshold) : undefined,
             poi_limit: req.query.poi_limit ? Number(req.query.poi_limit) : undefined,
         });

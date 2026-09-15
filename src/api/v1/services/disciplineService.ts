@@ -709,6 +709,13 @@ export async function deleteStudentAbsence(id: number): Promise<void> {
     await prisma.studentAbsence.delete({ where: { id } });
 }
 
+// DM roll call has 3 fixed daily check-in slots -- this IS "period" for
+// absence-filtering purposes. TeacherPeriod/Subject is captured on almost no
+// row in practice (bulk roll-call recording doesn't require picking a period),
+// so the slot from the linked DMRollCallEntry is the one dimension that's
+// actually populated and worth filtering/displaying by.
+export type AbsenceSlot = 'SLOT_2' | 'SLOT_5' | 'SLOT_8';
+
 export async function listAbsences(filters: {
     absence_type?: AbsenceType;
     academic_year_id?: number;
@@ -716,6 +723,7 @@ export async function listAbsences(filters: {
     to?: string;
     is_excused?: boolean;
     sub_class_id?: number;
+    slot?: AbsenceSlot;
     page?: number;
     limit?: number;
 }): Promise<PaginatedResult<any>> {
@@ -726,6 +734,9 @@ export async function listAbsences(filters: {
     const where: Prisma.StudentAbsenceWhereInput = {
         ...(filters.absence_type && { absence_type: filters.absence_type }),
         ...(filters.is_excused !== undefined && { is_excused: filters.is_excused }),
+        ...(filters.slot && {
+            dm_roll_call_entries: { some: { dm_roll_call: { slot: filters.slot } } },
+        }),
         enrollment: {
             ...(yearId && { academic_year_id: yearId }),
             ...(filters.sub_class_id && { sub_class_id: filters.sub_class_id }),
@@ -738,7 +749,7 @@ export async function listAbsences(filters: {
         where.created_at = { ...(gte && { gte }), ...(lte && { lte }) };
     }
 
-    const [total, rows] = await Promise.all([
+    const [total, rows, totalsByEnrollment] = await Promise.all([
         prisma.studentAbsence.count({ where }),
         prisma.studentAbsence.findMany({
             where,
@@ -760,9 +771,24 @@ export async function listAbsences(filters: {
                         period: { select: { id: true, name: true, start_time: true, end_time: true } },
                     },
                 },
+                dm_roll_call_entries: {
+                    take: 1,
+                    include: { dm_roll_call: { select: { slot: true } } },
+                },
             },
         }),
+        // Per-student total within the same filters (date range, period,
+        // excused status) but NOT the pagination window -- this is what lets
+        // a row say "this student has had N absences in this range" rather
+        // than just showing the one occurrence the row itself represents.
+        prisma.studentAbsence.groupBy({
+            by: ['enrollment_id'],
+            where,
+            _count: { _all: true },
+        }),
     ]);
+
+    const totalByEnrollmentId = new Map(totalsByEnrollment.map((t) => [t.enrollment_id, t._count._all]));
 
     // Flatten enrollment.student / enrollment.sub_class to the top level -- the
     // frontend list view renders a row per absence, not per enrollment, so it
@@ -780,6 +806,8 @@ export async function listAbsences(filters: {
         assigned_by: r.assigned_by,
         excused_by: r.excused_by,
         teacher_period: r.teacher_period,
+        slot: r.dm_roll_call_entries?.[0]?.dm_roll_call?.slot ?? null,
+        total_in_range: totalByEnrollmentId.get(r.enrollment_id) ?? 1,
     }));
 
     return {
@@ -938,6 +966,129 @@ export async function getDisciplineHistory(
     }
 
     return prisma.disciplineIssue.findMany({ orderBy: { created_at: 'desc' }, include });
+}
+
+// =====================================================================
+// Student profile "Discipline Overview" -- one card per category, each
+// carrying a count plus a short recent-items list so a click can show more
+// without a second round trip for the common case (last ~10 is normally
+// enough; a category with more can still be drilled into from its own page).
+// =====================================================================
+
+const RECENT_ITEMS_LIMIT = 10;
+
+export async function getStudentDisciplineOverview(
+    studentId: number,
+    academicYearId?: number
+): Promise<any> {
+    const enrollmentWhere = {
+        student_id: studentId,
+        ...(academicYearId && { academic_year_id: academicYearId }),
+    };
+
+    const [
+        absenceCounts,
+        recentAbsences,
+        latenessCount,
+        recentLateness,
+        issueCount,
+        recentIssues,
+        actionCount,
+        recentActions,
+        warningCount,
+        unresolvedWarningCount,
+        recentWarnings,
+        summonsCount,
+        recentSummons,
+        punishmentCount,
+        recentPunishments,
+        brokenPropertyCount,
+        recentBrokenProperty,
+    ] = await Promise.all([
+        prisma.studentAbsence.groupBy({
+            by: ['is_excused'],
+            where: { absence_type: 'CLASS_ABSENCE', enrollment: enrollmentWhere },
+            _count: { _all: true },
+        }),
+        prisma.studentAbsence.findMany({
+            where: { absence_type: 'CLASS_ABSENCE', enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: {
+                assigned_by: { select: { id: true, name: true } },
+                enrollment: { select: { sub_class: { select: { id: true, name: true, class: { select: { id: true, name: true } } } } } },
+            },
+        }),
+        prisma.studentAbsence.count({ where: { absence_type: 'MORNING_LATENESS', enrollment: enrollmentWhere } }),
+        prisma.studentAbsence.findMany({
+            where: { absence_type: 'MORNING_LATENESS', enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { assigned_by: { select: { id: true, name: true } } },
+        }),
+        prisma.disciplineIssue.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.disciplineIssue.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { assigned_by: { select: { id: true, name: true } } },
+        }),
+        prisma.disciplinaryAction.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.disciplinaryAction.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { decided_by: { select: { id: true, name: true } } },
+        }),
+        prisma.studentWarning.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.studentWarning.count({ where: { enrollment: enrollmentWhere, resolved: false } }),
+        prisma.studentWarning.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { issued_by: { select: { id: true, name: true } } },
+        }),
+        prisma.parentSummons.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.parentSummons.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { created_by: { select: { id: true, name: true } } },
+        }),
+        prisma.saturdayPunishment.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.saturdayPunishment.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { assigned_by: { select: { id: true, name: true } } },
+        }),
+        prisma.brokenProperty.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.brokenProperty.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { reported_by: { select: { id: true, name: true } } },
+        }),
+    ]);
+
+    const excusedCount = absenceCounts.find((r) => r.is_excused === true)?._count._all ?? 0;
+    const unexcusedCount = absenceCounts.find((r) => r.is_excused === false)?._count._all ?? 0;
+
+    return {
+        absences: {
+            total: excusedCount + unexcusedCount,
+            excused: excusedCount,
+            unexcused: unexcusedCount,
+            recent: recentAbsences,
+        },
+        lateness: { total: latenessCount, recent: recentLateness },
+        issues: { total: issueCount, recent: recentIssues },
+        disciplinaryActions: { total: actionCount, recent: recentActions },
+        warnings: { total: warningCount, unresolved: unresolvedWarningCount, recent: recentWarnings },
+        summons: { total: summonsCount, recent: recentSummons },
+        saturdayPunishments: { total: punishmentCount, recent: recentPunishments },
+        brokenProperty: { total: brokenPropertyCount, recent: recentBrokenProperty },
+    };
 }
 
 // =====================================================================
@@ -1879,6 +2030,7 @@ export async function getDailyOverview(opts: {
     date?: string;
     from?: string;
     to?: string;
+    slot?: AbsenceSlot;
     poi_threshold?: number;
     poi_limit?: number;
 } = {}) {
@@ -1893,8 +2045,13 @@ export async function getDailyOverview(opts: {
             dailyAbsencesCount: 0,
             disciplinaryActionsTodayCount: 0,
             personsOfInterest: [],
+            dailyBreakdown: [],
         };
     }
+
+    const slotFilter = opts.slot
+        ? { dm_roll_call_entries: { some: { dm_roll_call: { slot: opts.slot } } } }
+        : {};
 
     // Resolve the [dayStart, dayEnd] window from whichever of from/to/date the caller provided.
     const rangeSource: Date = opts.from ? new Date(opts.from) : (opts.date ? new Date(opts.date) : new Date());
@@ -1911,6 +2068,7 @@ export async function getDailyOverview(opts: {
             absence_type: 'MORNING_LATENESS',
             created_at: { gte: dayStart, lte: dayEnd },
             enrollment: { academic_year_id: yearId },
+            ...slotFilter,
         },
     });
 
@@ -1920,7 +2078,23 @@ export async function getDailyOverview(opts: {
             absence_type: 'CLASS_ABSENCE',
             created_at: { gte: dayStart, lte: dayEnd },
             enrollment: { academic_year_id: yearId },
+            ...slotFilter,
         },
+    });
+
+    // Per-day counts across the whole range, for the "absences per day"
+    // breakdown. Bucketed in JS rather than a SQL date_trunc so this stays
+    // portable across the Postgres locale quirks already hit elsewhere in
+    // this codebase (see database-syncer.ts) -- a term's worth of absence
+    // rows is small enough that this costs nothing measurable.
+    const breakdownRowsPromise = prisma.studentAbsence.findMany({
+        where: {
+            absence_type: 'CLASS_ABSENCE',
+            created_at: { gte: dayStart, lte: dayEnd },
+            enrollment: { academic_year_id: yearId },
+            ...slotFilter,
+        },
+        select: { created_at: true },
     });
 
     // Disciplinary actions logged today (regardless of approval state)
@@ -1938,6 +2112,7 @@ export async function getDailyOverview(opts: {
             absence_type: 'CLASS_ABSENCE',
             is_excused: false,
             enrollment: { academic_year_id: yearId },
+            ...slotFilter,
         },
         _count: { enrollment_id: true },
         orderBy: { _count: { enrollment_id: 'desc' } },
@@ -1968,11 +2143,25 @@ export async function getDailyOverview(opts: {
         });
     }
 
-    const [lateTodayCount, dailyAbsencesCount, disciplinaryActionsTodayCount] = await Promise.all([
+    const [lateTodayCount, dailyAbsencesCount, disciplinaryActionsTodayCount, breakdownRows] = await Promise.all([
         lateTodayCountPromise,
         dailyAbsencesPromise,
         actionsTodayPromise,
+        breakdownRowsPromise,
     ]);
+
+    const countsByDay = new Map<string, number>();
+    for (const row of breakdownRows) {
+        const day = row.created_at.toISOString().slice(0, 10);
+        countsByDay.set(day, (countsByDay.get(day) ?? 0) + 1);
+    }
+    // Every day in the range gets an entry (0 included) so the frontend can
+    // render a continuous list/chart without having to fill gaps itself.
+    const dailyBreakdown: Array<{ date: string; count: number }> = [];
+    for (const d = new Date(dayStart); d <= dayEnd; d.setDate(d.getDate() + 1)) {
+        const key = d.toISOString().slice(0, 10);
+        dailyBreakdown.push({ date: key, count: countsByDay.get(key) ?? 0 });
+    }
 
     return {
         date: dayStart.toISOString().slice(0, 10),
@@ -1983,5 +2172,6 @@ export async function getDailyOverview(opts: {
         dailyAbsencesCount,
         disciplinaryActionsTodayCount,
         personsOfInterest,
+        dailyBreakdown,
     };
 }

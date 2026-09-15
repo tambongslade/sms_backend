@@ -1,5 +1,6 @@
 import { PrismaClient, Gender, StudentStatus } from '@prisma/client';
 import * as dotenv from 'dotenv';
+import { createOrUpdateFeeForEnrollment } from '../src/api/v1/services/feeService';
 
 dotenv.config();
 
@@ -344,7 +345,7 @@ async function main() {
           totalSkipped += 1;
           continue;
         }
-        await prisma.enrollment.create({
+        const reEnrollment = await prisma.enrollment.create({
           data: {
             student_id: existing.id,
             academic_year_id: ACADEMIC_YEAR_ID,
@@ -357,6 +358,11 @@ async function main() {
           where: { id: existing.id },
           data: { status: StudentStatus.ASSIGNED_TO_CLASS },
         });
+        // The normal enroll/assign-class API paths always create a SchoolFees
+        // row alongside the enrollment; this script skipped it originally,
+        // which left 28 students invisible to the bursar's fee search until
+        // scripts/backfill-missing-fees-2026.ts caught up the gap.
+        await createOrUpdateFeeForEnrollment(reEnrollment.id, FORM_4_CLASS_ID);
         console.log(`  [enroll] existing ${existing.matricule} — ${cleanName}`);
         totalCreated += 1;
         continue;
@@ -365,7 +371,7 @@ async function main() {
       const matricule = `SS26CL${String(nextSeq).padStart(4, '0')}`;
       nextSeq += 1;
 
-      await prisma.$transaction(async (tx) => {
+      const { enrollment: newEnrollment } = await prisma.$transaction(async (tx) => {
         const student = await tx.student.create({
           data: {
             matricule,
@@ -378,7 +384,7 @@ async function main() {
             status: StudentStatus.ASSIGNED_TO_CLASS,
           },
         });
-        await tx.enrollment.create({
+        const enrollment = await tx.enrollment.create({
           data: {
             student_id: student.id,
             academic_year_id: ACADEMIC_YEAR_ID,
@@ -387,7 +393,11 @@ async function main() {
             repeater: false,
           },
         });
+        return { student, enrollment };
       });
+      // Outside the transaction, same reasoning as the re-enroll path above --
+      // createOrUpdateFeeForEnrollment runs on the plain prisma client, not tx.
+      await createOrUpdateFeeForEnrollment(newEnrollment.id, FORM_4_CLASS_ID);
 
       console.log(`  [create] ${matricule} — ${cleanName} (${row.gender})`);
       totalCreated += 1;

@@ -194,7 +194,7 @@ export const getStudentFullProfile = async (req: Request, res: Response): Promis
             return res.status(404).json({ success: false, error: 'Student not found' });
         }
 
-        const [fees, controlFees, marksResult, attendanceSummary, discipline] = await Promise.allSettled([
+        const [fees, controlFees, marksResult, attendanceSummary, discipline, disciplineOverview] = await Promise.allSettled([
             feeService.getStudentFees(id, yearId),
             controlFeeService.getStudentControlFees(id, yearId),
             examService.getAllMarks(
@@ -204,6 +204,7 @@ export const getStudentFullProfile = async (req: Request, res: Response): Promis
             ),
             attendanceService.getStudentAttendanceSummary({ student_id: id, academic_year_id: yearId }),
             disciplineService.getDisciplineHistory(id),
+            disciplineService.getStudentDisciplineOverview(id, yearId),
         ]);
 
         const enrollments = (student as any).enrollments ?? [];
@@ -225,6 +226,7 @@ export const getStudentFullProfile = async (req: Request, res: Response): Promis
                 marks: marksResult.status === 'fulfilled' ? marksResult.value.data : [],
                 attendance_summary: attendanceSummary.status === 'fulfilled' ? attendanceSummary.value : null,
                 discipline: discipline.status === 'fulfilled' ? discipline.value : [],
+                discipline_overview: disciplineOverview.status === 'fulfilled' ? disciplineOverview.value : null,
             }
         });
     } catch (error: any) {

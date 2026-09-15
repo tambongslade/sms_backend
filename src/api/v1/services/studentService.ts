@@ -1399,7 +1399,7 @@ type ClassListSection = {
 function sanitizeForPdf(text: string): string {
     // pdf-lib StandardFonts only support WinAnsi (Latin-1) — strip what it can't render.
     return (text || '')
-        .replace(/[ -]/g, ' ')
+        .replace(/[\x00-\x1F]/g, ' ')
         .replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');
 }
 
