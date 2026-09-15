@@ -64,13 +64,18 @@ export const getAllStudents = async (req: Request, res: Response) => {
             return;
         }
 
+        // Opt-in only: ?includeWithdrawn=true, e.g. for an admin "view withdrawn" report.
+        // Defaults to excluding withdrawn (soft-deleted) students from ordinary listings.
+        const includeWithdrawn = req.finalQuery.include_withdrawn === 'true' || req.finalQuery.include_withdrawn === true;
+
         // Call the service function that handles enrollment-based filtering
         const result = await studentService.getAllStudentsWithCurrentEnrollment(
             academic_year_id,
             paginationOptions,
             filterOptions, // Pass the filters extracted (including sub_class_id)
             valid_enrollment_status, // Pass the validated enrollment status filter
-            (req as any).teacherSubClassIds // Pass teacher's accessible subclass IDs if present
+            (req as any).teacherSubClassIds, // Pass teacher's accessible subclass IDs if present
+            includeWithdrawn
         );
 
         res.json({

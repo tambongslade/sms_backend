@@ -28,7 +28,12 @@ export async function getAllStudentsWithCurrentEnrollment(
     paginationOptions?: PaginationOptions,
     filterOptions?: FilterOptions,
     enrollmentStatus?: 'enrolled' | 'not_enrolled' | 'all', // Add enrollmentStatus parameter
-    teacherSubClassIds?: number[] // Add teacher subclass restriction
+    teacherSubClassIds?: number[], // Add teacher subclass restriction
+    includeWithdrawn: boolean = false // Named apart from `enrollmentStatus` on purpose: that
+    // param means "enrolled this year or not" and already has its own 'all'; this one is
+    // about Student.status itself (WITHDRAWN = soft-deleted). Off by default so a plain
+    // student list doesn't silently include withdrawn students -- opt in explicitly for
+    // an admin "view withdrawn" report.
 ): Promise<PaginatedResult<any>> {
 
     // 1. Determine Target Academic Year
@@ -38,7 +43,9 @@ export async function getAllStudentsWithCurrentEnrollment(
     }
 
     // 2. Build Base Where Clause for Student Filters
-    const studentWhere: Prisma.StudentWhereInput = {};
+    const studentWhere: Prisma.StudentWhereInput = includeWithdrawn
+        ? {}
+        : { status: { not: StudentStatus.WITHDRAWN } };
     let sub_classIdFilter: number | undefined = undefined; // Store sub_class filter separately
 
     if (filterOptions) {
@@ -868,7 +875,11 @@ export async function getStudentsBySubclass(
     return prisma.enrollment.findMany({
         where: {
             sub_class_id,
-            academic_year_id: yearId
+            academic_year_id: yearId,
+            // deleteStudent soft-deletes (WITHDRAWN) without touching the enrollment row,
+            // so a roster query has to exclude it explicitly or a withdrawn student keeps
+            // showing up in their old class.
+            student: { status: { not: StudentStatus.WITHDRAWN } }
         },
         include: {
             student: true,
@@ -1028,9 +1039,14 @@ export async function searchStudents(
             ],
         });
 
-        const searchCriteria: Prisma.StudentWhereInput = tokens.length > 0
-            ? { AND: tokens.map(buildTokenOr) }
-            : { OR: [{ name: { contains: searchQuery, mode: 'insensitive' } }] };
+        // Excludes WITHDRAWN the same way the main listing does -- a search shouldn't
+        // surface a soft-deleted student any more readily than browsing would.
+        const searchCriteria: Prisma.StudentWhereInput = {
+            status: { not: StudentStatus.WITHDRAWN },
+            ...(tokens.length > 0
+                ? { AND: tokens.map(buildTokenOr) }
+                : { OR: [{ name: { contains: searchQuery, mode: 'insensitive' } }] }),
+        };
 
         // Count total matching students
         const total = await prisma.student.count({ where: searchCriteria });
