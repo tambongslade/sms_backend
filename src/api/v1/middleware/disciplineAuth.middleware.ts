@@ -11,6 +11,7 @@ const DM_SCOPE_BYPASS_ROLES = new Set([
     'VICE_PRINCIPAL',
     'SENIOR_DISCIPLINE_MASTER',
     'DEAN_OF_DISCIPLINE',
+    'DISCIPLINE_COORDINATOR',
 ]);
 
 function extractSubClassId(req: Request): number | null {

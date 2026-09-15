@@ -196,6 +196,68 @@ export const FAST_INTENTS: FastIntent[] = [
         describe: row => `${row.count} users hold the TEACHER role.`,
     },
     {
+        // "How many English teachers are there" was answered with a wrong
+        // number, confidently, because the catalog gave the model no path from
+        // a subject to a teacher — so it joined something plausible and
+        // reported the result. TeacherPeriod is documented now, but a question
+        // this ordinary should not depend on the model rediscovering the join
+        // each time.
+        //
+        // Sits after teacher_count deliberately. That intent is anchored so
+        // "how many teachers" cannot reach here, and this one requires a word
+        // before "teachers" so the bare question cannot reach it either.
+        name: 'teachers_for_subject',
+        general: true,
+        patterns: [
+            /how many ([a-z][a-z ]*?) teachers?(?: are there| do we have| are employed)?\s*\??$/i,
+            /(?:number|count) of ([a-z][a-z ]*?) teachers?\s*\??$/i,
+            /who (?:are|teaches) (?:the )?([a-z][a-z ]*?) teachers?\s*\??$/i,
+        ],
+        // One row, because describe only ever sees rows[0]. The names are
+        // aggregated rather than returned as rows for that reason.
+        //
+        // COUNT(DISTINCT ...) is not optional: TeacherPeriod holds one row per
+        // period taught, so a teacher with eight English lessons a week would
+        // otherwise be counted eight times. teacher_id IS NOT NULL excludes the
+        // subject-only timetable slots, which carry a subject and no teacher.
+        //
+        // subject_matches is carried out so describe can tell "no such subject"
+        // apart from "a real subject nobody teaches". Collapsing those two into
+        // a plain zero is how "how many female teachers" would be answered with
+        // a confident 0 rather than an admission that it was not understood.
+        sql: `
+            WITH subj AS (
+                SELECT id, name FROM "Subject" WHERE name ILIKE $1
+            ),
+            teach AS (
+                SELECT DISTINCT tp.teacher_id
+                FROM "TeacherPeriod" tp
+                JOIN subj ON subj.id = tp.subject_id
+                WHERE tp.academic_year_id = ${CURRENT_YEAR}
+                  AND tp.teacher_id IS NOT NULL
+            )
+            SELECT
+                (SELECT COUNT(*) FROM subj)::int AS subject_matches,
+                (SELECT string_agg(name, ', ' ORDER BY name) FROM subj) AS subjects,
+                (SELECT COUNT(*) FROM teach)::int AS count,
+                (SELECT string_agg(u.name, ', ' ORDER BY u.name)
+                   FROM teach JOIN "User" u ON u.id = teach.teacher_id) AS teachers`,
+        params: m => [`%${m[1].trim()}%`],
+        // The same guard the class intents use: a capture group cannot tell a
+        // subject from a subject plus a condition.
+        accept: m => !QUALIFIER.test(m[1]),
+        describe: row => {
+            if (!row.subject_matches) {
+                return `I could not find a subject by that name, so I cannot say how many teachers it has. Ask me about a subject as it is named on the timetable.`;
+            }
+            if (!row.count) {
+                return `No teachers are assigned to ${row.subjects} on this year's timetable.`;
+            }
+            const one = row.count === 1;
+            return `${row.count} teacher${one ? '' : 's'} ${one ? 'teaches' : 'teach'} ${row.subjects} this academic year: ${row.teachers}.`;
+        },
+    },
+    {
         // Must precede gender_split, for exactly the reason class_breakdown
         // must precede students_in_class. gender_split's pattern was
         // /how many (?:boys|girls|male|female)/ with nothing anchoring the

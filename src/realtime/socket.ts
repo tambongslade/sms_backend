@@ -241,12 +241,18 @@ export function initRealtime(httpServer: HttpServer): SocketIOServer {
             const decoded = jwt.verify(token, JWT_SECRET) as { id: number; role?: string[] };
             const user = await prisma.user.findUnique({
                 where: { id: decoded.id },
-                select: { name: true },
+                select: { name: true, user_roles: { select: { role: true } } },
             });
             const data: AuthenticatedSocketData = {
                 userId: decoded.id,
                 userName: user?.name ?? 'User',
-                roles: decoded.role || [],
+                // From the database, not the token's `role` claim: a token is a
+                // 120-day snapshot of sign-in time, so a role changed or revoked
+                // since then would still be honoured here. This handshake
+                // already loads the user, so it costs nothing extra. Nothing
+                // reads socket.data.roles today — this keeps it from becoming a
+                // trap for whoever does.
+                roles: [...new Set((user?.user_roles ?? []).map(ur => ur.role as string))],
                 token,
             };
             (socket.data as AuthenticatedSocketData) = data;

@@ -360,7 +360,7 @@ export async function bulkUpdateTimetable(
             }
 
             // ---- Clear assignment ----
-            if (subject_id === null && teacher_id === null) {
+            if ((subject_id === null || subject_id === undefined) && (teacher_id === null || teacher_id === undefined)) {
                 const existing = await prisma.teacherPeriod.findMany({
                     where: { sub_class_id: subclassId, period_id: period.id, academic_year_id: academicYearId }
                 });
@@ -371,16 +371,27 @@ export async function bulkUpdateTimetable(
                 continue;
             }
 
-            if (subject_id === undefined || subject_id === null || !teacher_id || teacher_id === undefined) {
-                result.errors.push({ periodId: parsedPeriodId, error: 'Both subject_id and teacher_id must be provided (or both null to clear)' });
+            // subject_id is still required — a slot without a subject has nothing
+            // to teach. Teacher is optional so a slot can be reserved for a
+            // subject before its teacher is decided.
+            if (subject_id === undefined || subject_id === null) {
+                result.errors.push({ periodId: parsedPeriodId, error: 'subject_id is required (pass both null to clear the slot)' });
                 continue;
             }
 
             const parsedSubjectId = parseInt(subject_id as any);
-            const parsedTeacherId = parseInt(teacher_id as any);
-            if (isNaN(parsedSubjectId) || isNaN(parsedTeacherId)) {
-                result.errors.push({ periodId: parsedPeriodId, error: 'Invalid subject_id or teacher_id format' });
+            if (isNaN(parsedSubjectId)) {
+                result.errors.push({ periodId: parsedPeriodId, error: 'Invalid subject_id format' });
                 continue;
+            }
+
+            let parsedTeacherId: number | null = null;
+            if (teacher_id !== null && teacher_id !== undefined) {
+                parsedTeacherId = parseInt(teacher_id as any);
+                if (isNaN(parsedTeacherId)) {
+                    result.errors.push({ periodId: parsedPeriodId, error: 'Invalid teacher_id format' });
+                    continue;
+                }
             }
 
             // Only BREAK slots are unbookable. Every other slot (including
@@ -395,56 +406,58 @@ export async function bulkUpdateTimetable(
                 continue;
             }
 
-            const canTeachSubject = await prisma.subjectTeacher.findFirst({
-                where: { subject_id: parsedSubjectId, teacher_id: parsedTeacherId }
-            });
-            if (!canTeachSubject) {
-                result.errors.push({
-                    periodId: parsedPeriodId,
-                    error: `Teacher ${parsedTeacherId} is not authorized to teach subject ${parsedSubjectId}`
+            if (parsedTeacherId !== null) {
+                const canTeachSubject = await prisma.subjectTeacher.findFirst({
+                    where: { subject_id: parsedSubjectId, teacher_id: parsedTeacherId }
                 });
-                continue;
-            }
+                if (!canTeachSubject) {
+                    result.errors.push({
+                        periodId: parsedPeriodId,
+                        error: `Teacher ${parsedTeacherId} is not authorized to teach subject ${parsedSubjectId}`
+                    });
+                    continue;
+                }
 
-            // ---- Time-overlap clash detection ----
-            // Look at every TeacherPeriod the teacher already has this day in
-            // this academic year (any subclass, any period set), and flag any
-            // whose [start,end) intersects the incoming slot.
-            const teacherSameDay = await prisma.teacherPeriod.findMany({
-                where: {
-                    teacher_id: parsedTeacherId,
-                    academic_year_id: academicYearId,
-                    period: { day_of_week: period.day_of_week },
-                    NOT: {
-                        AND: [
-                            { sub_class_id: subclassId },
-                            { period_id: period.id }
-                        ]
-                    }
-                },
-                include: { period: { include: { period_set: true } }, sub_class: true }
-            });
-
-            const clash = teacherSameDay.find(tp =>
-                intervalsOverlap(period.start_time, period.end_time, tp.period.start_time, tp.period.end_time)
-            );
-
-            if (clash) {
-                result.warnings.push({
-                    periodId: parsedPeriodId,
-                    type: 'TEACHER_CLASH',
-                    message: `Teacher is also booked in ${clash.sub_class.name} on ${clash.period.day_of_week} ${clash.period.start_time}–${clash.period.end_time} (${clash.period.name})`,
-                    clashWith: {
-                        subClassId: clash.sub_class.id,
-                        subClassName: clash.sub_class.name,
-                        day: clash.period.day_of_week,
-                        periodName: clash.period.name,
-                        periodStartTime: clash.period.start_time,
-                        periodEndTime: clash.period.end_time,
-                        periodSetCode: clash.period.period_set?.code ?? null
-                    }
+                // ---- Time-overlap clash detection ----
+                // Look at every TeacherPeriod the teacher already has this day in
+                // this academic year (any subclass, any period set), and flag any
+                // whose [start,end) intersects the incoming slot.
+                const teacherSameDay = await prisma.teacherPeriod.findMany({
+                    where: {
+                        teacher_id: parsedTeacherId,
+                        academic_year_id: academicYearId,
+                        period: { day_of_week: period.day_of_week },
+                        NOT: {
+                            AND: [
+                                { sub_class_id: subclassId },
+                                { period_id: period.id }
+                            ]
+                        }
+                    },
+                    include: { period: { include: { period_set: true } }, sub_class: true }
                 });
-                // Fall through — still persist so the caller keeps their edit.
+
+                const clash = teacherSameDay.find(tp =>
+                    intervalsOverlap(period.start_time, period.end_time, tp.period.start_time, tp.period.end_time)
+                );
+
+                if (clash) {
+                    result.warnings.push({
+                        periodId: parsedPeriodId,
+                        type: 'TEACHER_CLASH',
+                        message: `Teacher is also booked in ${clash.sub_class.name} on ${clash.period.day_of_week} ${clash.period.start_time}–${clash.period.end_time} (${clash.period.name})`,
+                        clashWith: {
+                            subClassId: clash.sub_class.id,
+                            subClassName: clash.sub_class.name,
+                            day: clash.period.day_of_week,
+                            periodName: clash.period.name,
+                            periodStartTime: clash.period.start_time,
+                            periodEndTime: clash.period.end_time,
+                            periodSetCode: clash.period.period_set?.code ?? null
+                        }
+                    });
+                    // Fall through — still persist so the caller keeps their edit.
+                }
             }
 
             const existingAssignment = await prisma.teacherPeriod.findFirst({
@@ -611,6 +624,7 @@ interface PdfRow { periodName: string; timeLabel: string; cells: PdfCell[]; }
 interface PdfPage {
     title: string;
     subtitle?: string;
+    details?: Array<{ label: string; value: string }>;
     chips?: string[];
     days: Array<{ key: DayOfWeek; label: string }>;
     rows: PdfRow[];
@@ -627,6 +641,20 @@ function loadTimetableTemplate(): string {
     return templateCache.html;
 }
 
+const logoCache: { dataUri?: string } = {};
+function loadSchoolLogoDataUri(): string {
+    if (!logoCache.dataUri) {
+        try {
+            const logoPath = path.join(process.cwd(), 'public/school.png');
+            const buf = fs.readFileSync(logoPath);
+            logoCache.dataUri = `data:image/png;base64,${buf.toString('base64')}`;
+        } catch {
+            logoCache.dataUri = '';
+        }
+    }
+    return logoCache.dataUri;
+}
+
 async function renderPdf(pages: PdfPage[], academicYearName: string): Promise<Buffer> {
     const template = loadTimetableTemplate();
     const html = ejs.render(template, {
@@ -635,6 +663,11 @@ async function renderPdf(pages: PdfPage[], academicYearName: string): Promise<Bu
         academicYearName,
         generatedAt: new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }),
         documentTitle: pages[0]?.title || 'Timetable',
+        schoolLogo: loadSchoolLogoDataUri(),
+        schoolName: "ST STEPHEN'S INTERNATIONAL COLLEGE",
+        schoolTagline: 'Excellence for Higher Heights',
+        schoolAddress: 'Yaounde Essono city Damas',
+        schoolPhone: '(+237) 680 188 080 / 681 630 435',
     });
 
     const page = await PuppeteerManager.newPage();
@@ -792,40 +825,31 @@ export async function exportTeacherTimetablePdf(
 
     if (!teacher) throw new Error(`Teacher ${teacherId} not found.`);
 
-    // Also pull BREAK periods from every period_set that the teacher's
-    // subclasses use, so the teacher's PDF interleaves recess rows even on
-    // days/times where the teacher isn't teaching anything.
-    const periodSetIds = Array.from(new Set(
-        teacherPeriods
-            .map(tp => tp.period.period_set_id)
-            .filter((id): id is number => id !== null && id !== undefined),
-    ));
-    const breakPeriods = periodSetIds.length
-        ? await prisma.period.findMany({
-            where: { period_set_id: { in: periodSetIds }, type: 'BREAK' },
-        })
-        : [];
-
+    // Teacher timetable: teaching slots only — BREAK periods are intentionally
+    // excluded (per school preference; the teacher's schedule shouldn't be
+    // padded with recess rows).
     const timeKey = (p: { start_time: string; end_time: string }) => `${p.start_time}-${p.end_time}`;
     const timeSlots = new Map<string, { startTime: string; endTime: string; label: string }>();
-    const addTimeSlot = (p: { start_time: string; end_time: string }) => {
-        const k = timeKey(p);
+    for (const tp of teacherPeriods) {
+        const k = timeKey(tp.period);
         if (!timeSlots.has(k)) {
             timeSlots.set(k, {
-                startTime: p.start_time,
-                endTime: p.end_time,
-                label: `${p.start_time.slice(0, 5)} – ${p.end_time.slice(0, 5)}`,
+                startTime: tp.period.start_time,
+                endTime: tp.period.end_time,
+                label: `${tp.period.start_time.slice(0, 5)} – ${tp.period.end_time.slice(0, 5)}`,
             });
         }
-    };
-    for (const tp of teacherPeriods) addTimeSlot(tp.period);
-    for (const bp of breakPeriods) addTimeSlot(bp);
+    }
 
     const orderedSlots = Array.from(timeSlots.values()).sort(
         (a, b) => toMinutes(a.startTime) - toMinutes(b.startTime),
     );
 
-    const days = DAY_ORDER.map(d => ({ key: d, label: DAY_LABEL[d] || d }));
+    // Only include days the teacher actually teaches on.
+    const teachingDays = new Set<DayOfWeek>(teacherPeriods.map(tp => tp.period.day_of_week));
+    const days = DAY_ORDER
+        .filter(d => teachingDays.has(d))
+        .map(d => ({ key: d, label: DAY_LABEL[d] || d }));
 
     // Bucket the teacher's assignments by (day, startTime, endTime)
     const bucket = new Map<string, typeof teacherPeriods>();
@@ -833,12 +857,6 @@ export async function exportTeacherTimetablePdf(
         const key = `${tp.period.day_of_week}|${timeKey(tp.period)}`;
         if (!bucket.has(key)) bucket.set(key, []);
         bucket.get(key)!.push(tp);
-    }
-    // Bucket BREAK periods by (day, startTime, endTime) so we know which day
-    // columns to paint as BREAK.
-    const breakBucket = new Set<string>();
-    for (const bp of breakPeriods) {
-        breakBucket.add(`${bp.day_of_week}|${timeKey(bp)}`);
     }
 
     const rows: PdfRow[] = orderedSlots.map(slot => {
@@ -849,22 +867,44 @@ export async function exportTeacherTimetablePdf(
                 secondary: `${tp.sub_class.class.name} / ${tp.sub_class.name}`,
             }));
             if (entries.length) return { type: 'TEACHING', entries };
-            if (breakBucket.has(cellKey)) return { type: 'BREAK', entries: [] };
             return { type: 'EMPTY', entries: [] };
         });
         return { periodName: '', timeLabel: slot.label, cells };
     });
 
+    // Department (derived from subject categories) and subject list.
+    const CATEGORY_LABEL: Record<string, string> = {
+        SCIENCE_AND_TECHNOLOGY: 'Science & Technology',
+        LANGUAGES_AND_LITERATURE: 'Languages & Literature',
+        HUMAN_AND_SOCIAL_SCIENCE: 'Human & Social Sciences',
+        OTHERS: 'Others',
+    };
+    const departments = Array.from(new Set(
+        teacherPeriods.map(tp => tp.subject?.category as string | undefined).filter((c): c is string => !!c),
+    )).map(c => CATEGORY_LABEL[c] || c);
+    const subjectNames = Array.from(new Set(
+        teacherPeriods.map(tp => tp.subject?.name).filter((n): n is string => !!n),
+    )).sort();
+
     // Summary chips
     const uniqueClasses = new Set(teacherPeriods.map(tp => tp.sub_class_id)).size;
-    const uniqueSubjects = new Set(teacherPeriods.map(tp => tp.subject_id)).size;
+    const uniqueSubjects = subjectNames.length;
     const weeklyHours = teacherPeriods.reduce((acc, tp) => {
         return acc + (toMinutes(tp.period.end_time) - toMinutes(tp.period.start_time)) / 60;
     }, 0);
 
+    const details: Array<{ label: string; value: string }> = [];
+    if (departments.length) {
+        details.push({ label: departments.length > 1 ? 'Departments' : 'Department', value: departments.join(', ') });
+    }
+    if (subjectNames.length) {
+        details.push({ label: subjectNames.length > 1 ? 'Subjects' : 'Subject', value: subjectNames.join(', ') });
+    }
+
     const page: PdfPage = {
         title: teacher.name,
         subtitle: 'Teacher Timetable',
+        details,
         chips: [
             `Matricule: ${teacher.matricule || '—'}`,
             `Classes: ${uniqueClasses}`,

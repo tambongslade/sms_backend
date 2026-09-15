@@ -126,6 +126,11 @@ router.post('/sync/receive/:tableName', requireSyncAuth, async (req: Request, re
       await dbSyncer.processIncomingRecord(tableName, record, sender);
     }
 
+    // Those records arrived with the sender's own ids, written straight into
+    // the primary key, so this table's sequence is now behind them. Left alone,
+    // the next local insert is handed an id the sender already used.
+    await dbSyncer.resyncSequence(tableName);
+
     res.json({
       success: true,
       processed: records.length

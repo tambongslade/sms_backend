@@ -50,6 +50,8 @@ import reamStockRoutes from './reamStockRoutes';
 import taskRoutes from './taskRoutes';
 import superManagerOverviewRoutes from './superManagerOverviewRoutes';
 import aiRoutes from './aiRoutes';
+import staffLoanRoutes from './staffLoanRoutes';
+import leaveRequestRoutes from './leaveRequestRoutes';
 import express from 'express';
 import path from 'path';
 import * as disciplineController from '../controllers/disciplineController';
@@ -195,6 +197,10 @@ router.use('/reams', reamStockRoutes);
 
 // Tasks (assign + track): senior delegates, assignee updates progress
 router.use('/tasks', taskRoutes);
+
+// Staff loans + leave — single-step super-manager approval
+router.use('/loans', staffLoanRoutes);
+router.use('/leave', leaveRequestRoutes);
 
 // Super Manager read-only overview / metrics endpoints for dashboards & charts
 router.use('/super-manager/overview', superManagerOverviewRoutes);

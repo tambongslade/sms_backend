@@ -164,6 +164,67 @@ export const getAvailableParents = async (req: Request, res: Response): Promise<
 };
 
 /**
+ * Create a brand-new parent account and link it to an existing student.
+ * POST /api/v1/bursar/create-parent-for-student
+ */
+export const createParentForStudent = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const {
+            studentId,
+            name,
+            phone,
+            address,
+            phoneIsWhatsapp,
+            whatsapp,
+            relationship,
+            academicYearId,
+        } = req.body;
+
+        if (!studentId || !name || !phone) {
+            res.status(400).json({
+                success: false,
+                error: 'Missing required fields: studentId, name, phone',
+            });
+            return;
+        }
+
+        if (
+            relationship &&
+            !['FATHER', 'MOTHER', 'SIBLING', 'GUARDIAN'].includes(String(relationship).toUpperCase())
+        ) {
+            res.status(400).json({
+                success: false,
+                error: 'Invalid relationship. Must be FATHER, MOTHER, SIBLING, or GUARDIAN.',
+            });
+            return;
+        }
+
+        const result = await bursarService.createParentForStudent({
+            student_id: parseInt(studentId),
+            name,
+            phone,
+            address,
+            phone_is_whatsapp: !!phoneIsWhatsapp,
+            whatsapp,
+            relationship,
+            academic_year_id: academicYearId ? parseInt(academicYearId) : undefined,
+        });
+
+        res.status(201).json({
+            success: true,
+            message: 'Parent created and linked to student successfully',
+            data: result,
+        });
+    } catch (error: any) {
+        console.error('Error creating parent for student:', error);
+        const message = error?.message || 'Failed to create parent for student';
+        // Duplicate phone -> unique constraint on User.phone/email
+        const status = /already|unique|duplicate/i.test(message) ? 409 : 500;
+        res.status(status).json({ success: false, error: message });
+    }
+};
+
+/**
  * Link existing parent to a student
  * POST /api/v1/bursar/link-existing-parent
  */
@@ -344,4 +405,37 @@ export const getDefaultersReport = async (req: Request, res: Response): Promise<
             error: error.message
         });
     }
-}; 
+};
+
+/**
+ * Reset a parent's password back to the default `password123`.
+ * POST /api/v1/bursar/parents/:parentId/reset-password
+ */
+export const resetParentPassword = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const parentId = parseInt(req.params.parentId, 10);
+        if (Number.isNaN(parentId)) {
+            res.status(400).json({
+                success: false,
+                error: 'Invalid parentId parameter'
+            });
+            return;
+        }
+
+        const actorId = (req as any).user?.id;
+
+        const result = await bursarService.resetParentPassword(parentId, actorId);
+
+        res.status(200).json({
+            success: true,
+            data: result
+        });
+    } catch (error: any) {
+        console.error('Error resetting parent password:', error);
+        const statusCode = error?.statusCode ?? 500;
+        res.status(statusCode).json({
+            success: false,
+            error: error.message
+        });
+    }
+};

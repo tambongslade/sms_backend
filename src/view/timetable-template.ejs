@@ -19,53 +19,83 @@
     }
     .page {
         page-break-after: always;
-        padding: 4mm 0;
+        padding: 1mm 0;
     }
     .page:last-of-type { page-break-after: auto; }
 
-    .header {
+    .letterhead {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        border-bottom: 3px solid #1e3a8a;
-        padding-bottom: 8px;
-        margin-bottom: 12px;
+        border-bottom: 1px solid #000;
+        padding-bottom: 3px;
+        margin-bottom: 3px;
+        font-size: 6.5pt;
+        color: #111827;
     }
-    .header .brand {
-        font-size: 12pt;
-        color: #6b7280;
-        letter-spacing: 0.5px;
-        text-transform: uppercase;
+    .letterhead .col { width: 34%; text-align: center; line-height: 1.15; }
+    .letterhead .col p { margin: 0; }
+    .letterhead .col p.bold { font-weight: 700; }
+    .letterhead .logo { width: 32%; text-align: center; }
+    .letterhead .logo img { max-height: 42px; max-width: 100%; }
+    .school-info {
+        text-align: center;
+        margin: 2px 0 6px 0;
+    }
+    .school-info h2 {
+        margin: 0;
+        font-size: 11pt;
+        font-weight: 800;
+        letter-spacing: 0.3px;
+    }
+    .school-info .tagline { font-style: italic; font-size: 7.5pt; color: #374151; }
+    .school-info .contact { font-size: 7pt; color: #4b5563; }
+
+    .header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        border-bottom: 1.5px solid #1e3a8a;
+        padding-bottom: 4px;
+        margin-bottom: 6px;
     }
     .header h1 {
         margin: 0;
-        font-size: 16pt;
+        font-size: 12pt;
         color: #1e3a8a;
         letter-spacing: 0.3px;
     }
     .header .meta {
         text-align: right;
-        font-size: 9pt;
+        font-size: 8pt;
         color: #4b5563;
     }
     .subtitle {
-        margin: 0 0 10px 0;
-        font-size: 11pt;
+        margin: 0 0 2px 0;
+        font-size: 9pt;
         color: #374151;
         font-weight: 600;
     }
+    .details {
+        margin: 2px 0 4px 0;
+        font-size: 8.5pt;
+        color: #1f2937;
+        line-height: 1.25;
+    }
+    .details .row { margin: 0; }
+    .details .label { font-weight: 700; color: #1e3a8a; }
     .summary {
         display: flex;
-        gap: 12px;
-        margin-bottom: 10px;
+        gap: 8px;
+        margin-bottom: 6px;
         flex-wrap: wrap;
     }
     .summary .chip {
         background: #eef2ff;
         color: #1e3a8a;
-        padding: 4px 10px;
-        border-radius: 10px;
-        font-size: 9pt;
+        padding: 2px 8px;
+        border-radius: 8px;
+        font-size: 8pt;
         font-weight: 600;
     }
 
@@ -132,11 +162,46 @@
 <body>
 <% pages.forEach(function(page) { %>
     <div class="page">
+        <div class="letterhead">
+            <div class="col">
+                <p class="bold">REPUBLIC OF CAMEROON</p>
+                <p>MINISTRY OF SECONDARY EDUCATION</p>
+                <p>REGIONAL DELEGATION FOR CENTRE</p>
+                <p>DIVISIONAL DELEGATION OF MFOUNDI</p>
+            </div>
+            <div class="logo">
+                <% if (schoolLogo) { %><img src="<%= schoolLogo %>" alt="School Logo" /><% } %>
+            </div>
+            <div class="col">
+                <p class="bold">REPUBLIQUE DU CAMEROUN</p>
+                <p>MINISTERE DES ENSEIGNEMENTS SECONDAIRES</p>
+                <p>DELEGATION REGIONALE DU CENTRE</p>
+                <p>DELEGATION DEPARTEMENTALE DU MFOUNDI</p>
+            </div>
+        </div>
+        <div class="school-info">
+            <h2><%= schoolName %></h2>
+            <% if (schoolTagline) { %><div class="tagline"><%= schoolTagline %></div><% } %>
+            <% if (schoolAddress || schoolPhone) { %>
+                <div class="contact">
+                    <% if (schoolAddress) { %><%= schoolAddress %><% } %>
+                    <% if (schoolAddress && schoolPhone) { %> &middot; <% } %>
+                    <% if (schoolPhone) { %>Tel: <%= schoolPhone %><% } %>
+                </div>
+            <% } %>
+        </div>
+
         <div class="header">
             <div>
-                <div class="brand"><%= brand %></div>
                 <h1><%= page.title %></h1>
                 <% if (page.subtitle) { %><div class="subtitle"><%= page.subtitle %></div><% } %>
+                <% if (page.details && page.details.length) { %>
+                    <div class="details">
+                        <% page.details.forEach(function(d) { %>
+                            <div class="row"><span class="label"><%= d.label %>:</span> <%= d.value %></div>
+                        <% }) %>
+                    </div>
+                <% } %>
             </div>
             <div class="meta">
                 <div><strong>Academic Year:</strong> <%= academicYearName %></div>

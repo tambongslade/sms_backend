@@ -66,10 +66,65 @@ export const SCHEMA_CATALOG: CatalogEntry[] = [
     },
     {
         table: 'SubClassSubject',
-        description: 'Links a subject to a subclass, with the coefficient used to weight its marks. Marks join to this rather than directly to Subject, so any question about performance by subject passes through here.',
-        columns: 'id, sub_class_id, subject_id, coefficient',
+        description: 'Links a subject to a subclass, with the coefficient used to weight its marks. Marks join to this rather than directly to Subject, so any question about performance by subject passes through here. It also has a nullable "userId" column, but that column is not populated in this database — do NOT use it to find who teaches a subject, it will return nothing. Use TeacherPeriod for that.',
+        columns: 'id, sub_class_id, subject_id, coefficient, userId',
         keywords: ['subject', 'coefficient', 'weighting', 'taught', 'per subject', 'by subject', 'subject average'],
         joins: 'SubClassSubject.sub_class_id = SubClass.id, SubClassSubject.subject_id = Subject.id',
+    },
+    {
+        // Without this table the catalog described teachers and subjects but no
+        // way to get from one to the other, so "how many English teachers" had
+        // no answerable form. The model does not decline in that situation — it
+        // invents a join and states the result plainly, which is how a wrong
+        // teacher count reached a principal.
+        table: 'TeacherPeriod',
+        description: 'Which teacher teaches which subject, to which subclass, in which timetable period. This is the ONLY populated link between a teacher and a subject: to find the teachers of a subject, join TeacherPeriod to Subject on subject_id and to User on teacher_id. A teacher appears once per period taught, so always COUNT(DISTINCT teacher_id) and SELECT DISTINCT when listing people, or the same teacher is counted once per lesson on the timetable. teacher_id is nullable — a slot may carry a subject with no teacher assigned yet, and those rows must not be counted as teachers. Scope by academic_year_id for a specific year.',
+        columns: 'id, teacher_id, subject_id, sub_class_id, period_id, academic_year_id, assigned_by_id',
+        keywords: ['teacher', 'teachers', 'teaches', 'teaching', 'who teaches', 'subject teacher', 'timetable', 'period', 'assigned', 'workload', 'lessons'],
+        joins: 'TeacherPeriod.teacher_id = User.id, TeacherPeriod.subject_id = Subject.id, TeacherPeriod.sub_class_id = SubClass.id, TeacherPeriod.academic_year_id = AcademicYear.id',
+    },
+    {
+        table: 'ParentStudent',
+        description: 'Links a parent or guardian to a student. The parent is a User holding the PARENT role; the student is a Student. Use this for any question about a student\'s parents, a parent\'s children, or contact details for a child\'s family — the parent\'s phone and email live on User, not here. A student may have several parents and a parent several children, so COUNT(DISTINCT ...) when counting either side.',
+        columns: 'id, parent_id, student_id, relationship',
+        keywords: ['parent', 'parents', 'guardian', 'guardians', 'father', 'mother', 'family', 'children', 'child', 'next of kin', 'contact'],
+        joins: 'ParentStudent.parent_id = User.id, ParentStudent.student_id = Student.id',
+    },
+    {
+        // Kept deliberately alongside TeacherPeriod, with the difference spelled
+        // out. Two tables that both look like "who teaches what" is precisely
+        // the shape that produces a confident wrong answer, and this one is the
+        // less complete of the pair.
+        table: 'SubjectTeacher',
+        description: 'A declared subject-to-teacher assignment, independent of the timetable. IMPORTANT: this is NOT the same as TeacherPeriod and the two disagree. SubjectTeacher covers only 17 of the 34 subjects, so counting teachers from it under-reports for the rest; TeacherPeriod covers 25 and reflects who actually teaches on this year\'s timetable. Prefer TeacherPeriod for "who teaches X" or "how many X teachers". Use this table only when the question is explicitly about declared or assigned subject specialisms rather than timetabled lessons, and say which basis was used.',
+        columns: 'id, subject_id, teacher_id',
+        keywords: ['subject teacher', 'declared', 'specialism', 'assigned subject', 'qualified'],
+        joins: 'SubjectTeacher.subject_id = Subject.id, SubjectTeacher.teacher_id = User.id',
+    },
+    {
+        table: 'Period',
+        description: 'One slot in the timetable grid: a day of the week, a start and end time, and whether it is a teaching period or a break. TeacherPeriod points at these. Filter on is_break = false when counting teaching time, or breaks are counted as lessons.',
+        columns: 'id, name, day_of_week, start_time, end_time, is_break, type, sequence, period_set_id',
+        keywords: ['period', 'periods', 'timetable', 'slot', 'lesson time', 'break', 'day of week', 'schedule'],
+        joins: 'Period.period_set_id = PeriodSet.id, TeacherPeriod.period_id = Period.id',
+    },
+    {
+        table: 'PeriodSet',
+        description: 'A named timetable structure for an academic year, such as first cycle and second cycle, grouping the Periods that belong to it. Classes point at the set they follow.',
+        columns: 'id, code, name, academic_year_id, description',
+        keywords: ['period set', 'cycle', 'first cycle', 'second cycle', 'timetable structure'],
+        joins: 'PeriodSet.academic_year_id = AcademicYear.id, Period.period_set_id = PeriodSet.id',
+    },
+    {
+        // Same hazard as SubjectTeacher, with money attached. SchoolFees and
+        // ControlSchoolFees have near-identical columns, and a question about
+        // fees answered from the wrong one is wrong by a factor of four on the
+        // current data.
+        table: 'ControlSchoolFees',
+        description: 'A SEPARATE control ledger of expected and paid fees per enrolment, with its own payments in ControlPaymentTransaction. It is NOT a view of SchoolFees and must never be mixed with it or added to it — the two are parallel records and hold different row counts. Ordinary questions about fees, what is owed, or what has been collected use SchoolFees and PaymentTransaction. Use this table only when the question says "control" explicitly, and state which ledger the answer came from.',
+        columns: 'id, enrollment_id, academic_year_id, amount_expected, amount_paid, due_date, is_new_student',
+        keywords: ['control fee', 'control fees', 'control ledger', 'control payment'],
+        joins: 'ControlSchoolFees.enrollment_id = Enrollment.id, ControlSchoolFees.academic_year_id = AcademicYear.id',
     },
     {
         table: 'User',
@@ -138,6 +193,52 @@ export const SCHEMA_CATALOG: CatalogEntry[] = [
 export const ALLOWED_TABLES: ReadonlySet<string> = new Set(
     SCHEMA_CATALOG.map(e => e.table)
 );
+
+/**
+ * Which unrecorded area a question is about, or null.
+ *
+ * Decided here, in code, before the model is ever called. An earlier attempt
+ * put the same list in the prompt and asked the model to answer in prose when a
+ * question matched. A 4B model handed a prose escape from a prompt built
+ * entirely to force SQL took it constantly: "Can I know the timetable of Sunday
+ * Vincent" — a question with tables, data, and an obvious query — came back as
+ * "The school does not record it yet."
+ *
+ * The model's job is to write SELECT statements. Anything that is a judgement
+ * about what the school does and does not keep belongs on this side of the
+ * call, where it is a list of words rather than an inference.
+ */
+const UNRECORDED_TOPICS: Array<{ topic: string; pattern: RegExp }> = [
+    // Anchored on the subject of the question, not on a bare mention. "Marks"
+    // appearing anywhere would swallow "which teacher marks the register";
+    // requiring the question to be *about* the topic is what keeps this narrow.
+    {
+        topic: 'marks, grades and averages',
+        pattern: /\b(?:marks?|grades?|scores?|averages?|results?|report cards?|performance|best student|top student|failed|passed|pass rate)\b/i,
+    },
+    {
+        topic: 'student attendance and absences',
+        pattern: /\b(?:attendance|absent|absence|absences|absentee|truan\w*|present in class)\b/i,
+    },
+    {
+        topic: 'discipline records',
+        pattern: /\b(?:discipline|disciplinary|misconduct|warning letters?|summons|punishment|detention|seized items?|expelled|suspended)\b/i,
+    },
+    {
+        topic: 'payroll and salaries',
+        pattern: /\b(?:salary|salaries|payroll|wages?|pay slip|payslip|pay period|allowance)\b/i,
+    },
+    { topic: 'inventory and stock', pattern: /\b(?:inventory|stock|equipment|store room|storeroom)\b/i },
+    { topic: 'announcements and messaging', pattern: /\b(?:announcements?|messages?|notifications?|chat)\b/i },
+    { topic: 'nurse visits and sick bay records', pattern: /\b(?:nurse|sick bay|sickbay|infirmary|medical visit)\b/i },
+];
+
+export function matchUnrecordedTopic(question: string): string | null {
+    for (const { topic, pattern } of UNRECORDED_TOPICS) {
+        if (pattern.test(question)) return topic;
+    }
+    return null;
+}
 
 /** Renders the retrieved subset into the block shown to the model. */
 export function renderSchema(entries: CatalogEntry[]): string {

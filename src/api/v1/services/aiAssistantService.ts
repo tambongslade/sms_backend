@@ -1,6 +1,6 @@
 import { getAiPrisma, isAiDbConfigured } from '../../../config/aiDb';
 import { retrieve } from './aiAssistant/retriever';
-import { renderSchema } from './aiAssistant/schemaCatalog';
+import { renderSchema, matchUnrecordedTopic } from './aiAssistant/schemaCatalog';
 import { guardSql, GUARD_MAX_ROWS } from './aiAssistant/sqlGuard';
 import { generate, isAvailable, laneStatus, OLLAMA_MODEL } from './aiAssistant/ollamaClient';
 import { matchFastIntent } from './aiAssistant/fastIntents';
@@ -22,6 +22,12 @@ import { matchSmallTalk } from './aiAssistant/smallTalk';
 
 export type AnswerSource = 'small-talk' | 'fast-intent' | 'generated-sql';
 
+/** One previous exchange, oldest first, as the client saw it. */
+export interface ConversationTurn {
+    question: string;
+    answer: string;
+}
+
 export interface AskResult {
     question: string;
     answer: string;
@@ -32,6 +38,13 @@ export interface AskResult {
     tables?: string[];
     tookMs: number;
     truncated: boolean;
+    /**
+     * The standalone question actually answered, when the asked one referred
+     * back to an earlier turn. Surfaced so the UI can show what was understood:
+     * a silent rewrite that guesses wrong is worse than no rewrite at all,
+     * because the answer looks like a reply to the question on screen.
+     */
+    resolvedQuestion?: string;
 }
 
 export class AiAssistantError extends Error {
@@ -127,13 +140,95 @@ function describeRows(rows: any[]): string {
     return `${rows.length} row${rows.length === 1 ? '' : 's'} returned.`;
 }
 
-export async function ask(rawQuestion: string): Promise<AskResult> {
-    const started = Date.now();
-    const question = (rawQuestion ?? '').trim();
+/**
+ * Words that only mean something relative to what was said before.
+ *
+ * Used to decide whether a rewrite is worth a model call at all. "How many
+ * students are in FORM 1" needs no history and must not pay for one — the
+ * assistant is already slow enough that a second round trip on every question
+ * would be felt. Only questions that cannot stand alone get rewritten.
+ */
+const REFERS_BACK = /\b(?:that|those|these|this|it|its|he|him|his|she|her|hers|they|them|their|theirs|the same|then|there|above|previous|last one|which student|which one|what about|and (?:the )?(?:student|parent|teacher|class))\b/i;
 
-    if (!question) throw new AiAssistantError('Please ask a question.');
-    if (question.length > MAX_QUESTION_LENGTH) {
+/** A question of three words or fewer is almost always a fragment continuing the last one. */
+function looksLikeFollowUp(question: string): boolean {
+    if (REFERS_BACK.test(question)) return true;
+    return question.replace(/[?.!]/g, '').trim().split(/\s+/).length <= 3;
+}
+
+/**
+ * Turns a follow-up into a question that stands on its own.
+ *
+ * Rewriting rather than feeding the history into SQL generation is deliberate.
+ * The pipeline matches hand-written intents by regex before the model is
+ * reached, and those patterns are anchored to whole questions — a fragment like
+ * "which student was that" matches none of them and never could. Rewriting puts
+ * a complete question back at the top of the pipeline, so the fast intents keep
+ * working and the model gets a question it can answer without also having to
+ * track a conversation.
+ *
+ * On any failure the original question is returned untouched. A bad rewrite
+ * silently answers a question nobody asked, so the fallback is always to let
+ * the original through and let it fail honestly.
+ */
+async function resolveAgainstHistory(question: string, history: ConversationTurn[]): Promise<string> {
+    const recent = history.slice(-3);
+    const transcript = recent
+        .map(t => `Q: ${t.question}\nA: ${t.answer}`)
+        .join('\n\n');
+
+    const prompt = `Rewrite the follow-up question so it can be understood on its own, using the conversation for anything it refers to.
+
+Rules:
+- Reply with the rewritten question only. No explanation, no quotes.
+- Replace every word that points back ("that", "him", "the same one") with what it refers to.
+- Keep the person's wording and intent. Do not answer it, do not broaden it, and do not add conditions they did not ask for.
+- If it already stands on its own, repeat it back unchanged.
+
+Conversation:
+${transcript}
+
+Follow-up: ${question}
+
+Rewritten:`;
+
+    try {
+        const out = (await generate(prompt, { numPredict: 60, temperature: 0, stop: ['\n\n'] }))
+            .trim()
+            .replace(/^["'`]|["'`]$/g, '')
+            .split('\n')[0]
+            .trim();
+
+        // A rewrite that comes back empty, or long enough to have started
+        // explaining itself, is not a question — take the original.
+        if (!out || out.length > MAX_QUESTION_LENGTH) return question;
+        return out;
+    } catch {
+        return question;
+    }
+}
+
+export async function ask(rawQuestion: string, history: ConversationTurn[] = []): Promise<AskResult> {
+    const started = Date.now();
+    const asked = (rawQuestion ?? '').trim();
+
+    if (!asked) throw new AiAssistantError('Please ask a question.');
+    if (asked.length > MAX_QUESTION_LENGTH) {
         throw new AiAssistantError(`Questions are limited to ${MAX_QUESTION_LENGTH} characters.`);
+    }
+
+    // Small talk is checked against what was actually typed, before any
+    // rewriting: "hello" is three words and would otherwise be treated as a
+    // fragment and sent to the model to be expanded.
+    let question = asked;
+    let resolvedQuestion: string | undefined;
+
+    if (history.length > 0 && !matchSmallTalk(asked) && looksLikeFollowUp(asked)) {
+        const rewritten = await resolveAgainstHistory(asked, history);
+        if (rewritten.toLowerCase() !== asked.toLowerCase()) {
+            question = rewritten;
+            resolvedQuestion = rewritten;
+        }
     }
     // Greetings and "what can you do" first, before anything touches the
     // database or the model. These are the first thing anyone types, and
@@ -148,6 +243,7 @@ export async function ask(rawQuestion: string): Promise<AskResult> {
             rows: [],
             rowCount: 0,
             tookMs: Date.now() - started,
+            resolvedQuestion,
             truncated: false,
         };
     }
@@ -177,6 +273,29 @@ export async function ask(rawQuestion: string): Promise<AskResult> {
             rows,
             rowCount: rows.length,
             tookMs: Date.now() - started,
+            resolvedQuestion,
+            truncated: false,
+        };
+    }
+
+    // --- Areas the school does not record yet --------------------------------
+    // After the fast intents, so a hand-written query always wins, and before
+    // the model, so no time is spent generating SQL for a table that is empty.
+    //
+    // The distinction being drawn is between "nobody scored anything" and
+    // "nothing has been entered". Both come back from the database as zero
+    // rows, and only the second one is true — a query about marks would return
+    // an empty set that reads as a fact about the students.
+    const unrecorded = matchUnrecordedTopic(question);
+    if (unrecorded) {
+        return {
+            question: asked,
+            answer: `The school does not record ${unrecorded} in this system yet, so there is nothing for me to report. If that has changed, the data is not reaching this server.`,
+            source: 'small-talk',
+            rows: [],
+            rowCount: 0,
+            tookMs: Date.now() - started,
+            resolvedQuestion,
             truncated: false,
         };
     }
@@ -299,6 +418,7 @@ Corrected SQL:`;
         sql,
         tables: hits.map(h => h.entry.table),
         tookMs: Date.now() - started,
+        resolvedQuestion,
         truncated: rows.length >= GUARD_MAX_ROWS,
     };
 }

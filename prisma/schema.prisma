@@ -48,124 +48,132 @@ model AcademicYear {
 }
 
 model User {
-  id                            Int                         @id @unique @default(autoincrement())
-  name                          String
-  gender                        Gender
-  date_of_birth                 DateTime
-  photo                         String?
-  phone                         String
-  whatsapp_number               String? // For parents communication
-  address                       String
-  email                         String                      @unique
-  password                      String
-  id_card_num                   String?
-  matricule                     String?                     @unique
-  status                        UserStatus                  @default(ACTIVE)
-  total_hours_per_week          Int? // For teachers
-  last_seen_at                  DateTime? // Presence: updated when a chat websocket disconnects
-  created_at                    DateTime                    @default(now())
-  updated_at                    DateTime                    @updatedAt
-  server_id                     String?
-  checksum                      String?
+  id                                  Int                         @id @unique @default(autoincrement())
+  name                                String
+  gender                              Gender
+  date_of_birth                       DateTime
+  photo                               String?
+  phone                               String
+  whatsapp_number                     String? // For parents communication
+  address                             String
+  email                               String                      @unique
+  password                            String
+  id_card_num                         String?
+  matricule                           String?                     @unique
+  status                              UserStatus                  @default(ACTIVE)
+  must_change_password                Boolean                     @default(false) // Force password change on next login (default parents, bursar-created accounts)
+  total_hours_per_week                Int? // For teachers
+  last_seen_at                        DateTime? // Presence: updated when a chat websocket disconnects
+  created_at                          DateTime                    @default(now())
+  updated_at                          DateTime                    @updatedAt
+  server_id                           String?
+  checksum                            String?
   // Relationships
-  announcements                 Announcement[]
-  discipline_issues_assigned    DisciplineIssue[]           @relation("AssignedDisciplineIssue")
-  discipline_issues_reviewed    DisciplineIssue[]           @relation("ReviewedDisciplineIssue")
-  marks                         Mark[]                      @relation("RecordedByUser")
-  mobile_notifications          MobileNotification[]
-  parent_students               ParentStudent[]
-  student_absences              StudentAbsence[]
-  class_master_of               SubClass[]                  @relation("ClassMaster")
-  hod_subjects                  Subject[]                   @relation("HODSubject") // Head of Department
-  sub_class_subjects            SubClassSubject[]
-  subject_teachers              SubjectTeacher[]
-  assigned_teacher_absences     TeacherAbsence[]            @relation("AssignedByUser")
-  teacher_absences              TeacherAbsence[]
-  assigned_teacher_periods      TeacherPeriod[]             @relation("TeacherPeriods-AssignedBy")
-  teacher_periods               TeacherPeriod[]             @relation("TeacherPeriods-Teacher")
-  user_roles                    UserRole[]
-  role_assignments              RoleAssignment[]
+  announcements                       Announcement[]
+  discipline_issues_assigned          DisciplineIssue[]           @relation("AssignedDisciplineIssue")
+  discipline_issues_reviewed          DisciplineIssue[]           @relation("ReviewedDisciplineIssue")
+  marks                               Mark[]                      @relation("RecordedByUser")
+  mobile_notifications                MobileNotification[]
+  parent_students                     ParentStudent[]
+  student_absences                    StudentAbsence[]
+  class_master_of                     SubClass[]                  @relation("ClassMaster")
+  hod_subjects                        Subject[]                   @relation("HODSubject") // Head of Department
+  sub_class_subjects                  SubClassSubject[]
+  subject_teachers                    SubjectTeacher[]
+  assigned_teacher_absences           TeacherAbsence[]            @relation("AssignedByUser")
+  teacher_absences                    TeacherAbsence[]
+  assigned_teacher_periods            TeacherPeriod[]             @relation("TeacherPeriods-AssignedBy")
+  teacher_periods                     TeacherPeriod[]             @relation("TeacherPeriods-Teacher")
+  user_roles                          UserRole[]
+  role_assignments                    RoleAssignment[]
   // Communication
-  sent_messages                 Message[]                   @relation("SentMessages")
-  received_messages             Message[]                   @relation("ReceivedMessages")
+  sent_messages                       Message[]                   @relation("SentMessages")
+  received_messages                   Message[]                   @relation("ReceivedMessages")
   // Slack-style chat
-  chat_channels_created         ChatChannel[]               @relation("ChatChannelCreatedBy")
-  chat_memberships              ChatChannelMember[]
-  chat_messages_sent            ChatMessage[]               @relation("ChatMessageSender")
-  chat_reactions                ChatMessageReaction[]
-  chat_mentions                 ChatMessageMention[]
+  chat_channels_created               ChatChannel[]               @relation("ChatChannelCreatedBy")
+  chat_memberships                    ChatChannelMember[]
+  chat_messages_sent                  ChatMessage[]               @relation("ChatMessageSender")
+  chat_reactions                      ChatMessageReaction[]
+  chat_mentions                       ChatMessageMention[]
   // Personnel inventory
-  inventory_items_created       InventoryItem[]             @relation("InventoryItemCreatedBy")
-  inventory_holdings            InventoryHolding[]
-  inventory_transfers_sent      InventoryTransfer[]         @relation("InventoryTransferFrom")
-  inventory_transfers_received  InventoryTransfer[]         @relation("InventoryTransferTo")
-  inventory_transfers_resolved  InventoryTransfer[]         @relation("InventoryTransferResolvedBy")
-  inventory_ledger              InventoryLedger[]           @relation("InventoryLedgerUser")
-  inventory_ledger_acted        InventoryLedger[]           @relation("InventoryLedgerActor")
+  inventory_items_created             InventoryItem[]             @relation("InventoryItemCreatedBy")
+  inventory_holdings                  InventoryHolding[]
+  inventory_transfers_sent            InventoryTransfer[]         @relation("InventoryTransferFrom")
+  inventory_transfers_received        InventoryTransfer[]         @relation("InventoryTransferTo")
+  inventory_transfers_resolved        InventoryTransfer[]         @relation("InventoryTransferResolvedBy")
+  inventory_ledger                    InventoryLedger[]           @relation("InventoryLedgerUser")
+  inventory_ledger_acted              InventoryLedger[]           @relation("InventoryLedgerActor")
   // Forms and tracking
-  form_submissions              FormSubmission[]
-  audit_logs                    AuditLog[]
+  form_submissions                    FormSubmission[]
+  audit_logs                          AuditLog[]
   // Fee management
-  recorded_payments             PaymentTransaction[]        @relation("RecordedByUser")
-  recorded_control_payments     ControlPaymentTransaction[] @relation("RecordedByUserControl")
-  created_fee_items             FeeItem[]                   @relation("FeeItemCreatedBy")
-  recorded_fee_item_payments    FeeItemPayment[]            @relation("FeeItemPaymentRecordedBy")
-  recorded_refunds              Refund[]                    @relation("RefundRecordedBy")
-  finance_requests_made         FinanceRequest[]            @relation("FinanceRequestRequestedBy")
-  finance_requests_acted        FinanceRequest[]            @relation("FinanceRequestActedBy")
-  recorded_expenditures         Expenditure[]               @relation("ExpenditureRecordedBy")
-  received_expenditures         Expenditure[]               @relation("ExpenditureRecipient")
-  saturday_punishments_assigned SaturdayPunishment[]        @relation("SaturdayPunishmentAssignedBy")
-  broken_properties_reported    BrokenProperty[]            @relation("BrokenPropertyReportedBy")
-  disciplinary_actions_decided  DisciplinaryAction[]        @relation("DisciplinaryActionDecidedBy")
-  report_requests_sent          ReportRequest[]             @relation("ReportRequestRequestedBy")
-  report_requests_received      ReportRequest[]             @relation("ReportRequestRequestedFrom")
-  QuizTemplate                  QuizTemplate[]
-  QuizSubmission                QuizSubmission[]
-  created_subject_schemes       SubjectScheme[]             @relation("SubjectSchemeCreatedBy")
-  logbook_entries_taught        LogbookEntry[]              @relation("LogbookEntryTaughtBy")
-  logbook_entries_reviewed      LogbookEntry[]              @relation("LogbookEntryReviewedBy")
+  recorded_payments                   PaymentTransaction[]        @relation("RecordedByUser")
+  recorded_control_payments           ControlPaymentTransaction[] @relation("RecordedByUserControl")
+  created_fee_items                   FeeItem[]                   @relation("FeeItemCreatedBy")
+  recorded_fee_item_payments          FeeItemPayment[]            @relation("FeeItemPaymentRecordedBy")
+  recorded_refunds                    Refund[]                    @relation("RefundRecordedBy")
+  finance_requests_made               FinanceRequest[]            @relation("FinanceRequestRequestedBy")
+  finance_requests_acted              FinanceRequest[]            @relation("FinanceRequestActedBy")
+  recorded_expenditures               Expenditure[]               @relation("ExpenditureRecordedBy")
+  received_expenditures               Expenditure[]               @relation("ExpenditureRecipient")
+  saturday_punishments_assigned       SaturdayPunishment[]        @relation("SaturdayPunishmentAssignedBy")
+  broken_properties_reported          BrokenProperty[]            @relation("BrokenPropertyReportedBy")
+  disciplinary_actions_decided        DisciplinaryAction[]        @relation("DisciplinaryActionDecidedBy")
+  disciplinary_actions_approved       DisciplinaryAction[]        @relation("DisciplinaryActionApprover")
+  report_requests_sent                ReportRequest[]             @relation("ReportRequestRequestedBy")
+  report_requests_received            ReportRequest[]             @relation("ReportRequestRequestedFrom")
+  QuizTemplate                        QuizTemplate[]
+  QuizSubmission                      QuizSubmission[]
+  created_subject_schemes             SubjectScheme[]             @relation("SubjectSchemeCreatedBy")
+  logbook_entries_taught              LogbookEntry[]              @relation("LogbookEntryTaughtBy")
+  logbook_entries_reviewed            LogbookEntry[]              @relation("LogbookEntryReviewedBy")
   // Discipline extensions
-  absences_excused              StudentAbsence[]            @relation("AbsenceExcusedByParent")
-  absence_makeups_verified      StudentAbsence[]            @relation("AbsenceMakeupVerifiedBy")
-  student_warnings_issued       StudentWarning[]            @relation("WarningIssuedBy")
-  parent_summons_as_parent      ParentSummons[]             @relation("SummonsParent")
-  parent_summons_created        ParentSummons[]             @relation("SummonsCreatedBy")
-  dm_roll_calls_recorded        DMRollCall[]                @relation("DMRollCallRecordedBy")
-  teacher_roll_calls_recorded   TeacherRollCall[]           @relation("TeacherRollCallRecordedBy")
-  teacher_period_attendances_recorded TeacherPeriodAttendance[] @relation("TeacherPeriodAttendanceRecordedBy")
-  seized_items_seized           SeizedItem[]                @relation("SeizedItemSeizedBy")
-  seized_items_in_custody       SeizedItem[]                @relation("SeizedItemCustodian")
-  seized_items_released_to      SeizedItem[]                @relation("SeizedItemReleasedTo")
-  seized_item_transfers_sent    SeizedItemTransfer[]        @relation("SeizedItemTransferFrom")
-  seized_item_transfers_received SeizedItemTransfer[]       @relation("SeizedItemTransferTo")
-  seized_item_transfers_resolved SeizedItemTransfer[]       @relation("SeizedItemTransferResolvedBy")
+  absences_excused                    StudentAbsence[]            @relation("AbsenceExcusedByParent")
+  absence_makeups_verified            StudentAbsence[]            @relation("AbsenceMakeupVerifiedBy")
+  student_warnings_issued             StudentWarning[]            @relation("WarningIssuedBy")
+  parent_summons_as_parent            ParentSummons[]             @relation("SummonsParent")
+  parent_summons_created              ParentSummons[]             @relation("SummonsCreatedBy")
+  dm_roll_calls_recorded              DMRollCall[]                @relation("DMRollCallRecordedBy")
+  teacher_roll_calls_recorded         TeacherRollCall[]           @relation("TeacherRollCallRecordedBy")
+  teacher_period_attendances_recorded TeacherPeriodAttendance[]   @relation("TeacherPeriodAttendanceRecordedBy")
+  seized_items_seized                 SeizedItem[]                @relation("SeizedItemSeizedBy")
+  seized_items_in_custody             SeizedItem[]                @relation("SeizedItemCustodian")
+  seized_items_released_to            SeizedItem[]                @relation("SeizedItemReleasedTo")
+  seized_item_transfers_sent          SeizedItemTransfer[]        @relation("SeizedItemTransferFrom")
+  seized_item_transfers_received      SeizedItemTransfer[]        @relation("SeizedItemTransferTo")
+  seized_item_transfers_resolved      SeizedItemTransfer[]        @relation("SeizedItemTransferResolvedBy")
   // Nurse
-  nurse_visit_logs               NurseVisitLog[]             @relation("NurseVisitLoggedBy")
+  nurse_visit_logs                    NurseVisitLog[]             @relation("NurseVisitLoggedBy")
   // Ream (paper) stock
-  ream_ledger_recorded           ReamStockLedger[]           @relation("ReamStockLedgerRecordedBy")
-  ream_ledger_received           ReamStockLedger[]           @relation("ReamStockLedgerRecipient")
+  ream_ledger_recorded                ReamStockLedger[]           @relation("ReamStockLedgerRecordedBy")
+  ream_ledger_received                ReamStockLedger[]           @relation("ReamStockLedgerRecipient")
   // Notifications: sender side (recipient side already covered by `mobile_notifications`)
-  notifications_sent             MobileNotification[]        @relation("NotificationSender")
+  notifications_sent                  MobileNotification[]        @relation("NotificationSender")
   // Tasks
-  tasks_assigned_to              Task[]                      @relation("TaskAssignedTo")
-  tasks_assigned_by              Task[]                      @relation("TaskAssignedBy")
+  tasks_assigned_to                   Task[]                      @relation("TaskAssignedTo")
+  tasks_assigned_by                   Task[]                      @relation("TaskAssignedBy")
   // Salary management
-  salary_profile                 SalaryProfile[]             @relation("SalaryProfileUser")
-  salary_profiles_created        SalaryProfile[]             @relation("SalaryProfileCreatedBy")
-  salary_profiles_approved       SalaryProfile[]             @relation("SalaryProfileApprovedBy")
-  salary_change_requests_made    SalaryChangeRequest[]       @relation("SalaryChangeRequestRequestedBy")
-  salary_change_requests_acted   SalaryChangeRequest[]       @relation("SalaryChangeRequestApprovedBy")
-  salary_allowances_requested    SalaryAllowance[]           @relation("SalaryAllowanceRequestedBy")
-  salary_allowances_approved     SalaryAllowance[]           @relation("SalaryAllowanceApprovedBy")
-  pay_periods_created            PayPeriod[]                 @relation("PayPeriodCreatedBy")
-  salary_payments                SalaryPayment[]             @relation("SalaryPaymentUser")
-  salary_payments_paid           SalaryPayment[]             @relation("SalaryPaymentPaidBy")
-  salary_withholdings_requested  SalaryWithholding[]         @relation("SalaryWithholdingRequestedBy")
-  salary_withholdings_approved   SalaryWithholding[]         @relation("SalaryWithholdingApprovedBy")
-  bursar_cash_injections         BursarCashInjection[]       @relation("BursarCashInjectedBy")
+  salary_profile                      SalaryProfile[]             @relation("SalaryProfileUser")
+  salary_profiles_created             SalaryProfile[]             @relation("SalaryProfileCreatedBy")
+  salary_profiles_approved            SalaryProfile[]             @relation("SalaryProfileApprovedBy")
+  salary_change_requests_made         SalaryChangeRequest[]       @relation("SalaryChangeRequestRequestedBy")
+  salary_change_requests_acted        SalaryChangeRequest[]       @relation("SalaryChangeRequestApprovedBy")
+  salary_allowances_requested         SalaryAllowance[]           @relation("SalaryAllowanceRequestedBy")
+  salary_allowances_approved          SalaryAllowance[]           @relation("SalaryAllowanceApprovedBy")
+  pay_periods_created                 PayPeriod[]                 @relation("PayPeriodCreatedBy")
+  salary_payments                     SalaryPayment[]             @relation("SalaryPaymentUser")
+  salary_payments_paid                SalaryPayment[]             @relation("SalaryPaymentPaidBy")
+  salary_withholdings_requested       SalaryWithholding[]         @relation("SalaryWithholdingRequestedBy")
+  salary_withholdings_approved        SalaryWithholding[]         @relation("SalaryWithholdingApprovedBy")
+  bursar_cash_injections              BursarCashInjection[]       @relation("BursarCashInjectedBy")
+  // Staff loans + leave
+  loans_requested                     StaffLoan[]                 @relation("StaffLoanBorrower")
+  loans_approved                      StaffLoan[]                 @relation("StaffLoanApprover")
+  loan_repayments_recorded            StaffLoanRepayment[]        @relation("StaffLoanRepaymentRecordedBy")
+  leave_requested                     LeaveRequest[]              @relation("LeaveRequestRequester")
+  leave_approved                      LeaveRequest[]              @relation("LeaveRequestApprover")
   // Per-user preferences (theme, language, notification toggles, quiet hours)
-  settings                       UserSettings?
+  settings                            UserSettings?
 }
 
 model UserSettings {
@@ -195,6 +203,8 @@ model UserRole {
   academic_year_id Int? // Nullable for global roles like SUPER_MANAGER
   created_at       DateTime      @default(now())
   updated_at       DateTime      @updatedAt
+  server_id        String?
+  checksum         String?
   user             User          @relation(fields: [user_id], references: [id])
   academic_year    AcademicYear? @relation(fields: [academic_year_id], references: [id])
 
@@ -211,6 +221,8 @@ model RoleAssignment {
   subject_id       Int? // For HOD assignments
   created_at       DateTime       @default(now())
   updated_at       DateTime       @updatedAt
+  server_id        String?
+  checksum         String?
   academic_year    AcademicYear   @relation(fields: [academic_year_id], references: [id])
   user             User           @relation(fields: [user_id], references: [id])
   sub_class        SubClass?      @relation(fields: [sub_class_id], references: [id])
@@ -263,6 +275,7 @@ model Class {
   fee_items         FeeItem[]
   subject_schemes   SubjectScheme[]
   period_set        PeriodSet?      @relation(fields: [period_set_id], references: [id])
+  term_classes      TermClass[]
 }
 
 model SubClass {
@@ -328,6 +341,8 @@ model StudentPreviousSchool {
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
   student     Student  @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  server_id   String?
+  checksum    String?
 
   @@index([student_id])
 }
@@ -407,6 +422,8 @@ model ControlSchoolFees {
   control_payment_transactions ControlPaymentTransaction[]
   academic_year                AcademicYear                @relation(fields: [academic_year_id], references: [id])
   enrollment                   Enrollment                  @relation(fields: [enrollment_id], references: [id])
+  server_id                    String?
+  checksum                     String?
 
   @@unique([enrollment_id, academic_year_id])
 }
@@ -456,6 +473,8 @@ model SubjectTeacher {
   teacher_id Int
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
+  server_id  String?
+  checksum   String?
   subject    Subject  @relation(fields: [subject_id], references: [id])
   teacher    User     @relation(fields: [teacher_id], references: [id])
 
@@ -477,34 +496,36 @@ model DisciplineIssue {
   enrollment           Enrollment           @relation(fields: [enrollment_id], references: [id])
   reviewed_by          User                 @relation("ReviewedDisciplineIssue", fields: [reviewed_by_id], references: [id])
   disciplinary_actions DisciplinaryAction[]
+  server_id            String?
+  checksum             String?
 }
 
 model StudentAbsence {
-  id                    Int               @id @default(autoincrement())
-  assigned_by_id        Int
-  teacher_period_id     Int?
-  enrollment_id         Int
-  absence_type          AbsenceType       @default(CLASS_ABSENCE)
+  id                        Int                    @id @default(autoincrement())
+  assigned_by_id            Int
+  teacher_period_id         Int?
+  enrollment_id             Int
+  absence_type              AbsenceType            @default(CLASS_ABSENCE)
   // Parent-side excuse (justification). Excused absences don't count toward warning/summons thresholds.
-  is_excused            Boolean           @default(false)
-  excused_by_parent_id  Int?
-  excused_at            DateTime?
-  excuse_reason         String?
+  is_excused                Boolean                @default(false)
+  excused_by_parent_id      Int?
+  excused_at                DateTime?
+  excuse_reason             String?
   // Student-side makeup (independent of excuse). Tracked separately for academic recovery.
-  makeup_status         MakeupStatus      @default(NONE)
-  makeup_completed_at   DateTime?
-  makeup_notes          String?
-  makeup_verified_by_id Int?
-  created_at            DateTime          @default(now())
-  updated_at            DateTime          @updatedAt
-  server_id             String?
-  checksum              String?
-  assigned_by           User              @relation(fields: [assigned_by_id], references: [id])
-  enrollment            Enrollment        @relation(fields: [enrollment_id], references: [id])
-  teacher_period        TeacherPeriod?    @relation(fields: [teacher_period_id], references: [id])
-  excused_by            User?             @relation("AbsenceExcusedByParent", fields: [excused_by_parent_id], references: [id])
-  makeup_verified_by    User?             @relation("AbsenceMakeupVerifiedBy", fields: [makeup_verified_by_id], references: [id])
-  dm_roll_call_entries  DMRollCallEntry[] @relation("DMRollCallAbsence")
+  makeup_status             MakeupStatus           @default(NONE)
+  makeup_completed_at       DateTime?
+  makeup_notes              String?
+  makeup_verified_by_id     Int?
+  created_at                DateTime               @default(now())
+  updated_at                DateTime               @updatedAt
+  server_id                 String?
+  checksum                  String?
+  assigned_by               User                   @relation(fields: [assigned_by_id], references: [id])
+  enrollment                Enrollment             @relation(fields: [enrollment_id], references: [id])
+  teacher_period            TeacherPeriod?         @relation(fields: [teacher_period_id], references: [id])
+  excused_by                User?                  @relation("AbsenceExcusedByParent", fields: [excused_by_parent_id], references: [id])
+  makeup_verified_by        User?                  @relation("AbsenceMakeupVerifiedBy", fields: [makeup_verified_by_id], references: [id])
+  dm_roll_call_entries      DMRollCallEntry[]      @relation("DMRollCallAbsence")
   teacher_roll_call_entries TeacherRollCallEntry[] @relation("TeacherRollCallAbsence")
 
   @@unique([enrollment_id, teacher_period_id])
@@ -555,17 +576,38 @@ model Term {
   end_date         DateTime?
   academic_year_id Int?
   fee_deadline     DateTime?
+  // Marks the term as a holiday period rather than a teaching term. Holiday
+  // terms scope through TermClass so only the affected classes see them.
+  is_holiday       Boolean        @default(false)
   // Timestamps added for sync: getLocalChanges selects on updated_at, so a
   // table without it cannot participate in the sync at all.
-  created_at       DateTime @default(now())
-  updated_at       DateTime @updatedAt
+  created_at       DateTime       @default(now())
+  updated_at       DateTime       @updatedAt
   server_id        String?
   checksum         String?
   exam_sequences   ExamSequence[]
   academic_year    AcademicYear?  @relation(fields: [academic_year_id], references: [id])
   scheme_lessons   SchemeLesson[]
+  term_classes     TermClass[]
 
   @@unique([start_date, end_date, academic_year_id])
+}
+
+// Join table restricting a Term (typically a holiday term) to a specific set
+// of classes. Empty set on a non-holiday term = applies to all classes.
+model TermClass {
+  id         Int      @id @default(autoincrement())
+  term_id    Int
+  class_id   Int
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  server_id  String?
+  checksum   String?
+  term       Term     @relation(fields: [term_id], references: [id], onDelete: Cascade)
+  class      Class    @relation(fields: [class_id], references: [id], onDelete: Cascade)
+
+  @@unique([term_id, class_id])
+  @@index([class_id])
 }
 
 model Mark {
@@ -594,50 +636,50 @@ model Mark {
 // coexist in the same academic year so different groups of classes run
 // different rhythms without one global period list clobbering the other.
 model PeriodSet {
-  id               Int          @id @default(autoincrement())
-  code             String       // Machine key: FIRST_CYCLE, SECOND_CYCLE, ...
-  name             String       // Human label
+  id               Int      @id @default(autoincrement())
+  code             String // Machine key: FIRST_CYCLE, SECOND_CYCLE, ...
+  name             String // Human label
   academic_year_id Int
   description      String?
-  created_at       DateTime     @default(now())
-  updated_at       DateTime     @updatedAt
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
   server_id        String?
   checksum         String?
 
-  academic_year    AcademicYear @relation(fields: [academic_year_id], references: [id])
-  periods          Period[]
-  classes          Class[]
+  academic_year AcademicYear @relation(fields: [academic_year_id], references: [id])
+  periods       Period[]
+  classes       Class[]
 
   @@unique([code, academic_year_id])
   @@index([academic_year_id])
 }
 
 model Period {
-  id                Int             @id @default(autoincrement())
-  day_of_week       DayOfWeek
-  start_time        String
-  end_time          String
+  id               Int             @id @default(autoincrement())
+  day_of_week      DayOfWeek
+  start_time       String
+  end_time         String
   // Retained for backwards compatibility; new callers should read `type`.
-  is_break          Boolean         @default(false)
+  is_break         Boolean         @default(false)
   // TEACHING = billable instructional slot; BREAK = recess (no teacher);
   // PREP = supervised study block outside the teaching grid (e.g. 15:40–17:30).
   // Kept as a discrete field so roll-call / attendance / clash logic can
   // treat PREP separately from a bare break.
-  type              PeriodType      @default(TEACHING)
+  type             PeriodType      @default(TEACHING)
   // Ordinal within the day for its own period_set (1..N). Lets the frontend
   // grid render columns in insertion order without string-sorting names.
-  sequence          Int             @default(0)
-  name              String
-  period_set_id     Int?
+  sequence         Int             @default(0)
+  name             String
+  period_set_id    Int?
   // Timestamps added for sync: getLocalChanges selects on updated_at, so a
   // table without it cannot participate in the sync at all.
-  created_at        DateTime @default(now())
-  updated_at        DateTime @updatedAt
-  server_id         String?
-  checksum          String?
-  period_set        PeriodSet?      @relation(fields: [period_set_id], references: [id])
-  teacher_periods   TeacherPeriod[]
-  nurse_visit_logs  NurseVisitLog[]
+  created_at       DateTime        @default(now())
+  updated_at       DateTime        @updatedAt
+  server_id        String?
+  checksum         String?
+  period_set       PeriodSet?      @relation(fields: [period_set_id], references: [id])
+  teacher_periods  TeacherPeriod[]
+  nurse_visit_logs NurseVisitLog[]
 
   @@unique([day_of_week, start_time, end_time, period_set_id])
   @@index([period_set_id, day_of_week, sequence])
@@ -651,7 +693,12 @@ enum PeriodType {
 
 model TeacherPeriod {
   id               Int              @id @default(autoincrement())
-  teacher_id       Int
+  // Nullable so a timetable slot can carry a subject with no teacher yet
+  // ("subject-only slots" in the timetable UI). The VPS has allowed this for a
+  // while; this node did not, so all 30 such rows failed every pull with
+  // "Argument `academic_year` is missing" — Prisma's way of saying a required
+  // FK scalar arrived null, blaming the first relation it then had to demand.
+  teacher_id       Int?
   subject_id       Int
   period_id        Int
   academic_year_id Int
@@ -667,15 +714,15 @@ model TeacherPeriod {
   assigned_by      User             @relation("TeacherPeriods-AssignedBy", fields: [assigned_by_id], references: [id])
   period           Period           @relation(fields: [period_id], references: [id])
   sub_class        SubClass         @relation(fields: [sub_class_id], references: [id])
-  teacher          User             @relation("TeacherPeriods-Teacher", fields: [teacher_id], references: [id])
+  teacher          User?            @relation("TeacherPeriods-Teacher", fields: [teacher_id], references: [id])
   subject          Subject          @relation(fields: [subject_id], references: [id])
 
-  logbook_entries LogbookEntry[]
-  teacher_roll_calls TeacherRollCall[]
+  logbook_entries            LogbookEntry[]
+  teacher_roll_calls         TeacherRollCall[]
   teacher_period_attendances TeacherPeriodAttendance[]
 
-  // Prevents a teacher from being booked in two different classes at the same time.
-  @@unique([teacher_id, period_id, academic_year_id], name: "teacher_period_unique")
+  // Teacher clashes are now allowed with a warning, so the old
+  // (teacher_id, period_id, academic_year_id) uniqueness is dropped.
   // Prevents assigning the same teacher to the same subject in the same period/subclass twice.
   @@unique([teacher_id, subject_id, period_id, sub_class_id, academic_year_id], name: "teacher_subject_subclass_period_unique")
 }
@@ -721,6 +768,8 @@ model ControlPaymentTransaction {
   enrollment          Enrollment        @relation(fields: [enrollment_id], references: [id])
   control_school_fees ControlSchoolFees @relation(fields: [control_fee_id], references: [id])
   recorded_by         User              @relation("RecordedByUserControl", fields: [recorded_by_id], references: [id])
+  server_id           String?
+  checksum            String?
 }
 
 model Announcement {
@@ -777,6 +826,8 @@ model Question {
   updated_at           DateTime            @updatedAt
   exam_paper_questions ExamPaperQuestion[]
   subject              Subject             @relation(fields: [subject_id], references: [id])
+  server_id            String?
+  checksum             String?
 }
 
 model ExamPaper {
@@ -791,6 +842,8 @@ model ExamPaper {
   academic_year    AcademicYear        @relation(fields: [academic_year_id], references: [id])
   subject          Subject             @relation(fields: [subject_id], references: [id])
   questions        ExamPaperQuestion[]
+  server_id        String?
+  checksum         String?
 }
 
 model ExamPaperQuestion {
@@ -799,6 +852,10 @@ model ExamPaperQuestion {
   order         Int?
   exam_paper    ExamPaper @relation(fields: [exam_paper_id], references: [id])
   question      Question  @relation(fields: [question_id], references: [id])
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+  server_id     String?
+  checksum      String?
 
   @@id([exam_paper_id, question_id])
 }
@@ -861,6 +918,8 @@ model InterviewMark {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
   student    Student  @relation(fields: [student_id], references: [id])
+  server_id  String?
+  checksum   String?
 
   @@unique([student_id])
 }
@@ -875,10 +934,16 @@ model Message {
   status              MessageStatus @default(SENT)
   deleted_by_sender   Boolean       @default(false)
   deleted_by_receiver Boolean       @default(false)
+  parent_message_id   Int?
+  read_at             DateTime?
   created_at          DateTime      @default(now())
   updated_at          DateTime      @updatedAt
+  server_id           String?
+  checksum            String?
   sender              User          @relation("SentMessages", fields: [sender_id], references: [id])
   receiver            User          @relation("ReceivedMessages", fields: [receiver_id], references: [id])
+  parent_message      Message?      @relation("MessageReplies", fields: [parent_message_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  replies             Message[]     @relation("MessageReplies")
 }
 
 // Slack-style chat workspace
@@ -894,6 +959,8 @@ model ChatChannel {
   created_by_id Int?
   created_at    DateTime    @default(now())
   updated_at    DateTime    @updatedAt
+  server_id     String?
+  checksum      String?
 
   subject    Subject?            @relation(fields: [subject_id], references: [id])
   created_by User?               @relation("ChatChannelCreatedBy", fields: [created_by_id], references: [id])
@@ -913,6 +980,9 @@ model ChatChannelMember {
   joined_at    DateTime   @default(now())
   last_read_at DateTime?
   muted        Boolean    @default(false)
+  updated_at   DateTime   @updatedAt
+  server_id    String?
+  checksum     String?
 
   channel ChatChannel @relation(fields: [channel_id], references: [id], onDelete: Cascade)
   user    User        @relation(fields: [user_id], references: [id])
@@ -931,6 +1001,8 @@ model ChatMessage {
   deleted_at        DateTime?
   created_at        DateTime  @default(now())
   updated_at        DateTime  @updatedAt
+  server_id         String?
+  checksum          String?
 
   channel        ChatChannel             @relation(fields: [channel_id], references: [id], onDelete: Cascade)
   sender         User                    @relation("ChatMessageSender", fields: [sender_id], references: [id])
@@ -949,6 +1021,9 @@ model ChatMessageMention {
   message_id Int
   user_id    Int
   created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  server_id  String?
+  checksum   String?
 
   message ChatMessage @relation(fields: [message_id], references: [id], onDelete: Cascade)
   user    User        @relation(fields: [user_id], references: [id])
@@ -963,6 +1038,9 @@ model ChatMessageReaction {
   user_id    Int
   emoji      String
   created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  server_id  String?
+  checksum   String?
 
   message ChatMessage @relation(fields: [message_id], references: [id], onDelete: Cascade)
   user    User        @relation(fields: [user_id], references: [id])
@@ -981,6 +1059,10 @@ model ChatMessageAttachment {
   duration_secs Int? // Duration in seconds for AUDIO kind (voice notes)
   width         Int? // Pixel width for IMAGE kind
   height        Int? // Pixel height for IMAGE kind
+  created_at    DateTime           @default(now())
+  updated_at    DateTime           @updatedAt
+  server_id     String?
+  checksum      String?
 
   message ChatMessage @relation(fields: [message_id], references: [id], onDelete: Cascade)
 }
@@ -1005,6 +1087,8 @@ model FormTemplate {
   created_at       DateTime         @default(now())
   updated_at       DateTime         @updatedAt
   form_submissions FormSubmission[]
+  server_id        String?
+  checksum         String?
 }
 
 model FormSubmission {
@@ -1017,6 +1101,8 @@ model FormSubmission {
   updated_at       DateTime         @updatedAt
   form_template    FormTemplate     @relation(fields: [form_template_id], references: [id])
   submitted_by     User             @relation(fields: [submitted_by_id], references: [id])
+  server_id        String?
+  checksum         String?
 
   @@unique([form_template_id, submitted_by_id])
 }
@@ -1044,6 +1130,7 @@ enum PaymentMethod {
   CCA
   F3DC
   AFRILAND_FIRST_BANK
+  CASH
 }
 
 enum Audience {
@@ -1101,6 +1188,7 @@ enum Role {
   DISCIPLINE_MASTER // SO prefix - field-level discipline recording
   SENIOR_DISCIPLINE_MASTER // SA prefix - aggregates DM reports, sends to Dean of Discipline
   DEAN_OF_DISCIPLINE // SA prefix - sends general report to VP/Principal
+  DISCIPLINE_COORDINATOR // SA prefix - oversees all DoDs + DMs; personnel management scoped to that chain
   DEAN_OF_STUDIES // SA prefix
   FEE_AUDITOR // SA prefix
   SECRETARY // SA prefix
@@ -1116,6 +1204,7 @@ enum AssignmentRole {
   DISCIPLINE_MASTER
   SENIOR_DISCIPLINE_MASTER
   DEAN_OF_DISCIPLINE
+  DISCIPLINE_COORDINATOR
   DEAN_OF_STUDIES
   FEE_AUDITOR
   SECRETARY
@@ -1216,6 +1305,14 @@ enum StudentStatus {
   GRADUATED
   TRANSFERRED
   SUSPENDED
+  // Removed by staff (non-payment, first-week absence, etc.) without a hard
+  // DELETE. A hard delete has no sync counterpart -- the sync system only
+  // replicates creates/updates, never deletions -- so a student deleted on
+  // one node reappeared within one sync tick as soon as the other node's
+  // still-live copy was pulled/pushed back. A status change is an ordinary
+  // field update, which the existing sync path already replicates correctly
+  // in both directions.
+  WITHDRAWN
 }
 
 enum DisciplineType {
@@ -1330,6 +1427,8 @@ model QuizTemplate {
   created_by    User             @relation(fields: [created_by_id], references: [id])
   questions     QuizQuestion[]
   submissions   QuizSubmission[]
+  server_id     String?
+  checksum      String?
 
   @@index([subject_id])
   @@index([academic_year_id])
@@ -1351,6 +1450,8 @@ model QuizQuestion {
 
   quiz      QuizTemplate   @relation(fields: [quiz_id], references: [id], onDelete: Cascade)
   responses QuizResponse[]
+  server_id String?
+  checksum  String?
 
   @@index([quiz_id])
 }
@@ -1376,6 +1477,8 @@ model QuizSubmission {
   parent        User           @relation(fields: [parent_id], references: [id])
   academic_year AcademicYear   @relation(fields: [academic_year_id], references: [id])
   responses     QuizResponse[]
+  server_id     String?
+  checksum      String?
 
   @@unique([quiz_id, student_id, academic_year_id])
   @@index([quiz_id])
@@ -1395,6 +1498,8 @@ model QuizResponse {
 
   submission QuizSubmission @relation(fields: [submission_id], references: [id], onDelete: Cascade)
   question   QuizQuestion   @relation(fields: [question_id], references: [id])
+  server_id  String?
+  checksum   String?
 
   @@index([submission_id])
   @@index([question_id])
@@ -1416,6 +1521,39 @@ model SyncMetadata {
   server_type String // 'local' or 'remote'
   server_id   String?
   created_at  DateTime @default(now())
+}
+
+// One row per table in SYNC_TABLES, holding that table's own "since" cursor.
+// Replaces the single global SyncMetadata timestamp: a table with no row yet
+// falls back to the latest SyncMetadata entry (the old global cursor) so
+// every table starts from the same known-good point instead of re-scanning
+// from epoch on rollout.
+model SyncTableCursor {
+  table_name String   @id
+  cursor     DateTime
+  updated_at DateTime @updatedAt
+}
+
+// Records that failed to push or pull and could not be placed within a
+// single run's deferred-retry passes (see MAX_DEFERRED_PASSES). Retried on
+// a backoff schedule independent of the normal per-table sync tick, so one
+// permanently-broken record (an orphaned FK, a peer-side validation error)
+// never blocks that table's cursor from advancing for everything else.
+// The row itself is the inspection surface: high `attempts` with a
+// `next_attempt` far in the future is a record that is effectively stuck.
+model SyncRetryQueue {
+  id           Int      @id @default(autoincrement())
+  table_name   String
+  record_id    Int
+  direction    String // 'push' | 'pull'
+  payload      Json
+  last_error   String?
+  attempts     Int      @default(0)
+  next_attempt DateTime @default(now())
+  created_at   DateTime @default(now())
+
+  @@unique([table_name, record_id, direction])
+  @@index([next_attempt])
 }
 
 model SyncLog {
@@ -1458,6 +1596,8 @@ model FeeItem {
   created_by                User             @relation("FeeItemCreatedBy", fields: [created_by_id], references: [id])
   payments                  FeeItemPayment[]
   broken_property           BrokenProperty?
+  server_id                 String?
+  checksum                  String?
 
   @@index([academic_year_id, is_active])
   @@index([scope, class_id, sub_class_id])
@@ -1483,6 +1623,8 @@ model FeeItemPayment {
   fee_item                FeeItem       @relation(fields: [fee_item_id], references: [id])
   enrollment              Enrollment    @relation(fields: [enrollment_id], references: [id])
   recorded_by             User          @relation("FeeItemPaymentRecordedBy", fields: [recorded_by_id], references: [id])
+  server_id               String?
+  checksum                String?
 
   @@index([fee_item_id, enrollment_id])
   @@index([enrollment_id])
@@ -1513,6 +1655,8 @@ model Refund {
   enrollment     Enrollment   @relation(fields: [enrollment_id], references: [id])
   school_fees    SchoolFees   @relation(fields: [school_fees_id], references: [id])
   recorded_by    User         @relation("RefundRecordedBy", fields: [recorded_by_id], references: [id])
+  server_id      String?
+  checksum       String?
 
   @@index([enrollment_id])
   @@index([school_fees_id])
@@ -1532,21 +1676,30 @@ enum RefundMethod {
 // Saturday punishment scheduled by the DM, typically after 3 lates in a term.
 // Lifecycle: PENDING -> SERVED or SKIPPED.
 model SaturdayPunishment {
-  id             Int              @id @default(autoincrement())
-  enrollment_id  Int
-  reason         String
-  scheduled_date DateTime?
-  served_date    DateTime?
-  status         PunishmentStatus @default(PENDING)
-  notes          String?
-  assigned_by_id Int
-  created_at     DateTime         @default(now())
-  updated_at     DateTime         @updatedAt
-  enrollment     Enrollment       @relation(fields: [enrollment_id], references: [id])
-  assigned_by    User             @relation("SaturdayPunishmentAssignedBy", fields: [assigned_by_id], references: [id])
+  id              Int                        @id @default(autoincrement())
+  enrollment_id   Int
+  reason          String
+  reason_category SaturdayPunishmentCategory @default(STANDARD)
+  scheduled_date  DateTime?
+  served_date     DateTime?
+  status          PunishmentStatus           @default(PENDING)
+  notes           String?
+  assigned_by_id  Int
+  created_at      DateTime                   @default(now())
+  updated_at      DateTime                   @updatedAt
+  enrollment      Enrollment                 @relation(fields: [enrollment_id], references: [id])
+  assigned_by     User                       @relation("SaturdayPunishmentAssignedBy", fields: [assigned_by_id], references: [id])
+  server_id       String?
+  checksum        String?
 
   @@index([enrollment_id, status])
   @@index([status, scheduled_date])
+}
+
+enum SaturdayPunishmentCategory {
+  STANDARD
+  CUSTOM
+  EXTRAORDINARY
 }
 
 // Progressive warning issued to a student. Auto-created by
@@ -1567,6 +1720,8 @@ model StudentWarning {
   updated_at            DateTime      @updatedAt
   enrollment            Enrollment    @relation(fields: [enrollment_id], references: [id])
   issued_by             User          @relation("WarningIssuedBy", fields: [issued_by_id], references: [id])
+  server_id             String?
+  checksum              String?
 
   @@index([enrollment_id, resolved])
   @@index([enrollment_id, warning_level])
@@ -1594,6 +1749,8 @@ model ParentSummons {
   enrollment          Enrollment     @relation(fields: [enrollment_id], references: [id])
   parent              User?          @relation("SummonsParent", fields: [parent_id], references: [id])
   created_by          User           @relation("SummonsCreatedBy", fields: [created_by_id], references: [id])
+  server_id           String?
+  checksum            String?
 
   @@index([enrollment_id, status])
   @@index([status, scheduled_date])
@@ -1614,6 +1771,8 @@ model DMRollCall {
   academic_year    AcademicYear      @relation(fields: [academic_year_id], references: [id])
   recorded_by      User              @relation("DMRollCallRecordedBy", fields: [recorded_by_id], references: [id])
   entries          DMRollCallEntry[]
+  server_id        String?
+  checksum         String?
 
   @@unique([sub_class_id, date, slot])
   @@index([academic_year_id, date])
@@ -1630,6 +1789,8 @@ model DMRollCallEntry {
   dm_roll_call      DMRollCall       @relation(fields: [dm_roll_call_id], references: [id], onDelete: Cascade)
   enrollment        Enrollment       @relation(fields: [enrollment_id], references: [id])
   linked_absence    StudentAbsence?  @relation("DMRollCallAbsence", fields: [linked_absence_id], references: [id])
+  server_id         String?
+  checksum          String?
 
   @@unique([dm_roll_call_id, enrollment_id])
   @@index([enrollment_id])
@@ -1642,7 +1803,8 @@ model BrokenProperty {
   enrollment_id  Int
   item_name      String
   description    String
-  estimated_cost Float
+  estimated_cost Float?
+  photo_url      String?
   action_taken   String?
   fee_item_id    Int?       @unique
   reported_by_id Int
@@ -1651,6 +1813,8 @@ model BrokenProperty {
   enrollment     Enrollment @relation(fields: [enrollment_id], references: [id])
   fee_item       FeeItem?   @relation(fields: [fee_item_id], references: [id])
   reported_by    User       @relation("BrokenPropertyReportedBy", fields: [reported_by_id], references: [id])
+  server_id      String?
+  checksum       String?
 
   @@index([enrollment_id])
   @@index([reported_by_id])
@@ -1660,21 +1824,23 @@ model BrokenProperty {
 // the period, treatment, medication and notes are all optional so the nurse
 // can capture a quick entry and fill in details later.
 model NurseVisitLog {
-  id                Int         @id @default(autoincrement())
-  enrollment_id     Int
-  period_id         Int?
-  visit_date        DateTime    @default(now())
-  reason            String
-  treatment_given   String?
-  medication_given  String?
-  notes             String?
-  sent_home         Boolean     @default(false)
-  logged_by_id      Int
-  created_at        DateTime    @default(now())
-  updated_at        DateTime    @updatedAt
-  enrollment        Enrollment  @relation(fields: [enrollment_id], references: [id])
-  period            Period?     @relation(fields: [period_id], references: [id])
-  logged_by         User        @relation("NurseVisitLoggedBy", fields: [logged_by_id], references: [id])
+  id               Int        @id @default(autoincrement())
+  enrollment_id    Int
+  period_id        Int?
+  visit_date       DateTime   @default(now())
+  reason           String
+  treatment_given  String?
+  medication_given String?
+  notes            String?
+  sent_home        Boolean    @default(false)
+  logged_by_id     Int
+  created_at       DateTime   @default(now())
+  updated_at       DateTime   @updatedAt
+  enrollment       Enrollment @relation(fields: [enrollment_id], references: [id])
+  period           Period?    @relation(fields: [period_id], references: [id])
+  logged_by        User       @relation("NurseVisitLoggedBy", fields: [logged_by_id], references: [id])
+  server_id        String?
+  checksum         String?
 
   @@index([enrollment_id])
   @@index([logged_by_id])
@@ -1703,6 +1869,8 @@ model FinanceRequest {
   updated_at      DateTime             @updatedAt
   requested_by    User                 @relation("FinanceRequestRequestedBy", fields: [requested_by_id], references: [id])
   acted_by        User?                @relation("FinanceRequestActedBy", fields: [acted_by_id], references: [id])
+  server_id       String?
+  checksum        String?
 
   @@index([type, status])
   @@index([requested_by_id])
@@ -1742,6 +1910,8 @@ model Expenditure {
   updated_at        DateTime            @updatedAt
   recorded_by       User                @relation("ExpenditureRecordedBy", fields: [recorded_by_id], references: [id])
   recipient_user    User?               @relation("ExpenditureRecipient", fields: [recipient_user_id], references: [id])
+  server_id         String?
+  checksum          String?
 
   @@index([date])
   @@index([category, date])
@@ -1761,26 +1931,34 @@ enum ExpenditureCategory {
 // Structured disciplinary measures decided by the Dean of Discipline (and senior staff).
 // Optionally links to the underlying DisciplineIssue that triggered the action.
 model DisciplinaryAction {
-  id                  Int                      @id @default(autoincrement())
+  id                  Int                        @id @default(autoincrement())
   enrollment_id       Int
   discipline_issue_id Int?
   action_type         DisciplinaryActionType
-  status              DisciplinaryActionStatus @default(PENDING)
+  status              DisciplinaryActionStatus   @default(PENDING)
   days                Int? // for SUSPENSION / SUSPENDED_WITH_CHORES
   start_date          DateTime?
   end_date            DateTime?
-  reason              String
+  reason              String?
   notes               String?
   decided_by_id       Int
-  created_at          DateTime                 @default(now())
-  updated_at          DateTime                 @updatedAt
-  enrollment          Enrollment               @relation(fields: [enrollment_id], references: [id])
-  discipline_issue    DisciplineIssue?         @relation(fields: [discipline_issue_id], references: [id])
-  decided_by          User                     @relation("DisciplinaryActionDecidedBy", fields: [decided_by_id], references: [id])
+  approval_status     DisciplinaryApprovalStatus @default(NOT_REQUIRED)
+  approver_id         Int?
+  approved_at         DateTime?
+  approval_notes      String?
+  created_at          DateTime                   @default(now())
+  updated_at          DateTime                   @updatedAt
+  enrollment          Enrollment                 @relation(fields: [enrollment_id], references: [id])
+  discipline_issue    DisciplineIssue?           @relation(fields: [discipline_issue_id], references: [id])
+  decided_by          User                       @relation("DisciplinaryActionDecidedBy", fields: [decided_by_id], references: [id])
+  approver            User?                      @relation("DisciplinaryActionApprover", fields: [approver_id], references: [id])
+  server_id           String?
+  checksum            String?
 
   @@index([enrollment_id, status])
   @@index([action_type, status])
   @@index([discipline_issue_id])
+  @@index([approval_status, approver_id])
 }
 
 enum DisciplinaryActionType {
@@ -1799,6 +1977,13 @@ enum DisciplinaryActionStatus {
   ACTIVE
   COMPLETED
   CANCELLED
+}
+
+enum DisciplinaryApprovalStatus {
+  NOT_REQUIRED
+  PENDING_APPROVAL
+  APPROVED
+  DECLINED
 }
 
 // Report request raised by the Dean of Discipline to a Senior Discipline Master
@@ -1821,6 +2006,8 @@ model ReportRequest {
   updated_at          DateTime            @updatedAt
   requested_by        User                @relation("ReportRequestRequestedBy", fields: [requested_by_id], references: [id])
   requested_from      User                @relation("ReportRequestRequestedFrom", fields: [requested_from_id], references: [id])
+  server_id           String?
+  checksum            String?
 
   @@index([requested_by_id, status])
   @@index([requested_from_id, status])
@@ -1853,6 +2040,8 @@ model SubjectScheme {
   created_by_id         Int
   created_at            DateTime       @default(now())
   updated_at            DateTime       @updatedAt
+  server_id             String?
+  checksum              String?
   subject               Subject        @relation(fields: [subject_id], references: [id])
   class                 Class          @relation(fields: [class_id], references: [id])
   academic_year         AcademicYear   @relation(fields: [academic_year_id], references: [id])
@@ -1871,6 +2060,8 @@ model SchemeModule {
   title             String
   created_at        DateTime        @default(now())
   updated_at        DateTime        @updatedAt
+  server_id         String?
+  checksum          String?
   subject_scheme    SubjectScheme   @relation(fields: [subject_scheme_id], references: [id], onDelete: Cascade)
   chapters          SchemeChapter[]
 
@@ -1886,6 +2077,8 @@ model SchemeChapter {
   title      String
   created_at DateTime       @default(now())
   updated_at DateTime       @updatedAt
+  server_id  String?
+  checksum   String?
   module     SchemeModule   @relation(fields: [module_id], references: [id], onDelete: Cascade)
   lessons    SchemeLesson[]
 
@@ -1908,6 +2101,8 @@ model SchemeLesson {
   periods_count              Int             @default(1)
   created_at                 DateTime        @default(now())
   updated_at                 DateTime        @updatedAt
+  server_id                  String?
+  checksum                   String?
   chapter                    SchemeChapter   @relation(fields: [chapter_id], references: [id], onDelete: Cascade)
   term                       Term?           @relation(fields: [term_id], references: [id])
   logbook_entries            LogbookEntry[]
@@ -1940,6 +2135,8 @@ model LogbookEntry {
   reviewer_notes    String?
   created_at        DateTime           @default(now())
   updated_at        DateTime           @updatedAt
+  server_id         String?
+  checksum          String?
   teacher_period    TeacherPeriod      @relation(fields: [teacher_period_id], references: [id])
   lesson            SchemeLesson       @relation(fields: [lesson_id], references: [id])
   taught_by         User               @relation("LogbookEntryTaughtBy", fields: [taught_by_id], references: [id])
@@ -1972,10 +2169,12 @@ model TeacherRollCall {
   created_at        DateTime @default(now())
   updated_at        DateTime @updatedAt
 
-  teacher_period TeacherPeriod         @relation(fields: [teacher_period_id], references: [id])
-  academic_year  AcademicYear          @relation(fields: [academic_year_id], references: [id])
-  recorded_by    User                  @relation("TeacherRollCallRecordedBy", fields: [recorded_by_id], references: [id])
+  teacher_period TeacherPeriod          @relation(fields: [teacher_period_id], references: [id])
+  academic_year  AcademicYear           @relation(fields: [academic_year_id], references: [id])
+  recorded_by    User                   @relation("TeacherRollCallRecordedBy", fields: [recorded_by_id], references: [id])
   entries        TeacherRollCallEntry[]
+  server_id      String?
+  checksum       String?
 
   @@unique([teacher_period_id, date])
   @@index([academic_year_id, date])
@@ -1983,18 +2182,20 @@ model TeacherRollCall {
 }
 
 model TeacherRollCallEntry {
-  id                    Int                   @id @default(autoincrement())
-  teacher_roll_call_id  Int
-  enrollment_id         Int
-  status                TeacherRollCallStatus
-  linked_absence_id     Int?
-  notes                 String?
-  created_at            DateTime              @default(now())
-  updated_at            DateTime              @updatedAt
+  id                   Int                   @id @default(autoincrement())
+  teacher_roll_call_id Int
+  enrollment_id        Int
+  status               TeacherRollCallStatus
+  linked_absence_id    Int?
+  notes                String?
+  created_at           DateTime              @default(now())
+  updated_at           DateTime              @updatedAt
 
   teacher_roll_call TeacherRollCall @relation(fields: [teacher_roll_call_id], references: [id], onDelete: Cascade)
   enrollment        Enrollment      @relation(fields: [enrollment_id], references: [id])
   linked_absence    StudentAbsence? @relation("TeacherRollCallAbsence", fields: [linked_absence_id], references: [id])
+  server_id         String?
+  checksum          String?
 
   @@unique([teacher_roll_call_id, enrollment_id])
   @@index([enrollment_id])
@@ -2013,24 +2214,26 @@ enum TeacherRollCallStatus {
 // so a weekly timetable slot yields one record per calendar day.
 
 model TeacherPeriodAttendance {
-  id                Int                          @id @default(autoincrement())
+  id                Int                           @id @default(autoincrement())
   teacher_period_id Int
   academic_year_id  Int
   date              DateTime
   status            TeacherPeriodAttendanceStatus
-  well_dressed      Boolean                      @default(false)
-  class_management  Boolean                      @default(false)
-  punctuality       Boolean                      @default(false)
-  assiduity         Boolean                      @default(false)
+  well_dressed      Boolean                       @default(false)
+  class_management  Boolean                       @default(false)
+  punctuality       Boolean                       @default(false)
+  assiduity         Boolean                       @default(false)
   reason            String?
   notes             String?
   recorded_by_id    Int
-  created_at        DateTime                     @default(now())
-  updated_at        DateTime                     @updatedAt
+  created_at        DateTime                      @default(now())
+  updated_at        DateTime                      @updatedAt
 
   teacher_period TeacherPeriod @relation(fields: [teacher_period_id], references: [id], onDelete: Cascade)
   academic_year  AcademicYear  @relation(fields: [academic_year_id], references: [id])
   recorded_by    User          @relation("TeacherPeriodAttendanceRecordedBy", fields: [recorded_by_id], references: [id])
+  server_id      String?
+  checksum       String?
 
   @@unique([teacher_period_id, date])
   @@index([academic_year_id, date])
@@ -2059,7 +2262,7 @@ model SeizedItem {
   location             String?
   seized_by_id         Int
   seized_at            DateTime         @default(now())
-  current_custodian_id Int?             // null after release/destroy
+  current_custodian_id Int? // null after release/destroy
   status               SeizedItemStatus @default(IN_CUSTODY)
   released_to_id       Int?
   released_at          DateTime?
@@ -2075,6 +2278,8 @@ model SeizedItem {
   current_custodian User?                @relation("SeizedItemCustodian", fields: [current_custodian_id], references: [id])
   released_to       User?                @relation("SeizedItemReleasedTo", fields: [released_to_id], references: [id])
   transfers         SeizedItemTransfer[]
+  server_id         String?
+  checksum          String?
 
   @@index([enrollment_id, status])
   @@index([current_custodian_id, status])
@@ -2082,20 +2287,24 @@ model SeizedItem {
 }
 
 model SeizedItemTransfer {
-  id             Int                        @id @default(autoincrement())
+  id             Int                      @id @default(autoincrement())
   seized_item_id Int
   from_user_id   Int
   to_user_id     Int
-  status         SeizedItemTransferStatus   @default(PENDING)
+  status         SeizedItemTransferStatus @default(PENDING)
   note           String?
-  initiated_at   DateTime                   @default(now())
+  initiated_at   DateTime                 @default(now())
   resolved_at    DateTime?
   resolved_by_id Int?
 
   seized_item SeizedItem @relation(fields: [seized_item_id], references: [id], onDelete: Cascade)
-  from_user   User       @relation("SeizedItemTransferFrom",       fields: [from_user_id],   references: [id])
-  to_user     User       @relation("SeizedItemTransferTo",         fields: [to_user_id],     references: [id])
+  from_user   User       @relation("SeizedItemTransferFrom", fields: [from_user_id], references: [id])
+  to_user     User       @relation("SeizedItemTransferTo", fields: [to_user_id], references: [id])
   resolved_by User?      @relation("SeizedItemTransferResolvedBy", fields: [resolved_by_id], references: [id])
+  created_at  DateTime   @default(now())
+  updated_at  DateTime   @updatedAt
+  server_id   String?
+  checksum    String?
 
   @@index([seized_item_id, status])
   @@index([from_user_id, status])
@@ -2134,6 +2343,8 @@ model InventoryItem {
   holdings   InventoryHolding[]
   transfers  InventoryTransfer[]
   ledger     InventoryLedger[]
+  server_id  String?
+  checksum   String?
 
   @@index([is_active])
 }
@@ -2145,8 +2356,11 @@ model InventoryHolding {
   quantity   Int      @default(0)
   updated_at DateTime @updatedAt
 
-  user User          @relation(fields: [user_id], references: [id])
-  item InventoryItem @relation(fields: [item_id], references: [id])
+  user       User          @relation(fields: [user_id], references: [id])
+  item       InventoryItem @relation(fields: [item_id], references: [id])
+  created_at DateTime      @default(now())
+  server_id  String?
+  checksum   String?
 
   @@unique([user_id, item_id])
   @@index([user_id])
@@ -2165,11 +2379,15 @@ model InventoryTransfer {
   resolved_at    DateTime?
   resolved_by_id Int?
 
-  item        InventoryItem @relation(fields: [item_id], references: [id])
-  from_user   User          @relation("InventoryTransferFrom", fields: [from_user_id], references: [id])
-  to_user     User          @relation("InventoryTransferTo", fields: [to_user_id], references: [id])
-  resolved_by User?         @relation("InventoryTransferResolvedBy", fields: [resolved_by_id], references: [id])
+  item        InventoryItem     @relation(fields: [item_id], references: [id])
+  from_user   User              @relation("InventoryTransferFrom", fields: [from_user_id], references: [id])
+  to_user     User              @relation("InventoryTransferTo", fields: [to_user_id], references: [id])
+  resolved_by User?             @relation("InventoryTransferResolvedBy", fields: [resolved_by_id], references: [id])
   ledger      InventoryLedger[]
+  created_at  DateTime          @default(now())
+  updated_at  DateTime          @updatedAt
+  server_id   String?
+  checksum    String?
 
   @@index([from_user_id, status])
   @@index([to_user_id, status])
@@ -2187,17 +2405,20 @@ model InventoryLedger {
   id          Int                   @id @default(autoincrement())
   user_id     Int
   item_id     Int
-  delta       Int                    // +credit, -debit
+  delta       Int // +credit, -debit
   reason      InventoryLedgerReason
   transfer_id Int?
   actor_id    Int?
   note        String?
   created_at  DateTime              @default(now())
 
-  user     User               @relation("InventoryLedgerUser",  fields: [user_id],     references: [id])
-  item     InventoryItem      @relation(fields: [item_id],     references: [id])
-  actor    User?              @relation("InventoryLedgerActor", fields: [actor_id],    references: [id])
-  transfer InventoryTransfer? @relation(fields: [transfer_id], references: [id])
+  user       User               @relation("InventoryLedgerUser", fields: [user_id], references: [id])
+  item       InventoryItem      @relation(fields: [item_id], references: [id])
+  actor      User?              @relation("InventoryLedgerActor", fields: [actor_id], references: [id])
+  transfer   InventoryTransfer? @relation(fields: [transfer_id], references: [id])
+  updated_at DateTime           @updatedAt
+  server_id  String?
+  checksum   String?
 
   @@index([user_id, created_at])
   @@index([item_id, created_at])
@@ -2236,14 +2457,16 @@ model SalaryProfile {
   created_at       DateTime            @default(now())
   updated_at       DateTime            @updatedAt
 
-  user             User          @relation("SalaryProfileUser", fields: [user_id], references: [id])
-  academic_year    AcademicYear  @relation(fields: [academic_year_id], references: [id])
-  created_by       User          @relation("SalaryProfileCreatedBy", fields: [created_by_id], references: [id])
-  approved_by      User?         @relation("SalaryProfileApprovedBy", fields: [approved_by_id], references: [id])
+  user          User         @relation("SalaryProfileUser", fields: [user_id], references: [id])
+  academic_year AcademicYear @relation(fields: [academic_year_id], references: [id])
+  created_by    User         @relation("SalaryProfileCreatedBy", fields: [created_by_id], references: [id])
+  approved_by   User?        @relation("SalaryProfileApprovedBy", fields: [approved_by_id], references: [id])
 
-  change_requests  SalaryChangeRequest[]
-  allowances       SalaryAllowance[]
-  salary_payments  SalaryPayment[]
+  change_requests SalaryChangeRequest[]
+  allowances      SalaryAllowance[]
+  salary_payments SalaryPayment[]
+  server_id       String?
+  checksum        String?
 
   @@unique([user_id, academic_year_id])
   @@index([status])
@@ -2269,6 +2492,8 @@ model SalaryChangeRequest {
   salary_profile SalaryProfile @relation(fields: [salary_profile_id], references: [id], onDelete: Cascade)
   requested_by   User          @relation("SalaryChangeRequestRequestedBy", fields: [requested_by_id], references: [id])
   approved_by    User?         @relation("SalaryChangeRequestApprovedBy", fields: [approved_by_id], references: [id])
+  server_id      String?
+  checksum       String?
 
   @@index([status])
   @@index([salary_profile_id])
@@ -2293,6 +2518,8 @@ model SalaryAllowance {
   pay_period     PayPeriod?    @relation(fields: [pay_period_id], references: [id])
   requested_by   User          @relation("SalaryAllowanceRequestedBy", fields: [requested_by_id], references: [id])
   approved_by    User?         @relation("SalaryAllowanceApprovedBy", fields: [approved_by_id], references: [id])
+  server_id      String?
+  checksum       String?
 
   @@index([status])
   @@index([salary_profile_id])
@@ -2318,6 +2545,8 @@ model PayPeriod {
   created_by      User              @relation("PayPeriodCreatedBy", fields: [created_by_id], references: [id])
   salary_payments SalaryPayment[]
   allowances      SalaryAllowance[]
+  server_id       String?
+  checksum        String?
 
   @@unique([academic_year_id, year, month])
   @@index([status])
@@ -2350,6 +2579,8 @@ model SalaryPayment {
   user           User                @relation("SalaryPaymentUser", fields: [user_id], references: [id])
   paid_by        User?               @relation("SalaryPaymentPaidBy", fields: [paid_by_id], references: [id])
   withholdings   SalaryWithholding[]
+  server_id      String?
+  checksum       String?
 
   @@unique([pay_period_id, user_id])
   @@index([status])
@@ -2373,6 +2604,8 @@ model SalaryWithholding {
   salary_payment SalaryPayment @relation(fields: [salary_payment_id], references: [id], onDelete: Cascade)
   requested_by   User          @relation("SalaryWithholdingRequestedBy", fields: [requested_by_id], references: [id])
   approved_by    User?         @relation("SalaryWithholdingApprovedBy", fields: [approved_by_id], references: [id])
+  server_id      String?
+  checksum       String?
 
   @@index([status])
   @@index([salary_payment_id])
@@ -2394,6 +2627,8 @@ model BursarCashInjection {
 
   academic_year AcademicYear @relation(fields: [academic_year_id], references: [id])
   injected_by   User         @relation("BursarCashInjectedBy", fields: [injected_by_id], references: [id])
+  server_id     String?
+  checksum      String?
 
   @@index([academic_year_id, created_at])
   @@index([source])
@@ -2453,19 +2688,21 @@ enum BursarCashInjectionSource {
 // Current stock = SUM(RECEIPT.quantity) - SUM(ISSUANCE.quantity). Managers & Super Managers read.
 
 model ReamStockLedger {
-  id                Int                 @id @default(autoincrement())
+  id                Int                @id @default(autoincrement())
   type              ReamStockEntryType
-  quantity          Int                 // Number of reams; always positive
-  recipient_user_id Int?                // Required for ISSUANCE if recipient is a system user
-  recipient_name    String?             // Free text — used when recipient is external or not a system user
-  reason            String?             // Required for ISSUANCE
+  quantity          Int // Number of reams; always positive
+  recipient_user_id Int? // Required for ISSUANCE if recipient is a system user
+  recipient_name    String? // Free text — used when recipient is external or not a system user
+  reason            String? // Required for ISSUANCE
   notes             String?
   recorded_by_id    Int
-  created_at        DateTime            @default(now())
-  updated_at        DateTime            @updatedAt
+  created_at        DateTime           @default(now())
+  updated_at        DateTime           @updatedAt
 
-  recorded_by  User  @relation("ReamStockLedgerRecordedBy", fields: [recorded_by_id], references: [id])
-  recipient    User? @relation("ReamStockLedgerRecipient",  fields: [recipient_user_id], references: [id])
+  recorded_by User    @relation("ReamStockLedgerRecordedBy", fields: [recorded_by_id], references: [id])
+  recipient   User?   @relation("ReamStockLedgerRecipient", fields: [recipient_user_id], references: [id])
+  server_id   String?
+  checksum    String?
 
   @@index([type, created_at])
   @@index([recorded_by_id])
@@ -2482,23 +2719,25 @@ enum ReamStockEntryType {
 // is auto-notified via MobileNotification. Progress is optional 0-100.
 
 model Task {
-  id               Int          @id @default(autoincrement())
-  title            String
-  description      String
-  priority         TaskPriority @default(MEDIUM)
-  status           TaskStatus   @default(PENDING)
-  category         String       @default("GENERAL") // Free-form label (e.g. MAINTENANCE, ADMIN, REPORT)
-  progress         Int          @default(0) // 0-100
-  deadline         DateTime?
-  assigned_to_id   Int
-  assigned_by_id   Int
-  notes            String?
-  completed_at     DateTime?
-  created_at       DateTime     @default(now())
-  updated_at       DateTime     @updatedAt
+  id             Int          @id @default(autoincrement())
+  title          String
+  description    String
+  priority       TaskPriority @default(MEDIUM)
+  status         TaskStatus   @default(PENDING)
+  category       String       @default("GENERAL") // Free-form label (e.g. MAINTENANCE, ADMIN, REPORT)
+  progress       Int          @default(0) // 0-100
+  deadline       DateTime?
+  assigned_to_id Int
+  assigned_by_id Int
+  notes          String?
+  completed_at   DateTime?
+  created_at     DateTime     @default(now())
+  updated_at     DateTime     @updatedAt
 
-  assigned_to User @relation("TaskAssignedTo", fields: [assigned_to_id], references: [id])
-  assigned_by User @relation("TaskAssignedBy", fields: [assigned_by_id], references: [id])
+  assigned_to User    @relation("TaskAssignedTo", fields: [assigned_to_id], references: [id])
+  assigned_by User    @relation("TaskAssignedBy", fields: [assigned_by_id], references: [id])
+  server_id   String?
+  checksum    String?
 
   @@index([assigned_to_id, status])
   @@index([assigned_by_id])
@@ -2517,4 +2756,115 @@ enum TaskStatus {
   IN_PROGRESS
   COMPLETED
   CANCELLED
+}
+
+// ─── Staff loans ────────────────────────────────────────────────────────────
+// Any staff member can request a loan and pick a repayment duration in months.
+// Super manager approves and picks the repayment method (salary deduction,
+// cash, transfer, etc.). Repayments are logged one-by-one against the loan.
+
+enum LoanStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  PAID_OFF
+}
+
+enum LoanRepaymentMethod {
+  SALARY_DEDUCTION
+  CASH
+  BANK_TRANSFER
+  MOBILE_MONEY
+  OTHER
+}
+
+model StaffLoan {
+  id                  Int                  @id @default(autoincrement())
+  borrower_id         Int
+  amount              Float
+  duration_months     Int
+  monthly_installment Float // denormalised: amount / duration_months, computed at request time
+  reason              String?
+  status              LoanStatus           @default(PENDING)
+  repayment_method    LoanRepaymentMethod? // null until approved
+  approver_id         Int?
+  approver_note       String? // rationale on approve, reason on reject
+  approved_at         DateTime?
+  cancelled_at        DateTime?
+  paid_off_at         DateTime?
+  created_at          DateTime             @default(now())
+  updated_at          DateTime             @updatedAt
+
+  borrower   User                 @relation("StaffLoanBorrower", fields: [borrower_id], references: [id])
+  approver   User?                @relation("StaffLoanApprover", fields: [approver_id], references: [id])
+  repayments StaffLoanRepayment[]
+  server_id  String?
+  checksum   String?
+
+  @@index([borrower_id])
+  @@index([status])
+}
+
+model StaffLoanRepayment {
+  id             Int                 @id @default(autoincrement())
+  loan_id        Int
+  amount         Float
+  paid_on        DateTime
+  method         LoanRepaymentMethod
+  notes          String?
+  recorded_by_id Int
+  created_at     DateTime            @default(now())
+
+  loan        StaffLoan @relation(fields: [loan_id], references: [id], onDelete: Cascade)
+  recorded_by User      @relation("StaffLoanRepaymentRecordedBy", fields: [recorded_by_id], references: [id])
+  updated_at  DateTime  @updatedAt
+  server_id   String?
+  checksum    String?
+
+  @@index([loan_id])
+}
+
+// ─── Leave requests ─────────────────────────────────────────────────────────
+// Any staff member can request time off; super manager approves.
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum LeaveType {
+  ANNUAL
+  SICK
+  MATERNITY
+  PATERNITY
+  BEREAVEMENT
+  UNPAID
+  OTHER
+}
+
+model LeaveRequest {
+  id            Int         @id @default(autoincrement())
+  requester_id  Int
+  leave_type    LeaveType
+  start_date    DateTime
+  end_date      DateTime
+  reason        String
+  status        LeaveStatus @default(PENDING)
+  approver_id   Int?
+  approver_note String?
+  decided_at    DateTime?
+  cancelled_at  DateTime?
+  created_at    DateTime    @default(now())
+  updated_at    DateTime    @updatedAt
+
+  requester User    @relation("LeaveRequestRequester", fields: [requester_id], references: [id])
+  approver  User?   @relation("LeaveRequestApprover", fields: [approver_id], references: [id])
+  server_id String?
+  checksum  String?
+
+  @@index([requester_id])
+  @@index([status])
 }

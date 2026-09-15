@@ -29,6 +29,14 @@ router.post('/link-existing-parent',
     bursarController.linkExistingParent
 );
 
+// POST /bursar/create-parent-for-student - Create a new parent account and link it to an existing student
+// Used by the edit-student flow when a new contact needs to be added after registration.
+router.post('/create-parent-for-student',
+    authenticate,
+    authorize(['BURSAR', 'SECRETARY', 'SUPER_MANAGER']),
+    bursarController.createParentForStudent
+);
+
 // GET /bursar/dashboard - Get bursar dashboard with financial overview
 // BURSAR and management roles can view dashboard
 router.get('/dashboard',
@@ -61,4 +69,13 @@ router.get('/defaulters-report',
     bursarController.getDefaultersReport
 );
 
-export default router; 
+// POST /bursar/parents/:parentId/reset-password - Reset a parent's password back to the default
+// Used when a parent forgets the password they set after first login.
+// BURSAR, PRINCIPAL, VICE_PRINCIPAL, SUPER_MANAGER, MANAGER can perform the reset.
+router.post('/parents/:parentId/reset-password',
+    authenticate,
+    authorize(['BURSAR', 'PRINCIPAL', 'VICE_PRINCIPAL', 'SUPER_MANAGER', 'MANAGER']),
+    bursarController.resetParentPassword
+);
+
+export default router;

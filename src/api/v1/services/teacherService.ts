@@ -59,6 +59,7 @@ export interface TeacherDashboard {
     totalStudents: number;
     totalClasses: number;
     weeklyPeriods: number;
+    weeklyHours: number;
     marksToEnter?: number;
     upcomingPeriods?: number;
 }
@@ -431,7 +432,8 @@ export async function getTeacherDashboard(
             assignedSubjects: 0,
             totalStudents: 0,
             totalClasses: 0,
-            weeklyPeriods: 0
+            weeklyPeriods: 0,
+            weeklyHours: 0
         };
     }
 
@@ -440,6 +442,7 @@ export async function getTeacherDashboard(
         subjectCount,
         subClassCount,
         weeklyPeriods,
+        periodDurations,
         studentCountResult
     ] = await Promise.all([
         // Count unique subjects
@@ -465,6 +468,17 @@ export async function getTeacherDashboard(
             where: {
                 teacher_id: teacherId,
                 academic_year_id: currentYear
+            }
+        }),
+
+        // Fetch each teacher-period's slot start/end so we can total the hours
+        prisma.teacherPeriod.findMany({
+            where: {
+                teacher_id: teacherId,
+                academic_year_id: currentYear
+            },
+            select: {
+                period: { select: { start_time: true, end_time: true } }
             }
         }),
 
@@ -494,11 +508,19 @@ export async function getTeacherDashboard(
         })
     ]);
 
+    const weeklyHours = periodDurations.reduce((acc, tp) => {
+        const start = new Date(`1970-01-01T${tp.period.start_time}Z`);
+        const end = new Date(`1970-01-01T${tp.period.end_time}Z`);
+        const duration = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+        return acc + (Number.isFinite(duration) && duration > 0 ? duration : 0);
+    }, 0);
+
     return {
         assignedSubjects: subjectCount,
         totalStudents: studentCountResult,
         totalClasses: subClassCount,
         weeklyPeriods: weeklyPeriods,
+        weeklyHours: Math.round(weeklyHours * 10) / 10,
         marksToEnter: 10, // Placeholder
         upcomingPeriods: 5 // Placeholder
     };

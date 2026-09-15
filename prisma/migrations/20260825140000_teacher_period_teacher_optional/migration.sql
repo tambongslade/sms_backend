@@ -1,0 +1,13 @@
+-- A timetable slot may carry a subject with no teacher assigned yet. The peer
+-- has allowed this for some time; this node did not, so every such row failed
+-- to sync -- 30 of them, on every run.
+--
+-- DROP NOT NULL rewrites no rows and takes no exclusive rewrite lock, so it is
+-- safe to run against the live database. To reverse it, delete or fill any rows
+-- where teacher_id IS NULL and then SET NOT NULL again.
+--
+-- Note that both @@unique constraints on this table include teacher_id. In
+-- Postgres a NULL is never equal to another NULL, so those constraints simply
+-- stop applying to teacher-less rows -- which is the behaviour wanted here:
+-- several subject-only slots can share a period without colliding.
+ALTER TABLE "TeacherPeriod" ALTER COLUMN "teacher_id" DROP NOT NULL;

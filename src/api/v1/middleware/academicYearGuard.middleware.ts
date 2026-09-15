@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
 
-const HISTORY_ROLES = new Set(['SUPER_MANAGER', 'PRINCIPAL', 'BURSAR']);
+const HISTORY_ROLES = new Set(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR']);
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 function extractProvidedYearId(req: Request): number | null {

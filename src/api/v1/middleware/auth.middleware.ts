@@ -56,9 +56,71 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { isTokenBlacklisted } from '../services/tokenBlacklistService';
 import { academicYearGuard } from './academicYearGuard.middleware';
+import prisma from '../../../config/db';
 
 // Get JWT secret from environment variables
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
+
+// Roles are resolved from the database on every request, not read from the
+// token. The token carries a `role` claim, but it is only ever a snapshot of
+// the moment the user signed in, and TOKEN_EXPIRY is 120 days — so a role
+// granted, changed or *revoked* after sign-in stayed invisible for up to four
+// months. Revocation was the dangerous half: removing someone's BURSAR role
+// left their existing token still opening every bursar route until it expired.
+//
+// It also produced a confusing failure: /auth/me reads roles from the database,
+// so the UI showed a user's new roles correctly while every API call 403'd off
+// the stale token claim.
+//
+// Cost is one indexed lookup per request, damped by the short-lived cache
+// below. Cache entries are per-process (each PM2 worker keeps its own), so
+// worst-case staleness is ROLE_CACHE_TTL_MS regardless of which worker serves
+// the request — bounded and uniform, rather than 120 days.
+const ROLE_CACHE_TTL_MS = 30_000;
+
+interface CachedIdentity {
+    roles: string[];
+    status: string;
+    expiresAt: number;
+}
+
+const roleCache = new Map<number, CachedIdentity>();
+
+/**
+ * Drops a user's cached roles so the next request re-reads them. Optional —
+ * the TTL already bounds staleness — but callers that change roles can use it
+ * to make the change take effect immediately on this process.
+ */
+export function invalidateUserRoleCache(userId?: number): void {
+    if (userId === undefined) roleCache.clear();
+    else roleCache.delete(userId);
+}
+
+async function loadIdentity(userId: number): Promise<CachedIdentity | null> {
+    const now = Date.now();
+    const hit = roleCache.get(userId);
+    if (hit && hit.expiresAt > now) return hit;
+
+    const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { status: true, user_roles: { select: { role: true } } }
+    });
+    if (!user) {
+        // Deleted account holding a still-valid token. Do not cache the miss —
+        // an id that does not resolve should keep costing a lookup, not become
+        // a sticky negative entry.
+        roleCache.delete(userId);
+        return null;
+    }
+
+    const identity: CachedIdentity = {
+        roles: [...new Set(user.user_roles.map(ur => ur.role as string))],
+        status: user.status as string,
+        expiresAt: now + ROLE_CACHE_TTL_MS
+    };
+    roleCache.set(userId, identity);
+    return identity;
+}
 
 /**
  * JWT token payload interface
@@ -100,7 +162,7 @@ export type AuthenticatedRequest = Request;
  * @param res - Express response object
  * @param next - Express next function
  */
-export const authenticate = (req: Request, res: Response, next: NextFunction) => {
+export const authenticate = async (req: Request, res: Response, next: NextFunction) => {
     try {
         // Get authorization header
         const authHeader = req.headers.authorization;
@@ -132,8 +194,29 @@ export const authenticate = (req: Request, res: Response, next: NextFunction) =>
         // Verify the token
         const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
 
-        // Add user to request object
-        (req as AuthenticatedRequest).user = decoded;
+        // Resolve the caller's roles from the database rather than trusting the
+        // token's `role` claim. See the note beside ROLE_CACHE_TTL_MS above.
+        const identity = await loadIdentity(decoded.id);
+
+        if (!identity) {
+            res.status(401).json({ error: 'Unauthorized: User or role not found' });
+            return;
+        }
+
+        // A token outlives a deactivation by up to 120 days, so status has to be
+        // checked here too — login already refuses non-ACTIVE accounts, but that
+        // only helps people who have not signed in yet.
+        if (identity.status !== 'ACTIVE') {
+            res.status(401).json({ error: 'User account is not active' });
+            return;
+        }
+
+        // Add user to request object, with the token's role claim replaced by
+        // what the database currently says. Every downstream consumer of
+        // req.user.role (authorize, authorizeMinTier, academicYearGuard, the
+        // audit trail and the discipline/exam controllers) therefore sees live
+        // roles without needing to change.
+        (req as AuthenticatedRequest).user = { ...decoded, role: identity.roles as [string] };
 
         // Gate any provided academic_year_id against current year + role
         return academicYearGuard(req, res, next);
@@ -173,8 +256,10 @@ export const authorize = (roles: string[]) => {
             return res.status(401).json({ error: 'Unauthorized: User or role not found' });
         }
 
-        // Super managers have access to everything
-        if (user.role.includes('SUPER_MANAGER')) {
+        // Tier-1 executives (SUPER_MANAGER, MANAGER) have access to everything.
+        // MANAGER is a documented peer of SUPER_MANAGER in the role hierarchy;
+        // treating them equivalently here avoids having to list MANAGER on every route.
+        if (user.role.includes('SUPER_MANAGER') || user.role.includes('MANAGER')) {
             return next();
         }
 

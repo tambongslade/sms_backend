@@ -12,16 +12,28 @@ import { blacklistToken } from '../services/tokenBlacklistService';
  */
 export const login = async (req: Request, res: Response) => {
     try {
-        const { email, matricule, password } = req.body;
+        const { email, matricule, phone, identifier, password } = req.body;
 
-        if ((!email && !matricule) || !password) {
+        // `identifier` is a single-input convenience: contains @ → email;
+        // starts with letters (like "ST123") → matricule; digits only → phone.
+        let creds: { email?: string; matricule?: string; phone?: string; password: string } = {
+            email, matricule, phone, password,
+        };
+        if (identifier && !email && !matricule && !phone) {
+            const trimmed = String(identifier).trim();
+            if (trimmed.includes('@')) creds.email = trimmed;
+            else if (/^\+?[\d\s-]+$/.test(trimmed)) creds.phone = trimmed;
+            else creds.matricule = trimmed;
+        }
+
+        if ((!creds.email && !creds.matricule && !creds.phone) || !password) {
             return res.status(400).json({
                 success: false,
-                error: 'Email/matricule and password are required'
+                error: 'Identifier (email/phone/matricule) and password are required',
             });
         }
 
-        const result = await authService.login(req.body);
+        const result = await authService.login(creds);
 
         res.json({
             success: true,
@@ -117,10 +129,10 @@ export const changePassword = async (req: Request, res: Response) => {
             new_password?: string;
         };
 
-        if (!current_password || !new_password) {
+        if (!new_password) {
             return res.status(400).json({
                 success: false,
-                error: 'currentPassword and newPassword are required',
+                error: 'newPassword is required',
             });
         }
 
@@ -147,6 +159,7 @@ export const changePassword = async (req: Request, res: Response) => {
         console.error('Change password error:', error);
         const status =
             error.message === 'Current password is incorrect' ? 400 :
+            error.message === 'Current password is required' ? 400 :
             error.message === 'New password must be different from the current password' ? 400 :
             error.message === 'User not found' ? 404 : 500;
         res.status(status).json({ success: false, error: error.message });

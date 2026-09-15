@@ -74,8 +74,20 @@ export async function linkSubjectToSubClass(
         coefficient: number;
     }
 ): Promise<SubClassSubject> {
-    return prisma.subClassSubject.create({
-        data: {
+    // Upsert: if the link already exists, update its coefficient; else create.
+    // Prevents P2002 crashes when the frontend re-links a subject that was
+    // seeded/imported directly into SubClassSubject.
+    return prisma.subClassSubject.upsert({
+        where: {
+            sub_class_id_subject_id: {
+                sub_class_id: data.sub_class_id,
+                subject_id,
+            },
+        },
+        update: {
+            coefficient: data.coefficient,
+        },
+        create: {
             subject_id,
             sub_class_id: data.sub_class_id,
             coefficient: data.coefficient,

@@ -13,7 +13,7 @@ import {
 
 const router = Router();
 
-const DM_AND_ADMIN = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER'];
+const DM_AND_ADMIN = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER'];
 const DM_VIEW_ROLES = [...DM_AND_ADMIN, 'TEACHER'];
 const ADMIN_DELETE = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL'];
 const EXCUSE_ROLES = [...DM_AND_ADMIN, 'PARENT'];
@@ -60,6 +60,15 @@ router.put('/summons/:id', authenticate, authorize(DM_AND_ADMIN), disciplineCont
 
 // === DM ROLL CALL (3 fixed daily slots) ===
 
+// List sub-classes the caller may record roll calls for. DMs get their
+// assigned ones, admins get all. No validateDMSubClassAccess — this endpoint
+// IS how the caller learns which sub-classes are accessible.
+router.get('/dm-roll-call/my-subclasses',
+    authenticate,
+    authorize(DM_AND_ADMIN),
+    dmRollCallController.listMySubClasses
+);
+
 router.get('/dm-roll-call/status',
     authenticate,
     authorize(DM_AND_ADMIN),
@@ -105,6 +114,10 @@ router.get('/saturday-punishments', authenticate, authorize(DM_AND_ADMIN), satur
 router.get('/saturday-punishments/:id', authenticate, authorize(DM_AND_ADMIN), saturdayPunishmentController.getSaturdayPunishmentById);
 router.put('/saturday-punishments/:id', authenticate, authorize(DM_AND_ADMIN), saturdayPunishmentController.updateSaturdayPunishment);
 router.delete('/saturday-punishments/:id', authenticate, authorize(ADMIN_DELETE), saturdayPunishmentController.deleteSaturdayPunishment);
+
+// === DAILY OVERVIEW (Dean of Discipline dashboard) ===
+// Static path — must be before /:studentId catch-all.
+router.get('/daily-overview', authenticate, authorize(DM_AND_ADMIN), disciplineController.getDailyOverview);
 
 // === DISCIPLINE ISSUES (per student / by id) ===
 // IMPORTANT: keep these LAST so static paths above don't get captured by /:studentId

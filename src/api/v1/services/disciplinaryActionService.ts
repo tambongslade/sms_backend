@@ -187,3 +187,121 @@ export async function deleteDisciplinaryAction(id: number): Promise<void> {
     if (!existing) throw new Error(`DisciplinaryAction ${id} not found`);
     await prisma.disciplinaryAction.delete({ where: { id } });
 }
+
+// --- Approval workflow -----------------------------------------------------
+// Note: nothing currently moves an action into PENDING_APPROVAL -- it stays at
+// the schema default (NOT_REQUIRED) unless something sets it explicitly, and
+// createDisciplinaryAction doesn't. So these list/decide endpoints are correct
+// against whatever approval_status ends up in the data, but return nothing
+// until a caller (or a future change to createDisciplinaryAction) actually
+// requests approval for an action.
+
+export interface ListPendingApprovalOptions {
+    academic_year_id?: number;
+    page?: number;
+    limit?: number;
+}
+
+export async function listPendingApprovals(opts: ListPendingApprovalOptions) {
+    const page = opts.page && opts.page > 0 ? opts.page : 1;
+    const limit = opts.limit && opts.limit > 0 ? opts.limit : 50;
+    const yearId = opts.academic_year_id ?? await getAcademicYearId();
+
+    const where: Prisma.DisciplinaryActionWhereInput = {
+        approval_status: 'PENDING_APPROVAL',
+        ...(yearId && { enrollment: { academic_year_id: yearId } }),
+    };
+
+    const [total, items] = await Promise.all([
+        prisma.disciplinaryAction.count({ where }),
+        prisma.disciplinaryAction.findMany({
+            where,
+            include: {
+                enrollment: {
+                    include: {
+                        student: { select: { id: true, name: true, matricule: true } },
+                        sub_class: { select: { id: true, name: true, class: { select: { name: true } } } },
+                    },
+                },
+                discipline_issue: { select: { id: true, issue_type: true, description: true, created_at: true } },
+                decided_by: { select: { id: true, name: true, matricule: true } },
+            },
+            orderBy: [{ created_at: 'asc' }],
+            skip: (page - 1) * limit,
+            take: limit,
+        }),
+    ]);
+
+    return { data: items, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+}
+
+// Same as listPendingApprovals, narrowed to actions this specific caller was
+// designated to decide (approver_id set ahead of time). Whatever assigns
+// approver_id is also not wired up yet -- see the note above.
+export async function listMyPendingApprovals(approverId: number, opts: ListPendingApprovalOptions) {
+    const page = opts.page && opts.page > 0 ? opts.page : 1;
+    const limit = opts.limit && opts.limit > 0 ? opts.limit : 50;
+    const yearId = opts.academic_year_id ?? await getAcademicYearId();
+
+    const where: Prisma.DisciplinaryActionWhereInput = {
+        approval_status: 'PENDING_APPROVAL',
+        approver_id: approverId,
+        ...(yearId && { enrollment: { academic_year_id: yearId } }),
+    };
+
+    const [total, items] = await Promise.all([
+        prisma.disciplinaryAction.count({ where }),
+        prisma.disciplinaryAction.findMany({
+            where,
+            include: {
+                enrollment: {
+                    include: {
+                        student: { select: { id: true, name: true, matricule: true } },
+                        sub_class: { select: { id: true, name: true, class: { select: { name: true } } } },
+                    },
+                },
+                discipline_issue: { select: { id: true, issue_type: true, description: true, created_at: true } },
+                decided_by: { select: { id: true, name: true, matricule: true } },
+            },
+            orderBy: [{ created_at: 'asc' }],
+            skip: (page - 1) * limit,
+            take: limit,
+        }),
+    ]);
+
+    return { data: items, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+}
+
+export interface DecideApprovalInput {
+    approver_id: number;
+    approval_notes?: string;
+}
+
+async function transitionApproval(
+    id: number,
+    nextStatus: 'APPROVED' | 'DECLINED',
+    input: DecideApprovalInput,
+): Promise<DisciplinaryAction> {
+    const existing = await prisma.disciplinaryAction.findUnique({ where: { id } });
+    if (!existing) throw new Error(`DisciplinaryAction ${id} not found`);
+    if (existing.approval_status !== 'PENDING_APPROVAL') {
+        throw new Error(`DisciplinaryAction ${id} is not pending approval (current: ${existing.approval_status})`);
+    }
+    return prisma.disciplinaryAction.update({
+        where: { id },
+        data: {
+            approval_status: nextStatus,
+            approver_id: input.approver_id,
+            approved_at: new Date(),
+            approval_notes: input.approval_notes?.trim() || null,
+        },
+    });
+}
+
+export async function approveDisciplinaryAction(id: number, input: DecideApprovalInput): Promise<DisciplinaryAction> {
+    return transitionApproval(id, 'APPROVED', input);
+}
+
+export async function declineDisciplinaryAction(id: number, input: DecideApprovalInput): Promise<DisciplinaryAction> {
+    return transitionApproval(id, 'DECLINED', input);
+}

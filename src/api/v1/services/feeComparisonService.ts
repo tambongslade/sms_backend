@@ -234,37 +234,45 @@ export async function getComparisonSummary(academicYearId?: number): Promise<Com
     let varianceCount = 0;
 
     for (const enrollment of enrollments) {
-        const hasPrimaryFee = enrollment.school_fees.length > 0;
-        const hasControlFee = enrollment.control_school_fees.length > 0;
+        const primaryFee = enrollment.school_fees[0];
+        const controlFee = enrollment.control_school_fees[0];
+        const hasPrimaryFee = !!primaryFee;
+        const hasControlFee = !!controlFee;
+
+        const primaryPaid = primaryFee?.amount_paid ?? 0;
+        const controlPaid = controlFee?.amount_paid ?? 0;
+        const paidDifference = primaryPaid - controlPaid;
+        const hasMoneyDisagreement = Math.abs(paidDifference) > 0.01;
 
         if (hasPrimaryFee && hasControlFee) {
             summary.studentsWithBothFees++;
-
-            const primaryFee = enrollment.school_fees[0];
-            const controlFee = enrollment.control_school_fees[0];
-
-            const paidDifference = primaryFee.amount_paid - controlFee.amount_paid;
-            const hasPaymentMismatch = Math.abs(paidDifference) > 0.01;
-
-            if (hasPaymentMismatch) {
-                summary.totalDiscrepancies++;
-                summary.discrepancyTypes.paymentMismatch++;
-                summary.totalPaidAmountDifference += Math.abs(paidDifference);
-
-                if (primaryFee.amount_paid > 0) {
-                    const variance = Math.abs(paidDifference / primaryFee.amount_paid) * 100;
-                    totalVariance += variance;
-                    varianceCount++;
-                }
-            }
         } else if (hasPrimaryFee && !hasControlFee) {
             summary.studentsWithOnlyPrimaryFees++;
-            summary.totalDiscrepancies++;
-            summary.discrepancyTypes.missingControl++;
         } else if (!hasPrimaryFee && hasControlFee) {
             summary.studentsWithOnlyControlFees++;
-            summary.totalDiscrepancies++;
+        }
+
+        // A "discrepancy" only counts when the two sides actually disagree about
+        // money. If neither side has recorded a payment (both zero), the student
+        // just hasn't paid yet — that's not a discrepancy the manager needs to
+        // chase, even if the controller hasn't opened a control-fee row.
+        if (!hasMoneyDisagreement) continue;
+
+        summary.totalDiscrepancies++;
+        summary.totalPaidAmountDifference += Math.abs(paidDifference);
+
+        if (hasPrimaryFee && hasControlFee) {
+            summary.discrepancyTypes.paymentMismatch++;
+        } else if (hasPrimaryFee) {
+            summary.discrepancyTypes.missingControl++;
+        } else {
             summary.discrepancyTypes.missingPrimary++;
+        }
+
+        if (primaryPaid > 0) {
+            const variance = Math.abs(paidDifference / primaryPaid) * 100;
+            totalVariance += variance;
+            varianceCount++;
         }
     }
 
@@ -306,7 +314,12 @@ export async function getStudentFeeComparison(studentId: number, academicYearId?
                     academic_year_id: yearId
                 },
                 include: {
-                    payment_transactions: true
+                    payment_transactions: {
+                        include: {
+                            recorded_by: { select: { id: true, name: true, matricule: true } }
+                        },
+                        orderBy: { payment_date: 'asc' }
+                    }
                 }
             },
             control_school_fees: {
@@ -314,7 +327,12 @@ export async function getStudentFeeComparison(studentId: number, academicYearId?
                     academic_year_id: yearId
                 },
                 include: {
-                    control_payment_transactions: true
+                    control_payment_transactions: {
+                        include: {
+                            recorded_by: { select: { id: true, name: true, matricule: true } }
+                        },
+                        orderBy: { payment_date: 'asc' }
+                    }
                 }
             }
         }
@@ -484,12 +502,19 @@ export async function getEnrolledStudentsFeeStatus(
         };
         const paidAmountDifference = primaryBlock.amountPaid - controlBlock.amountPaid;
 
+        // Status reflects whether the two ledgers actually disagree about money.
+        // Both sides at zero is MATCHED (nothing to reconcile), even if the
+        // controller hasn't opened a control-fee row yet.
         let status: EnrolledStudentFeeRow['status'];
-        if (!primary && !control) status = 'NO_RECORDS';
-        else if (primary && !control) status = 'MISSING_CONTROL';
-        else if (!primary && control) status = 'MISSING_PRIMARY';
-        else if (Math.abs(paidAmountDifference) > 0.01) status = 'PAYMENT_MISMATCH';
-        else status = 'MATCHED';
+        if (!primary && !control) {
+            status = 'NO_RECORDS';
+        } else if (Math.abs(paidAmountDifference) > 0.01) {
+            if (!primary) status = 'MISSING_PRIMARY';
+            else if (!control) status = 'MISSING_CONTROL';
+            else status = 'PAYMENT_MISMATCH';
+        } else {
+            status = 'MATCHED';
+        }
 
         let studentStatus: EnrolledStudentFeeRow['studentStatus'];
         if (e.repeater) {

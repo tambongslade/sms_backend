@@ -1,5 +1,6 @@
 import prisma from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
+import { notifyIfReceiverIsParent } from './parentService';
 
 // Types for Enhanced Messaging
 export interface MessageThread {
@@ -509,6 +510,18 @@ export async function sendMessage(data: {
             timestamp: message.created_at.toISOString(),
             deliveredAt: message.created_at.toISOString()
         };
+
+        // Parent inbox integration: this is a generic send API (staff <->
+        // staff or staff <-> parent). The helper role-checks the receiver
+        // and only fires the parent-portal notification when the receiver
+        // actually holds the PARENT role.
+        await notifyIfReceiverIsParent(
+            message.receiver_id,
+            message.sender_id,
+            message.id,
+            message.subject,
+            message.sender.name
+        );
 
         return {
             success: true,

@@ -12,11 +12,12 @@ router.get('/super-manager/enhanced',
     enhancedDashboardController.getEnhancedSuperManagerDashboard
 );
 
-// Manager Enhanced Dashboard (same as Super Manager per requirements)
-router.get('/manager/enhanced', 
-    authenticate, 
-    authorize(['MANAGER', 'SUPER_MANAGER']), 
-    enhancedDashboardController.getEnhancedSuperManagerDashboard
+// Manager Enhanced Dashboard — reuses the Super Manager analytics but strips
+// fee-collection data (schoolFees + schoolOverview.finance).
+router.get('/manager/enhanced',
+    authenticate,
+    authorize(['MANAGER', 'SUPER_MANAGER']),
+    enhancedDashboardController.getEnhancedManagerDashboard
 );
 
 // Bursar Enhanced Dashboard
@@ -62,9 +63,9 @@ router.get('/audit-trail',
 );
 
 // Financial Overview - for Super Manager and Bursar
-router.get('/financial-overview', 
-    authenticate, 
-    authorize(['SUPER_MANAGER', 'MANAGER', 'BURSAR']), 
+router.get('/financial-overview',
+    authenticate,
+    authorize(['SUPER_MANAGER', 'MANAGER', 'BURSAR']),
     enhancedDashboardController.getFinancialOverview
 );
 

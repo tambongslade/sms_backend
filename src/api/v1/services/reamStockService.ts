@@ -8,7 +8,7 @@
 import prisma, { Prisma, ReamStockEntryType } from '../../../config/db';
 
 function assertRoles(roles: string[], allowed: string[]) {
-    if (roles.includes('SUPER_MANAGER')) return;
+    if (roles.includes('SUPER_MANAGER') || roles.includes('MANAGER')) return;
     if (!allowed.some((r) => roles.includes(r))) {
         throw new Error(`Forbidden: requires one of ${allowed.join(', ')}`);
     }

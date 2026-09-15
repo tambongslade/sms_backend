@@ -2,6 +2,7 @@ import prisma from '../config/db';
 import { SyncLog, SyncStatus, SyncDirection, DeferredRecord } from './types';
 import { DatabaseSyncer } from './database-syncer';
 import { NetworkChecker } from './network-checker';
+import { sendToRoles } from '../api/v1/services/notificationService';
 
 // Ordered so a table's dependencies are synced before it. The previous
 // critical/operational/transactional grouping was not dependency-ordered and
@@ -12,11 +13,15 @@ import { NetworkChecker } from './network-checker';
 // Order alone is not sufficient — Class references Class through
 // next_class_id, so row order within a table matters too. The deferred-retry
 // pass in performSync covers that, and any ordering mistake here.
-const SYNC_TABLES: string[] = [
+export const SYNC_TABLES: string[] = [
     // No foreign keys
     'AcademicYear',
     'User',
     'Subject',
+    // -> User, AcademicYear
+    'UserRole',
+    // -> Subject, User
+    'SubjectTeacher',
     // -> AcademicYear
     'Student',
     'PeriodSet',
@@ -24,14 +29,28 @@ const SYNC_TABLES: string[] = [
     // -> PeriodSet
     'Period',
     'Class',
+    // -> Term, Class
+    'TermClass',
     // -> Class
     'SubClass',
     // -> SubClass, Subject, User
     'SubClassSubject',
+    // -> User, AcademicYear, SubClass, Subject
+    'RoleAssignment',
     // -> AcademicYear, Term
     'ExamSequence',
     // -> AcademicYear, Period, SubClass, Subject
     'TeacherPeriod',
+    // -> Subject, Class, AcademicYear, User
+    'SubjectScheme',
+    // -> SubjectScheme
+    'SchemeModule',
+    // -> SchemeModule
+    'SchemeChapter',
+    // -> SchemeChapter, Term
+    'SchemeLesson',
+    // -> TeacherPeriod, SchemeLesson, User
+    'LogbookEntry',
     // -> User, Student
     'ParentStudent',
     // -> AcademicYear, Student, Class, SubClass
@@ -50,6 +69,120 @@ const SYNC_TABLES: string[] = [
     'GeneratedReport',
     // -> AcademicYear, User
     'Announcement',
+    // -> User (sender, receiver)
+    'Message',
+    // -> Subject, User
+    'ChatChannel',
+    // -> ChatChannel, User
+    'ChatChannelMember',
+    // -> ChatChannel, User, ChatMessage (self-ref via parent_message_id -> deferred pass)
+    'ChatMessage',
+    // -> ChatMessage, User
+    'ChatMessageMention',
+    // -> ChatMessage, User
+    'ChatMessageReaction',
+    // -> ChatMessage
+    'ChatMessageAttachment',
+
+    // ---- Student-level extensions (need Enrollment / Student) ----
+    // -> Student
+    'StudentPreviousSchool',
+    // -> AcademicYear, Class, SubClass, Student, User
+    'FeeItem',
+    // -> AcademicYear, Enrollment
+    'ControlSchoolFees',
+
+    // ---- Discipline (all keyed on Enrollment + User) ----
+    // -> Enrollment, User
+    'BrokenProperty',
+    'SaturdayPunishment',
+    'StudentWarning',
+    'ParentSummons',
+    'DisciplineIssue',
+    // -> DisciplineIssue, Enrollment, User
+    'DisciplinaryAction',
+    // -> Enrollment, AcademicYear, User
+    'SeizedItem',
+    // -> SeizedItem, User (self-cluster; deferred pass handles user resolution)
+    'SeizedItemTransfer',
+    // -> Enrollment, Period, User
+    'NurseVisitLog',
+    // -> Student
+    'InterviewMark',
+
+    // ---- Fees / finance extensions (SchoolFees + PaymentTransaction already synced) ----
+    // -> FeeItem, Enrollment, User
+    'FeeItemPayment',
+    // -> SchoolFees, Enrollment, User
+    'Refund',
+    // -> ControlSchoolFees, AcademicYear, Enrollment, User
+    'ControlPaymentTransaction',
+    // -> User, AcademicYear
+    'Expenditure',
+    'BursarCashInjection',
+    'ReamStockLedger',
+    // -> User
+    'FinanceRequest',
+    'Task',
+    'ReportRequest',
+
+    // ---- Attendance (teacher-side; student-side StudentAbsence already synced) ----
+    // -> SubClass, AcademicYear, User
+    'DMRollCall',
+    // -> DMRollCall, Enrollment, StudentAbsence
+    'DMRollCallEntry',
+    // -> TeacherPeriod, AcademicYear, User
+    'TeacherRollCall',
+    // -> TeacherRollCall, Enrollment, StudentAbsence
+    'TeacherRollCallEntry',
+    // -> TeacherPeriod, AcademicYear, User
+    'TeacherPeriodAttendance',
+
+    // ---- Payroll / HR ----
+    // -> AcademicYear, User
+    'PayPeriod',
+    // -> User, AcademicYear
+    'SalaryProfile',
+    // -> SalaryProfile, PayPeriod, User
+    'SalaryAllowance',
+    'SalaryChangeRequest',
+    'SalaryPayment',
+    // -> SalaryPayment, User
+    'SalaryWithholding',
+    // -> User
+    'LeaveRequest',
+    'StaffLoan',
+    // -> StaffLoan, User
+    'StaffLoanRepayment',
+
+    // ---- Inventory ----
+    // -> User
+    'InventoryItem',
+    // -> InventoryItem, User
+    'InventoryHolding',
+    'InventoryTransfer',
+    // -> InventoryItem, User, InventoryTransfer
+    'InventoryLedger',
+
+    // ---- Exam papers / quizzes / forms (curriculum content) ----
+    // -> AcademicYear, Subject
+    'ExamPaper',
+    // -> Subject
+    'Question',
+    // -> ExamPaper, Question (composite PK, both parents already listed)
+    'ExamPaperQuestion',
+    // -> Subject, AcademicYear, User
+    'QuizTemplate',
+    // -> QuizTemplate
+    'QuizQuestion',
+    // -> QuizTemplate, Student, User, AcademicYear
+    'QuizSubmission',
+    // -> QuizSubmission, QuizQuestion
+    'QuizResponse',
+    // (no FKs)
+    'FormTemplate',
+    // -> FormTemplate, User
+    'FormSubmission',
 ];
 
 // Deferred records are retried until a pass applies nothing new. The cap is a
@@ -132,22 +265,39 @@ export class SyncManager {
             //    static ordering gets wrong.
             await this.drainDeferred(deferred, syncLog);
 
-            // 4. Update sync timestamp
-            await this.updateSyncTimestamp();
+            // 4. Only move the cursor past this window when the run was clean.
+            // getLastSyncTimestamp/updateSyncTimestamp is a single global "since"
+            // cursor, not per-table, and it used to advance unconditionally. A
+            // table that failed outright (LAN drop -> connect ETIMEDOUT, seen
+            // repeatedly against the VPS) throws before pushLocalChanges or
+            // pullRemoteChanges ever runs, so nothing for that table was pushed
+            // or pulled this window -- but the next run's `since` still started
+            // after it, so whatever changed on either side during the outage
+            // (a student created on the VPS while the LAN was down, say) is
+            // skipped forever, not just delayed. Not hypothetical: SyncMetadata
+            // shows dozens of 15-90 minute gaps, several on tables including
+            // Student and Enrollment, over the last two weeks.
+            //
+            // Holding the cursor back on any error means the next run rescans
+            // the same window, including tables that already succeeded -- safe,
+            // because every apply here is upsert-by-id-or-natural-key and
+            // idempotent, so re-processing an already-synced record is a no-op.
+            const hadErrors = syncLog.errors.length > 0;
+            if (!hadErrors) {
+                await this.updateSyncTimestamp();
+            }
 
             // Per-table failures are collected into syncLog.errors rather than
             // thrown, so reporting COMPLETED unconditionally hid them: a sync
             // that skipped half its tables still looked healthy. Surface those
             // as PARTIAL so monitoring (§10) can actually alert on them.
-            syncLog.status = syncLog.errors.length > 0
-                ? SyncStatus.PARTIAL
-                : SyncStatus.COMPLETED;
+            syncLog.status = hadErrors ? SyncStatus.PARTIAL : SyncStatus.COMPLETED;
             syncLog.endTime = new Date();
 
-            if (syncLog.errors.length > 0) {
+            if (hadErrors) {
                 console.warn(
                     `Sync PARTIAL: ${syncLog.recordsProcessed} records processed, ` +
-                    `${syncLog.errors.length} issue(s):`
+                    `${syncLog.errors.length} issue(s), cursor held back for retry:`
                 );
                 for (const err of syncLog.errors) console.warn(`  - ${err}`);
             } else {
@@ -161,7 +311,79 @@ export class SyncManager {
         }
 
         await this.saveSyncLog(syncLog);
+        await this.checkSyncHealthAndAlert();
         return syncLog;
+    }
+
+    // A run failing outright is not itself alert-worthy -- a single dropped
+    // LAN packet produces one PARTIAL run every few days and self-heals on the
+    // next pass (that is the whole point of holding the cursor back above).
+    // What is alert-worthy is a *streak*: several runs in a row that never
+    // reach COMPLETED, which means whatever is wrong has not cleared on its
+    // own and records are piling up behind the held-back cursor.
+    //
+    // Recomputed from SyncLog on every run rather than kept as in-memory
+    // state, so it is correct across restarts and across the VPS and on-prem
+    // processes independently (each has its own SyncLog).
+    private async checkSyncHealthAndAlert() {
+        // 5-minute auto-sync interval (AUTO_SYNC_INTERVAL) is the assumption
+        // behind the "~N minutes" wording below; a manual /sync/trigger burst
+        // just makes the streak resolve or grow faster, which is fine either way.
+        const ALERT_AT = 3;        // ~15 min of nothing completing
+        const ESCALATE_EVERY = 12; // then a reminder about every ~1 hour while it lasts
+
+        try {
+            const recent = await prisma.syncLog.findMany({
+                orderBy: { start_time: 'desc' },
+                take: ALERT_AT + ESCALATE_EVERY * 6, // several escalations' worth of history
+                select: { status: true }
+            });
+
+            let streak = 0;
+            for (const row of recent) {
+                if (row.status === SyncStatus.COMPLETED) break;
+                streak++;
+            }
+
+            if (streak === 0) {
+                // Recovered. Only worth a notice if it had actually crossed the
+                // alert line before clearing -- otherwise every ordinary clean
+                // run after a single blip would fire a "recovered" message
+                // nobody was ever told was broken.
+                let priorStreak = 0;
+                for (let i = 1; i < recent.length; i++) {
+                    if (recent[i].status === SyncStatus.COMPLETED) break;
+                    priorStreak++;
+                }
+                if (priorStreak >= ALERT_AT) {
+                    await this.alertSuperManagers(
+                        'Database sync recovered',
+                        `Sync is completing normally again after ${priorStreak} run(s) in a row that did not.`,
+                        'NORMAL'
+                    );
+                }
+                return;
+            }
+
+            const firstAlert = streak === ALERT_AT;
+            const escalation = streak > ALERT_AT && (streak - ALERT_AT) % ESCALATE_EVERY === 0;
+            if (firstAlert || escalation) {
+                await this.alertSuperManagers(
+                    'Database sync is failing repeatedly',
+                    `${streak} sync run(s) in a row have not completed cleanly (roughly ${streak * 5} minutes). ` +
+                    `Records on both sides are being held back until this clears, not lost -- but check ` +
+                    `GET /api/sync/logs on this server for what is actually failing.`,
+                    'URGENT'
+                );
+            }
+        } catch (error: any) {
+            // The alert path must never take the sync itself down with it.
+            console.warn(`Sync health check/alert failed: ${error.message}`);
+        }
+    }
+
+    private async alertSuperManagers(title: string, message: string, priority: 'NORMAL' | 'URGENT') {
+        await sendToRoles(['SUPER_MANAGER'], { title, message, category: 'SYSTEM', priority });
     }
 
     // Walks SYNC_TABLES in dependency order and returns the records held back

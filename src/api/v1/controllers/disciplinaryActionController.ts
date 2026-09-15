@@ -88,3 +88,64 @@ export const deleteDisciplinaryAction = async (req: Request, res: Response): Pro
         return res.status(status).json({ success: false, error: err.message });
     }
 };
+
+export const listPendingApprovals = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const result = await svc.listPendingApprovals({
+            academic_year_id: req.finalQuery.academic_year_id ? Number(req.finalQuery.academic_year_id) : undefined,
+            page: req.query.page ? Number(req.query.page) : undefined,
+            limit: req.query.limit ? Number(req.query.limit) : undefined,
+        });
+        return res.json({ success: true, data: result.data, meta: result.meta });
+    } catch (err: any) {
+        console.error('Error listing pending approvals:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+export const listMyPendingApprovals = async (req: any, res: Response): Promise<any> => {
+    try {
+        if (!req.user?.id) return res.status(401).json({ success: false, error: 'Unauthorized' });
+        const result = await svc.listMyPendingApprovals(req.user.id, {
+            academic_year_id: req.finalQuery.academic_year_id ? Number(req.finalQuery.academic_year_id) : undefined,
+            page: req.query.page ? Number(req.query.page) : undefined,
+            limit: req.query.limit ? Number(req.query.limit) : undefined,
+        });
+        return res.json({ success: true, data: result.data, meta: result.meta });
+    } catch (err: any) {
+        console.error('Error listing my pending approvals:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+export const approveDisciplinaryAction = async (req: any, res: Response): Promise<any> => {
+    try {
+        if (!req.user?.id) return res.status(401).json({ success: false, error: 'Unauthorized' });
+        const id = parseInt(req.params.id);
+        if (isNaN(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
+        const updated = await svc.approveDisciplinaryAction(id, {
+            approver_id: req.user.id,
+            approval_notes: req.body.approval_notes,
+        });
+        return res.json({ success: true, data: updated });
+    } catch (err: any) {
+        const status = err.message.includes('not found') ? 404 : 400;
+        return res.status(status).json({ success: false, error: err.message });
+    }
+};
+
+export const declineDisciplinaryAction = async (req: any, res: Response): Promise<any> => {
+    try {
+        if (!req.user?.id) return res.status(401).json({ success: false, error: 'Unauthorized' });
+        const id = parseInt(req.params.id);
+        if (isNaN(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
+        const updated = await svc.declineDisciplinaryAction(id, {
+            approver_id: req.user.id,
+            approval_notes: req.body.approval_notes,
+        });
+        return res.json({ success: true, data: updated });
+    } catch (err: any) {
+        const status = err.message.includes('not found') ? 404 : 400;
+        return res.status(status).json({ success: false, error: err.message });
+    }
+};

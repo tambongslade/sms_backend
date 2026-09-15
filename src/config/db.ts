@@ -20,7 +20,9 @@ import {
     SalaryType, SalaryProfileStatus, SalaryAllowanceType, SalaryApprovalStatus, PayPeriodStatus, SalaryPaymentStatus, WithholdingScope, BursarCashInjectionSource,
     ReamStockLedger, ReamStockEntryType,
     Task, TaskPriority, TaskStatus, NotificationCategory, NotificationPriority,
-    UserSettings, Theme
+    UserSettings, Theme,
+    StaffLoan, StaffLoanRepayment, LoanStatus, LoanRepaymentMethod,
+    LeaveRequest, LeaveStatus, LeaveType
 } from '@prisma/client';
 import * as dotenv from 'dotenv';
 
@@ -107,7 +109,9 @@ export {
     SalaryType, SalaryProfileStatus, SalaryAllowanceType, SalaryApprovalStatus, PayPeriodStatus, SalaryPaymentStatus, WithholdingScope, BursarCashInjectionSource,
     ReamStockLedger, ReamStockEntryType,
     Task, TaskPriority, TaskStatus, NotificationCategory, NotificationPriority,
-    UserSettings, Theme
+    UserSettings, Theme,
+    StaffLoan, StaffLoanRepayment, LoanStatus, LoanRepaymentMethod,
+    LeaveRequest, LeaveStatus, LeaveType
 };
 
 export default prisma; 

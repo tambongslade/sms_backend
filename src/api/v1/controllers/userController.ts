@@ -54,6 +54,7 @@ export const getAllUsers = async (req: Request, res: Response): Promise<void> =>
 const PERSONNEL_VALID_ROLES = new Set<Role>([
     'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'CONTROLLER',
     'TEACHER', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER', 'DEAN_OF_DISCIPLINE',
+    'DISCIPLINE_COORDINATOR',
     'DEAN_OF_STUDIES', 'FEE_AUDITOR', 'SECRETARY', 'NURSE', 'GUIDANCE_COUNSELOR', 'HOD'
 ] as unknown as Role[]);
 
@@ -356,6 +357,8 @@ export const getUserById = async (req: Request, res: Response): Promise<void> =>
             });
             return;
         }
+        const actorRoles = ((req as any).user?.role ?? []) as Role[];
+        await userService.assertPersonnelScope(actorRoles, id);
         const user = await userService.getUserById(id);
         if (!user) {
             res.status(404).json({
@@ -370,7 +373,7 @@ export const getUserById = async (req: Request, res: Response): Promise<void> =>
         });
     } catch (error: any) {
         console.error('Error fetching user:', error);
-        res.status(500).json({
+        res.status(error?.statusCode ?? 500).json({
             success: false,
             error: error.message
         });
@@ -385,6 +388,9 @@ export const updateUser = async (req: Request, res: Response): Promise<void> => 
             return;
         }
 
+        const actorRoles = ((req as any).user?.role ?? []) as Role[];
+        await userService.assertPersonnelScope(actorRoles, id);
+
         const updatedUser = await userService.updateUser(id, req.body);
         if (!updatedUser) {
             res.status(404).json({ success: false, error: 'User not found' });
@@ -396,8 +402,49 @@ export const updateUser = async (req: Request, res: Response): Promise<void> => 
         if (error.code === 'P2025') {
             res.status(404).json({ success: false, error: 'User not found' });
         } else {
-            res.status(500).json({ success: false, error: error.message });
+            res.status(error?.statusCode ?? 500).json({ success: false, error: error.message });
         }
+    }
+};
+
+/**
+ * Admin reset of a personnel account's password.
+ * Body: { newPassword?: string } — if omitted, resets to the default temporary password and
+ * forces a change on next sign-in. Rejects parent accounts (use the bursar endpoint instead).
+ */
+export const resetPersonnelPassword = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (Number.isNaN(id)) {
+            res.status(400).json({ success: false, error: 'Invalid user ID format' });
+            return;
+        }
+
+        const actorId = req.user?.id;
+        if (!actorId) {
+            res.status(401).json({ success: false, error: 'Unauthorized' });
+            return;
+        }
+        const actorRoles = (((req.user as any)?.role) ?? []) as Role[];
+        await userService.assertPersonnelScope(actorRoles, id);
+
+        const { new_password } = req.body as { new_password?: string };
+        if (new_password !== undefined) {
+            if (typeof new_password !== 'string' || new_password.length < 8) {
+                res.status(400).json({
+                    success: false,
+                    error: 'newPassword must be at least 8 characters long',
+                });
+                return;
+            }
+        }
+
+        const result = await userService.resetPersonnelPassword(id, actorId, new_password);
+        res.status(200).json({ success: true, data: result });
+    } catch (error: any) {
+        console.error(`Error resetting password for user ${req.params.id}:`, error);
+        const statusCode = error?.statusCode ?? 500;
+        res.status(statusCode).json({ success: false, error: error.message });
     }
 };
 
@@ -491,6 +538,10 @@ export const assignRole = async (req: Request, res: Response): Promise<void> => 
             return;
         }
 
+        const actorRoles = ((req as any).user?.role ?? []) as Role[];
+        userService.assertRoleWithinCoordinatorScope(actorRoles, roleData.role);
+        await userService.assertPersonnelScope(actorRoles, userId);
+
         const newRole = await userService.assignRole(userId, roleData);
         res.status(201).json({
             success: true,
@@ -501,7 +552,7 @@ export const assignRole = async (req: Request, res: Response): Promise<void> => 
         if (error.code === 'P2003') { // Foreign key constraint failed
             res.status(404).json({ success: false, error: 'User not found' });
         } else {
-            res.status(500).json({ success: false, error: error.message });
+            res.status(error?.statusCode ?? 500).json({ success: false, error: error.message });
         }
     }
 };
@@ -511,6 +562,10 @@ export const removeRole = async (req: Request, res: Response): Promise<void> => 
         const userId = parseInt(req.params.id);
         const userRoleId = req.params.roleId ? parseInt(req.params.roleId) : undefined; // Optional roleId from URL
         const roleFromBody = req.body.role; // Role name from request body
+
+        const actorRoles = ((req as any).user?.role ?? []) as Role[];
+        await userService.assertPersonnelScope(actorRoles, userId);
+        if (roleFromBody) userService.assertRoleWithinCoordinatorScope(actorRoles, roleFromBody as Role);
 
         // Support two scenarios:
         // 1. Remove by role ID: DELETE /users/:id/roles/:roleId
@@ -540,7 +595,7 @@ export const removeRole = async (req: Request, res: Response): Promise<void> => 
         });
     } catch (error: any) {
         console.error('Error removing role:', error);
-        res.status(404).json({ // Assume error means not found or doesn't belong to user
+        res.status(error?.statusCode ?? 404).json({ // Assume error means not found or doesn't belong to user
             success: false,
             error: error.message
         });
@@ -636,6 +691,12 @@ export const setUserRolesForCurrentAcademicYear = async (req: Request, res: Resp
                 return;
             }
         }
+
+        const actorRoles = ((req as any).user?.role ?? []) as Role[];
+        await userService.assertPersonnelScope(actorRoles, userId);
+        // Every role in the incoming set must also be within the coordinator's scope,
+        // so a coordinator can't add e.g. HOD to a Discipline Master account.
+        for (const role of roles) userService.assertRoleWithinCoordinatorScope(actorRoles, role);
 
         const updatedRoles = await userService.setUserRolesForAcademicYear(userId, roles);
         res.json({
@@ -777,6 +838,54 @@ export const removeDisciplineMaster = async (req: Request, res: Response): Promi
         } else {
             res.status(200).json({ success: true, message: 'Discipline Master assignment removed successfully (or did not exist).' });
         }
+    }
+};
+
+// Fan-out helper: assign a DM to every sub-class under a Class for the given year.
+export const assignDisciplineMasterToClass = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const userId = parseInt(req.params.userId);
+        const { class_id, academic_year_id } = req.body;
+
+        if (isNaN(userId) || !class_id || typeof class_id !== 'number') {
+            res.status(400).json({ success: false, error: 'Invalid User ID or Class ID provided.' });
+            return;
+        }
+        if (academic_year_id !== undefined && typeof academic_year_id !== 'number') {
+            res.status(400).json({ success: false, error: 'Invalid Academic Year ID provided.' });
+            return;
+        }
+
+        const assignments = await userService.assignDisciplineMasterToClass(userId, class_id, academic_year_id);
+        res.status(201).json({ success: true, data: assignments });
+    } catch (error: any) {
+        console.error('Error assigning discipline master to class:', error);
+        if (error.message.includes('not found') || error.message.includes('does not have')) {
+            res.status(404).json({ success: false, error: error.message });
+        } else if (error.message.includes('Academic Year ID is required')) {
+            res.status(400).json({ success: false, error: error.message });
+        } else {
+            res.status(500).json({ success: false, error: 'Failed to assign discipline master to class.' });
+        }
+    }
+};
+
+export const removeDisciplineMasterFromClass = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const userId = parseInt(req.params.userId);
+        const classId = parseInt(req.params.classId);
+        const academic_year_id = req.finalQuery.academic_year_id ? parseInt(req.finalQuery.academic_year_id as string) : undefined;
+
+        if (isNaN(userId) || isNaN(classId)) {
+            res.status(400).json({ success: false, error: 'Invalid User ID or Class ID in URL.' });
+            return;
+        }
+
+        await userService.removeDisciplineMasterFromClass(userId, classId, academic_year_id);
+        res.status(200).json({ success: true, message: 'Discipline Master class assignment removed successfully.' });
+    } catch (error: any) {
+        console.error('Error removing discipline master from class:', error);
+        res.status(200).json({ success: true, message: 'Discipline Master class assignment removed (or did not exist).' });
     }
 };
 
