@@ -356,16 +356,61 @@ export async function getSyncStatus(req: Request, res: Response): Promise<void> 
         const autoSyncIntervalMinutes = Number.parseInt(process.env.AUTO_SYNC_INTERVAL || '5', 10);
         const remotePeerConfigured = Boolean(process.env.REMOTE_SYNC_URL);
 
+        // Exactly two nodes in this topology: whichever one doesn't have
+        // REMOTE_SYNC_URL configured is, by definition, the one being pushed
+        // to rather than the one doing the pushing.
+        const role: 'INITIATOR' | 'RECEIVER' = remotePeerConfigured ? 'INITIATOR' : 'RECEIVER';
+
+        const receiptStats = await prisma.syncReceiptStat.findMany({
+            orderBy: { last_received_at: 'desc' },
+        });
+
+        const peerMap = new Map<string, string>(); // server_id -> most recent last_received_at (ISO)
+        const perTableMap = new Map<string, { total: number; lastReceivedAt: Date }>();
+        let totalIncomingRecords = 0;
+        let lastReceivedAt: Date | null = null;
+
+        for (const stat of receiptStats) {
+            totalIncomingRecords += stat.total_records;
+            if (!lastReceivedAt || stat.last_received_at > lastReceivedAt) lastReceivedAt = stat.last_received_at;
+
+            const existingPeer = peerMap.get(stat.sender_server_id);
+            if (!existingPeer || stat.last_received_at.toISOString() > existingPeer) {
+                peerMap.set(stat.sender_server_id, stat.last_received_at.toISOString());
+            }
+
+            const existingTable = perTableMap.get(stat.table_name);
+            if (existingTable) {
+                existingTable.total += stat.total_records;
+                if (stat.last_received_at > existingTable.lastReceivedAt) existingTable.lastReceivedAt = stat.last_received_at;
+            } else {
+                perTableMap.set(stat.table_name, { total: stat.total_records, lastReceivedAt: stat.last_received_at });
+            }
+        }
+
+        const incoming = {
+            lastReceivedAt: lastReceivedAt ? lastReceivedAt.toISOString() : null,
+            totalIncomingRecords,
+            peers: Array.from(peerMap.entries())
+                .map(([serverId, lastSeenAt]) => ({ serverId, lastSeenAt }))
+                .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt)),
+            perTable: Array.from(perTableMap.entries())
+                .map(([table, v]) => ({ table, lastReceivedAt: v.lastReceivedAt.toISOString(), incomingRecords: v.total }))
+                .sort((a, b) => b.incomingRecords - a.incomingRecords),
+        };
+
         res.status(200).json({
             success: true,
             data: {
+                role,
                 lastSync: lastLogRow ? parseSyncLogRow(lastLogRow) : null,
                 isOnline,
                 remotePeerConfigured,
                 autoSyncEnabled: Number.isFinite(autoSyncIntervalMinutes) && autoSyncIntervalMinutes > 0,
                 autoSyncIntervalMinutes: Number.isFinite(autoSyncIntervalMinutes) ? autoSyncIntervalMinutes : null,
                 serverId: process.env.SERVER_ID || 'local',
-                syncInFlight: syncInFlight !== null
+                syncInFlight: syncInFlight !== null,
+                incoming,
             }
         });
     } catch (error: any) {

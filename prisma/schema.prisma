@@ -1572,6 +1572,30 @@ model SyncLog {
   @@index([start_time])
 }
 
+// A RECEIVER node (one with no REMOTE_SYNC_URL of its own -- e.g. the VPS,
+// which the on-prem server pushes to but never polls back) has no SyncLog
+// rows of its own: it never runs a sync cycle, it only answers incoming
+// POST /sync/receive/:tableName calls. Without this, its Data Sync page had
+// nothing real to show even while sync was working correctly -- on-prem's
+// side looked "well logged", the VPS side looked empty.
+//
+// One row per (table_name, sender_server_id) pair, updated in place on every
+// incoming batch, rather than one row per batch -- an append-only log at a
+// 60s sync interval across ~30 tables would grow unbounded for no benefit
+// this status page needs; a rolling counter answers "is this receiving and
+// how much" just as well and stays small forever.
+model SyncReceiptStat {
+  id               Int      @id @default(autoincrement())
+  table_name       String
+  sender_server_id String
+  total_records    Int      @default(0)
+  last_received_at DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@unique([table_name, sender_server_id])
+  @@index([last_received_at])
+}
+
 // Bursar-defined ad-hoc fees (e.g. GCE, trips, uniforms) scoped to all/a class/a subclass.
 // When requires_school_fees_paid = true, any payment first cascades into outstanding school fees.
 model FeeItem {

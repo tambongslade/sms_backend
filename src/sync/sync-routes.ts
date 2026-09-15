@@ -131,6 +131,17 @@ router.post('/sync/receive/:tableName', requireSyncAuth, async (req: Request, re
     // the next local insert is handed an id the sender already used.
     await dbSyncer.resyncSequence(tableName);
 
+    // Rolling per-table/per-sender counter -- see SyncReceiptStat's schema
+    // comment. This is what lets a RECEIVER node's Data Sync page show real
+    // activity instead of nothing (it never writes a SyncLog row of its own).
+    if (records.length > 0) {
+      await prisma.syncReceiptStat.upsert({
+        where: { table_name_sender_server_id: { table_name: tableName, sender_server_id: sender || 'unknown' } },
+        create: { table_name: tableName, sender_server_id: sender || 'unknown', total_records: records.length },
+        update: { total_records: { increment: records.length }, last_received_at: new Date() },
+      });
+    }
+
     res.json({
       success: true,
       processed: records.length
