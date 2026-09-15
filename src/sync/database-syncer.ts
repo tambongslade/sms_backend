@@ -323,7 +323,23 @@ export class DatabaseSyncer {
 
   // Prisma renders a multi-line source excerpt into error.message; keep the
   // meaningful tail so a run with thousands of failures stays readable.
+  //
+  // The message-regex path came up empty on P2025s: that code means Prisma
+  // resolved a `connect`/relation client-side and found nothing, so it never
+  // sent SQL to Postgres at all -- there is no "Foreign key constraint
+  // violated" text to match, in French or English, because the database
+  // never saw the query. `error.meta` is where Prisma actually put the
+  // useful part (which field, which cause) for both P2003 and P2025; read
+  // that first and only fall back to scraping the message when it's empty.
   private shortError(error: any): string {
+    const meta = error?.meta;
+    if (meta && typeof meta === 'object') {
+      const field = meta.field_name || meta.constraint;
+      const cause = meta.cause;
+      const model = meta.modelName;
+      const parts = [error?.code, model, field, cause].filter(Boolean);
+      if (parts.length) return `FK violation (${parts.join(' / ')})`;
+    }
     const msg = String(error?.message ?? error);
     const constraint = msg.match(/Foreign key constraint violated:? `?([^`\n]+)`?/);
     if (constraint) return `FK violation: ${constraint[1].trim()}`;
