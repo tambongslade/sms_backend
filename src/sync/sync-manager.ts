@@ -194,6 +194,7 @@ export class SyncManager {
     private dbSyncer: DatabaseSyncer;
     private networkChecker: NetworkChecker;
     private syncInterval: NodeJS.Timeout | null = null;
+    private autoSyncInFlight = false;
 
     constructor() {
         this.dbSyncer = new DatabaseSyncer();
@@ -212,8 +213,24 @@ export class SyncManager {
         console.log(`Starting auto-sync every ${intervalMinutes} minutes`);
 
         this.syncInterval = setInterval(async () => {
+            // A run can take longer than the interval (a large backlog, a slow
+            // peer) -- without this guard the next tick fires anyway and a
+            // second performSync() starts reading/writing the same tables
+            // concurrently with the first. At a 5-minute interval that was
+            // unlikely enough not to have bitten anyone yet; at 60 seconds it
+            // would eventually be routine, and worse than any bug this session
+            // spent today fixing.
+            if (this.autoSyncInFlight) {
+                console.log('Auto-sync tick skipped: previous run still in progress');
+                return;
+            }
             if (await this.networkChecker.isOnline()) {
-                await this.performSync();
+                this.autoSyncInFlight = true;
+                try {
+                    await this.performSync();
+                } finally {
+                    this.autoSyncInFlight = false;
+                }
             } else {
                 console.log('Network offline - skipping sync');
             }
