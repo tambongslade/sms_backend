@@ -1305,6 +1305,14 @@ enum StudentStatus {
   GRADUATED
   TRANSFERRED
   SUSPENDED
+  // Removed by staff (non-payment, first-week absence, etc.) without a hard
+  // DELETE. A hard delete has no sync counterpart -- the sync system only
+  // replicates creates/updates, never deletions -- so a student deleted on
+  // one node reappeared within one sync tick as soon as the other node's
+  // still-live copy was pulled/pushed back. A status change is an ordinary
+  // field update, which the existing sync path already replicates correctly
+  // in both directions.
+  WITHDRAWN
 }
 
 enum DisciplineType {
@@ -1513,6 +1521,39 @@ model SyncMetadata {
   server_type String // 'local' or 'remote'
   server_id   String?
   created_at  DateTime @default(now())
+}
+
+// One row per table in SYNC_TABLES, holding that table's own "since" cursor.
+// Replaces the single global SyncMetadata timestamp: a table with no row yet
+// falls back to the latest SyncMetadata entry (the old global cursor) so
+// every table starts from the same known-good point instead of re-scanning
+// from epoch on rollout.
+model SyncTableCursor {
+  table_name String   @id
+  cursor     DateTime
+  updated_at DateTime @updatedAt
+}
+
+// Records that failed to push or pull and could not be placed within a
+// single run's deferred-retry passes (see MAX_DEFERRED_PASSES). Retried on
+// a backoff schedule independent of the normal per-table sync tick, so one
+// permanently-broken record (an orphaned FK, a peer-side validation error)
+// never blocks that table's cursor from advancing for everything else.
+// The row itself is the inspection surface: high `attempts` with a
+// `next_attempt` far in the future is a record that is effectively stuck.
+model SyncRetryQueue {
+  id           Int      @id @default(autoincrement())
+  table_name   String
+  record_id    Int
+  direction    String // 'push' | 'pull'
+  payload      Json
+  last_error   String?
+  attempts     Int      @default(0)
+  next_attempt DateTime @default(now())
+  created_at   DateTime @default(now())
+
+  @@unique([table_name, record_id, direction])
+  @@index([next_attempt])
 }
 
 model SyncLog {

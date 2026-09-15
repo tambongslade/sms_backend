@@ -1134,16 +1134,20 @@ export const unenrollStudent = async (req: Request, res: Response): Promise<any>
     }
 };
 
-// DELETE /students/:id - Permanently delete a student and all related data
+// DELETE /students/:id - Withdraw a student (soft delete: status -> WITHDRAWN).
+// See studentService.deleteStudent for why this is no longer a hard delete.
 export const deleteStudent = async (req: Request, res: Response): Promise<any> => {
     try {
         const id = parseInt(req.params.id);
         if (isNaN(id)) {
             return res.status(400).json({ success: false, error: 'Invalid student ID format' });
         }
+        if (!req.user || !req.user.id) {
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
 
-        await studentService.deleteStudent(id);
-        return res.json({ success: true, message: 'Student deleted successfully' });
+        await studentService.deleteStudent(id, req.user.id);
+        return res.json({ success: true, message: 'Student withdrawn successfully' });
     } catch (error: any) {
         console.error('Error deleting student:', error);
         if (error.message === 'STUDENT_NOT_FOUND' || error.code === 'P2025') {

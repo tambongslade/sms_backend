@@ -6,6 +6,7 @@ import * as feeService from './feeService'; // Import feeService
 import { generateStudentMatricule } from '../../../utils/matriculeGenerator'; // Import student matricule generator
 import { setFirstEnrollmentYear, updateNewStudentStatus } from '../../../utils/studentStatus'; // Import student status utilities
 import { StudentStatus, HealthCondition } from '@prisma/client'; // Import StudentStatus + HealthCondition enums
+import { createAuditLog } from './auditTrailService';
 import * as XLSX from 'xlsx';
 import { PDFDocument, StandardFonts, rgb, PageSizes, PDFFont, PDFPage } from 'pdf-lib';
 
@@ -1949,49 +1950,44 @@ export async function unenrollStudent(
     return { student_id: studentId, academic_year_id: yearId };
 }
 
-// Hard-delete a student and every dependent record. SUPER_MANAGER use only.
-export async function deleteStudent(studentId: number): Promise<void> {
+// Soft-delete: marks the student WITHDRAWN instead of hard-deleting the row
+// and its ~18 tables of dependent data.
+//
+// This used to be a real DELETE, cascaded by hand across every dependent
+// table. The sync system (src/sync) only replicates creates/updates -- it
+// has no concept of a deletion -- so a student removed on one node was
+// invisible to that fact everywhere else, and the very next sync tick
+// re-created it (and its enrollment, fees, attendance...) from whichever
+// node still had the row. On a bidirectional 5-minute loop that meant a
+// deletion essentially never stuck unless done on both databases inside the
+// same window. A status change is an ordinary field update, which the
+// existing sync path already replicates correctly in both directions, so
+// withdrawal now behaves the same as any other edit instead of needing sync
+// support it was never given.
+//
+// Dependent data (fees, payments, attendance, discipline history) is left
+// in place rather than deleted -- it's the paper trail for *why* the
+// student was withdrawn (unpaid fees, absences) and callers that list
+// "active" students already filter on status: ENROLLED.
+export async function deleteStudent(studentId: number, actorUserId: number): Promise<void> {
     const student = await prisma.student.findUnique({ where: { id: studentId } });
     if (!student) {
         throw new Error('STUDENT_NOT_FOUND');
     }
 
-    await prisma.$transaction(async (tx) => {
-        const enrollments = await tx.enrollment.findMany({
-            where: { student_id: studentId },
-            select: { id: true },
-        });
-        const enrollmentIds = enrollments.map((e) => e.id);
+    await prisma.student.update({
+        where: { id: studentId },
+        data: { status: StudentStatus.WITHDRAWN },
+    });
 
-        if (enrollmentIds.length > 0) {
-            await tx.mark.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.studentSequenceAverage.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            // DMRollCallEntry rows must go before StudentAbsence (FK linked_absence_id ON DELETE SET NULL is fine, but entries reference enrollment too).
-            await tx.dMRollCallEntry.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.studentAbsence.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.disciplineIssue.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.saturdayPunishment.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.brokenProperty.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.disciplinaryAction.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.studentWarning.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.parentSummons.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.feeItemPayment.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.refund.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.paymentTransaction.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.controlPaymentTransaction.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.schoolFees.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.controlSchoolFees.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.enrollment.deleteMany({ where: { id: { in: enrollmentIds } } });
-        }
-
-        await tx.parentStudent.deleteMany({ where: { student_id: studentId } });
-        await tx.interviewMark.deleteMany({ where: { student_id: studentId } });
-        await tx.studentPreviousSchool.deleteMany({ where: { student_id: studentId } });
-        await tx.feeItem.deleteMany({ where: { student_id: studentId } });
-        await tx.quizSubmission.deleteMany({ where: { student_id: studentId } });
-        await tx.generatedReport.deleteMany({ where: { student_id: studentId } });
-
-        await tx.student.delete({ where: { id: studentId } });
+    await createAuditLog({
+        userId: actorUserId,
+        action: 'WITHDRAW',
+        entityType: 'Student',
+        entityId: studentId,
+        changes: { oldValues: { status: student.status }, newValues: { status: StudentStatus.WITHDRAWN } },
+        description: `Student ${student.matricule ?? studentId} withdrawn (soft delete, replaces hard delete)`,
+        severity: 'MEDIUM',
     });
 }
 
