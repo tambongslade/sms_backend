@@ -33,6 +33,7 @@ router.get('/lateness/alerts', authenticate, authorize(DM_AND_ADMIN), discipline
 
 // === BULK ABSENCES (DM daily roll call) ===
 
+router.get('/absences', authenticate, authorize(DM_AND_ADMIN), disciplineController.listAbsences);
 router.get('/absences/form-data', authenticate, authorize(DM_AND_ADMIN), disciplineController.getAbsenceFormData);
 router.post('/absences/bulk', authenticate, authorize(DM_AND_ADMIN), validateDMSubClassAccess, disciplineController.bulkRecordAbsences);
 router.put('/absences/:id', authenticate, authorize(DM_AND_ADMIN), disciplineController.updateStudentAbsence);

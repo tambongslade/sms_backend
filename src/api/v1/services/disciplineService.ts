@@ -709,6 +709,85 @@ export async function deleteStudentAbsence(id: number): Promise<void> {
     await prisma.studentAbsence.delete({ where: { id } });
 }
 
+export async function listAbsences(filters: {
+    absence_type?: AbsenceType;
+    academic_year_id?: number;
+    from?: string;
+    to?: string;
+    is_excused?: boolean;
+    sub_class_id?: number;
+    page?: number;
+    limit?: number;
+}): Promise<PaginatedResult<any>> {
+    const yearId = filters.academic_year_id ?? await getAcademicYearId();
+    const page = filters.page && filters.page > 0 ? filters.page : 1;
+    const limit = filters.limit && filters.limit > 0 ? filters.limit : 50;
+
+    const where: Prisma.StudentAbsenceWhereInput = {
+        ...(filters.absence_type && { absence_type: filters.absence_type }),
+        ...(filters.is_excused !== undefined && { is_excused: filters.is_excused }),
+        enrollment: {
+            ...(yearId && { academic_year_id: yearId }),
+            ...(filters.sub_class_id && { sub_class_id: filters.sub_class_id }),
+        },
+    };
+
+    if (filters.from || filters.to) {
+        const gte = filters.from ? new Date(`${filters.from}T00:00:00.000Z`) : undefined;
+        const lte = filters.to ? new Date(`${filters.to}T23:59:59.999Z`) : undefined;
+        where.created_at = { ...(gte && { gte }), ...(lte && { lte }) };
+    }
+
+    const [total, rows] = await Promise.all([
+        prisma.studentAbsence.count({ where }),
+        prisma.studentAbsence.findMany({
+            where,
+            orderBy: { created_at: 'desc' },
+            skip: (page - 1) * limit,
+            take: limit,
+            include: {
+                enrollment: {
+                    include: {
+                        student: { select: { id: true, name: true, matricule: true } },
+                        sub_class: { select: { id: true, name: true, class: { select: { id: true, name: true } } } },
+                    },
+                },
+                assigned_by: { select: { id: true, name: true } },
+                excused_by: { select: { id: true, name: true } },
+                teacher_period: {
+                    include: {
+                        subject: { select: { id: true, name: true } },
+                        period: { select: { id: true, name: true, start_time: true, end_time: true } },
+                    },
+                },
+            },
+        }),
+    ]);
+
+    // Flatten enrollment.student / enrollment.sub_class to the top level -- the
+    // frontend list view renders a row per absence, not per enrollment, so it
+    // doesn't need (or want) the enrollment wrapper the way discipline-history does.
+    const data = rows.map((r: any) => ({
+        id: r.id,
+        absence_type: r.absence_type,
+        is_excused: r.is_excused,
+        excuse_reason: r.excuse_reason,
+        excused_at: r.excused_at,
+        makeup_status: r.makeup_status,
+        created_at: r.created_at,
+        student: r.enrollment?.student ?? null,
+        sub_class: r.enrollment?.sub_class ?? null,
+        assigned_by: r.assigned_by,
+        excused_by: r.excused_by,
+        teacher_period: r.teacher_period,
+    }));
+
+    return {
+        data,
+        meta: { total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) },
+    };
+}
+
 export async function getAllDisciplineIssues(
     paginationOptions?: PaginationOptions,
     filterOptions?: FilterOptions,

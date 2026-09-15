@@ -419,6 +419,29 @@ export const deleteStudentAbsence = async (req: Request, res: Response): Promise
     }
 };
 
+/**
+ * Paginated list of StudentAbsence records for the "Class Absences" report.
+ */
+export const listAbsences = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const q = req.finalQuery as any;
+        const result = await disciplineService.listAbsences({
+            absence_type: q.absence_type as any,
+            academic_year_id: q.academic_year_id ? parseInt(q.academic_year_id) : undefined,
+            from: q.from,
+            to: q.to,
+            is_excused: q.is_excused === 'true' ? true : q.is_excused === 'false' ? false : undefined,
+            sub_class_id: q.sub_class_id ? parseInt(q.sub_class_id) : undefined,
+            page: q.page ? parseInt(q.page) : undefined,
+            limit: q.limit ? parseInt(q.limit) : undefined,
+        });
+        return res.json({ success: true, data: result.data, meta: result.meta });
+    } catch (error: any) {
+        console.error('Error listing absences:', error);
+        return res.status(400).json({ success: false, error: error.message });
+    }
+};
+
 // =====================================================================
 // Unified roll call
 // =====================================================================
