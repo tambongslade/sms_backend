@@ -240,6 +240,37 @@ const enrollmentNameInclude = {
     sub_class: { include: { class: { select: { id: true, name: true } } } },
 } as const;
 
+// Same shape, plus what's needed to weight a Class Absence by how many real
+// periods the DM roll-call slot it was recorded under actually covers -- see
+// computeAbsenceWeight below.
+const enrollmentNameAndPeriodSetInclude = {
+    student: { select: { id: true, name: true, matricule: true } },
+    sub_class: { include: { class: { select: { id: true, name: true, period_set_id: true } } } },
+} as const;
+
+/**
+ * How many real class periods a single DM roll-call slot represents, so
+ * one CLASS_ABSENCE record (recorded once per slot, not once per period)
+ * can be weighted by the actual periods missed rather than always counting
+ * as 1. The DM walks after period 2 (SLOT_2), period 5 (SLOT_5), and the
+ * last period of the day (SLOT_8) -- so a slot's absence spans every
+ * TEACHING period since the previous slot's checkpoint:
+ *   SLOT_2 -> periods 1-2   (2, unless the day has fewer than 2)
+ *   SLOT_5 -> periods 3-5   (3, clipped to what the day actually has)
+ *   SLOT_8 -> everything from period 6 to the end of the day (3 normally,
+ *             4 for a school day that also runs a "Preps" 9th period --
+ *             this school's schedule currently does, school-wide, but the
+ *             formula reads it from the actual period count rather than
+ *             hardcoding 3 vs 4).
+ * `dayTeachingPeriodCount` is that day's total TEACHING period count (N).
+ */
+function slotPeriodWeight(slot: 'SLOT_2' | 'SLOT_5' | 'SLOT_8', dayTeachingPeriodCount: number): number {
+    const n = Math.max(0, dayTeachingPeriodCount);
+    if (slot === 'SLOT_2') return Math.min(2, n);
+    if (slot === 'SLOT_5') return Math.min(3, Math.max(0, n - 2));
+    return Math.max(0, n - 5); // SLOT_8
+}
+
 function offenceRow(row: {
     created_at: Date;
     enrollment: {
@@ -287,7 +318,14 @@ async function getDisciplineSection(
                 ...dateFilter,
                 enrollment: enrollmentFilter,
             },
-            include: { enrollment: { include: enrollmentNameInclude } },
+            include: {
+                enrollment: { include: enrollmentNameAndPeriodSetInclude },
+                // Which DM roll-call slot this was recorded under -- see
+                // slotPeriodWeight. A teacher-recorded absence (via
+                // TeacherRollCallEntry instead) has none of these, and is
+                // weighted as exactly the 1 period it already is.
+                dm_roll_call_entries: { select: { dm_roll_call: { select: { slot: true } } } },
+            },
             orderBy: { created_at: 'asc' },
         }),
         prisma.disciplinaryAction.findMany({
@@ -298,21 +336,51 @@ async function getDisciplineSection(
     ]);
 
     const lateness = latenessRaw.map(offenceRow).filter((r): r is OffenceRow => r !== null);
-    const absenceInstances = absencesRaw.map(offenceRow).filter((r): r is OffenceRow => r !== null);
-    // One row per student with their total count, not one row per absence --
-    // the raw instance list is unreadable for a school-wide range.
+
+    // How many TEACHING periods each (period_set, day_of_week) actually has,
+    // to weight each CLASS_ABSENCE record below by the real periods its DM
+    // slot covers instead of counting every record as flatly 1 -- see
+    // slotPeriodWeight. Small table, cheap to pull whole.
+    const periodCounts = await prisma.period.groupBy({
+        by: ['period_set_id', 'day_of_week'],
+        where: { type: 'TEACHING' },
+        _count: { _all: true },
+    });
+    const teachingPeriodCountByKey = new Map<string, number>();
+    for (const row of periodCounts) {
+        teachingPeriodCountByKey.set(`${row.period_set_id ?? 'null'}|${row.day_of_week}`, row._count._all);
+    }
+    // Fallback for a class with no period_set assigned at all -- the normal
+    // 8-period day, no Preps.
+    const DEFAULT_DAY_PERIOD_COUNT = 8;
+
+    function absenceWeight(row: (typeof absencesRaw)[number]): number {
+        const slot = row.dm_roll_call_entries[0]?.dm_roll_call?.slot;
+        if (!slot) return 1; // teacher-recorded: already exactly 1 period
+        const periodSetId = row.enrollment?.sub_class?.class?.period_set_id ?? null;
+        const dow = dayOfWeekFromDate(row.created_at);
+        const n = teachingPeriodCountByKey.get(`${periodSetId ?? 'null'}|${dow}`) ?? DEFAULT_DAY_PERIOD_COUNT;
+        return slotPeriodWeight(slot, n);
+    }
+
+    // One row per student with their total (period-weighted) count, not one
+    // row per absence record -- the raw instance list is unreadable for a
+    // school-wide range.
     const absencesByStudent = new Map<number, StudentAbsenceCountRow>();
-    for (const a of absenceInstances) {
-        const existing = absencesByStudent.get(a.studentId);
-        if (existing) existing.count += 1;
+    for (const row of absencesRaw) {
+        const base = offenceRow(row);
+        if (!base) continue;
+        const weight = absenceWeight(row);
+        const existing = absencesByStudent.get(base.studentId);
+        if (existing) existing.count += weight;
         else {
-            absencesByStudent.set(a.studentId, {
-                studentId: a.studentId,
-                studentName: a.studentName,
-                matricule: a.matricule,
-                className: a.className,
-                subClassName: a.subClassName,
-                count: 1,
+            absencesByStudent.set(base.studentId, {
+                studentId: base.studentId,
+                studentName: base.studentName,
+                matricule: base.matricule,
+                className: base.className,
+                subClassName: base.subClassName,
+                count: weight,
             });
         }
     }
@@ -332,12 +400,14 @@ async function getDisciplineSection(
         number,
         { classAbsences: number; lateness: number; sanctions: number }
     >();
-    const bump = (id: number, key: 'classAbsences' | 'lateness' | 'sanctions') => {
+    const bump = (id: number, key: 'classAbsences' | 'lateness' | 'sanctions', amount = 1) => {
         const entry = byEnrollment.get(id) ?? { classAbsences: 0, lateness: 0, sanctions: 0 };
-        entry[key] += 1;
+        entry[key] += amount;
         byEnrollment.set(id, entry);
     };
-    for (const r of absencesRaw) bump(r.enrollment_id, 'classAbsences');
+    // classAbsences uses the same period-weighted count as the Class
+    // Absences table above, not a flat +1 per record.
+    for (const r of absencesRaw) bump(r.enrollment_id, 'classAbsences', absenceWeight(r));
     for (const r of latenessRaw) bump(r.enrollment_id, 'lateness');
     for (const r of sanctionsRaw) bump(r.enrollment_id, 'sanctions');
 
