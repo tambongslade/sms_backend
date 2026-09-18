@@ -24,6 +24,7 @@ import {
     assignTeacherSubject,
     removeTeacherSubject,
     getAllTeachers,
+    getTeacherRoster,
     getCurrentUserProfile,
     getStudentsForParent,
     getDashboardForRole,
@@ -51,6 +52,13 @@ router.get('/teachers/search', authenticate, authorize([
     'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL',
     'BURSAR', 'SECRETARY', 'DEAN_OF_STUDIES', 'HOD'
 ]), searchTeachers);
+
+// Full teacher roster (name, matricule, weekly period count) for the
+// printable-forms feature. Must be BEFORE /:id.
+router.get('/teachers/roster', authenticate, authorize([
+    'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL',
+    'BURSAR', 'SECRETARY', 'DEAN_OF_STUDIES', 'HOD'
+]), getTeacherRoster);
 
 // Personnel search with pagination + filters. Must be BEFORE /:id.
 // CONTROLLER is included but service enforces filter to DISCIPLINE_MASTER role only.

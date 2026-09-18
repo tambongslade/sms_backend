@@ -1050,6 +1050,24 @@ export const getAllTeachers = async (req: Request, res: Response): Promise<void>
     }
 };
 
+export const getTeacherRoster = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const academicYearId = req.finalQuery.academic_year_id
+            ? parseInt(req.finalQuery.academic_year_id as string)
+            : undefined;
+        if (req.finalQuery.academic_year_id && isNaN(academicYearId as number)) {
+            res.status(400).json({ success: false, error: 'Invalid Academic Year ID format' });
+            return;
+        }
+
+        const roster = await userService.getTeacherRoster(academicYearId);
+        res.json({ success: true, data: roster });
+    } catch (error: any) {
+        console.error('Error fetching teacher roster:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
 export const getStudentsForParent = async (req: Request, res: Response): Promise<void> => {
     try {
         const parentId = parseInt(req.params.parentId);

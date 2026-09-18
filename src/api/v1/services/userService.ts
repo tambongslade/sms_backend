@@ -1305,6 +1305,46 @@ export async function getAllTeachers(subjectId?: number): Promise<Teacher[]> {
     }));
 }
 
+// Full teacher roster with a weekly period count each -- built for the
+// printable-forms feature (a blank teacher list, and a "how many periods
+// does each teacher have" sheet), not paginated since a school's whole
+// teaching staff prints on a handful of pages either way.
+export interface TeacherRosterEntry {
+    id: number;
+    name: string;
+    matricule: string | null;
+    weeklyPeriods: number;
+}
+
+export async function getTeacherRoster(academicYearId?: number): Promise<TeacherRosterEntry[]> {
+    const yearId = academicYearId ?? (await getAcademicYearId());
+
+    const teachers = await prisma.user.findMany({
+        where: { user_roles: { some: { role: 'TEACHER' } } },
+        select: { id: true, name: true, matricule: true },
+        orderBy: { name: 'asc' }
+    });
+
+    // Period counts, not summed hours -- see teacherService.getTeacherTimetable
+    // for why: teaching slots aren't a fixed length, so a count is the number
+    // that actually means "how many periods does this teacher have".
+    const counts = yearId
+        ? await prisma.teacherPeriod.groupBy({
+            by: ['teacher_id'],
+            where: { academic_year_id: yearId },
+            _count: { _all: true }
+        })
+        : [];
+    const countByTeacherId = new Map(counts.map(c => [c.teacher_id, c._count._all]));
+
+    return teachers.map(t => ({
+        id: t.id,
+        name: t.name,
+        matricule: t.matricule,
+        weeklyPeriods: countByTeacherId.get(t.id) ?? 0
+    }));
+}
+
 // Utility: Check if a user has a specific role (simplified - no academic year needed)
 export async function userHasRole(userId: number, role: Role): Promise<boolean> {
     const userRole = await prisma.userRole.findFirst({
