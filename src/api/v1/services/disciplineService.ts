@@ -917,19 +917,23 @@ export async function getAllDisciplineIssues(
     const include: any = {};
 
     // Include staff who assigned the issue
-    if (filterOptions?.includeAssignedBy === 'true') {
+    // NOTE: filterOptions keys are snake_case (see allowedFilters in the controller,
+    // which is what extractPaginationAndFilters keys them by) -- these previously
+    // checked the camelCase name, which never matched, so none of these three
+    // includes ever actually fired and callers had to N+1 fetch enrollment details.
+    if (filterOptions?.include_assigned_by === 'true') {
         include.assigned_by = true;
-        delete processedFilters.includeAssignedBy;
+        delete processedFilters.include_assigned_by;
     }
 
     // Include staff who reviewed the issue
-    if (filterOptions?.includeReviewedBy === 'true') {
+    if (filterOptions?.include_reviewed_by === 'true') {
         include.reviewed_by = true;
-        delete processedFilters.includeReviewedBy;
+        delete processedFilters.include_reviewed_by;
     }
 
     // Include student information
-    if (filterOptions?.includeStudent === 'true') {
+    if (filterOptions?.include_student === 'true') {
         include.enrollment = {
             include: {
                 student: true,
@@ -940,7 +944,7 @@ export async function getAllDisciplineIssues(
                 }
             }
         };
-        delete processedFilters.includeStudent;
+        delete processedFilters.include_student;
     }
 
     return paginate<DisciplineIssue>(
