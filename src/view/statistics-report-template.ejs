@@ -128,6 +128,30 @@
     <section>
         <h2 class="section-title">Discipline Overview</h2>
 
+        <h3 class="sub-title">Class Attendance</h3>
+        <% if (discipline.classAttendance.length === 0) { %>
+            <p class="empty">No roll-call data recorded in this range.</p>
+        <% } else { %>
+        <table>
+            <thead><tr><th>Class</th><th class="num">Enrollment</th><th class="num">Present</th><th class="num">%</th><th class="num">Absence</th></tr></thead>
+            <tbody>
+                <% discipline.classAttendance.forEach(function(r) { %>
+                <tr><td><%= r.className %></td><td class="num"><%= r.enrollment %></td><td class="num"><%= r.present %></td><td class="num"><%= r.percentagePresent %>%</td><td class="num"><%= r.absence %></td></tr>
+                <% }); %>
+            </tbody>
+            <tfoot>
+                <% var _caTotals = discipline.classAttendance.reduce(function(a,r){ a.enrollment+=r.enrollment; a.present+=r.present; a.absence+=r.absence; return a; }, {enrollment:0,present:0,absence:0}); %>
+                <tr>
+                    <td>Total</td>
+                    <td class="num"><%= _caTotals.enrollment %></td>
+                    <td class="num"><%= _caTotals.present %></td>
+                    <td class="num"><%= _caTotals.present + _caTotals.absence > 0 ? Math.round((_caTotals.present / (_caTotals.present + _caTotals.absence)) * 10000) / 100 : 0 %>%</td>
+                    <td class="num"><%= _caTotals.absence %></td>
+                </tr>
+            </tfoot>
+        </table>
+        <% } %>
+
         <h3 class="sub-title">Lateness (<%= discipline.lateness.length %>)</h3>
         <% if (discipline.lateness.length === 0) { %>
             <p class="empty">No lateness recorded in this range.</p>
@@ -185,6 +209,7 @@
         <% } %>
     </section>
 
+    <% if (reportScope === 'full') { %>
     <section>
         <h2 class="section-title">Teaching Statistics</h2>
         <h3 class="sub-title">Hours Taught</h3>
@@ -279,6 +304,7 @@
         </table>
         <% } %>
     </section>
+    <% } %>
 
     <div class="footer">Generated <%= generatedAt %> &middot; <%= brand %></div>
 </body>

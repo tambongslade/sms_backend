@@ -31,8 +31,12 @@ router.get('/audit',          authorize(['SUPER_MANAGER', 'MANAGER']), overview.
 router.get('/enrollment',     authorize(OVERVIEW_ROLES), overview.getEnrollmentOverview);
 
 // Statistics report — a date-ranged (weekly by default) discipline/teaching/
-// work-coverage/financial snapshot with a letterhead PDF export.
-router.get('/statistics-report',     authorize(OVERVIEW_ROLES), statisticsReport.getStatisticsReport);
-router.get('/statistics-report/pdf', authorize(OVERVIEW_ROLES), statisticsReport.exportStatisticsReportPdf);
+// work-coverage/financial snapshot with a letterhead PDF export. Dean of
+// Discipline and Discipline Coordinator get it too, but the controller
+// scopes their response to the discipline section only (see
+// statisticsReportController's FULL_REPORT_ROLES).
+const STATISTICS_ROLES = [...OVERVIEW_ROLES, 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR'];
+router.get('/statistics-report',     authorize(STATISTICS_ROLES), statisticsReport.getStatisticsReport);
+router.get('/statistics-report/pdf', authorize(STATISTICS_ROLES), statisticsReport.exportStatisticsReportPdf);
 
 export default router;

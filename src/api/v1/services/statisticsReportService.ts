@@ -103,14 +103,31 @@ export interface FinancialPoiRow {
     outstandingAmount: number;
 }
 
+// Cumulative per-class DM roll-call summary for the range -- Present folds
+// in LATE (the student did attend), Absence is ABSENT marks; each row is a
+// raw sum of roll-call entries across every slot/day in the range, not a
+// per-day-deduplicated headcount.
+export interface ClassAttendanceRow {
+    classId: number;
+    className: string;
+    enrollment: number;
+    present: number;
+    absence: number;
+    percentagePresent: number;
+}
+
 export interface StatisticsReportData {
     range: { from: string; to: string };
     academicYear: { id: number; name: string } | null;
+    // 'discipline' means Teaching/Work Coverage/Financial were never
+    // computed and are empty -- see getStatisticsReport's disciplineOnly.
+    reportScope: 'full' | 'discipline';
     discipline: {
         lateness: OffenceRow[];
         absences: StudentAbsenceCountRow[];
         sanctions: SanctionRow[];
         personsOfInterest: DisciplinePoiRow[];
+        classAttendance: ClassAttendanceRow[];
     };
     teaching: TeachingRow[];
     workCoverage: CoverageRow[];
@@ -239,7 +256,7 @@ async function getDisciplineSection(
     yearId: number | null,
     fromDate: Date,
     toDate: Date
-): Promise<StatisticsReportData['discipline']> {
+): Promise<Omit<StatisticsReportData['discipline'], 'classAttendance'>> {
     const dateFilter = { created_at: { gte: fromDate, lte: toDate } };
     const enrollmentFilter = yearId
         ? { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' as const } } }
@@ -355,6 +372,64 @@ async function getDisciplineSection(
     }
 
     return { lateness, absences, sanctions, personsOfInterest };
+}
+
+// Cumulative per-class DM roll-call summary (Enrollment / Present / % /
+// Absence) for the range. Present folds in LATE -- the student did attend,
+// just late, and Lateness already gets its own section above. Each entry
+// (one per roll-call slot per day) is summed as-is, not deduplicated per
+// day, matching "cumulative" for the range rather than a daily headcount.
+async function getClassAttendanceSection(
+    yearId: number | null,
+    fromDate: Date,
+    toDate: Date
+): Promise<ClassAttendanceRow[]> {
+    if (!yearId) return [];
+
+    const [classes, enrollmentCounts, rollCallEntries] = await Promise.all([
+        prisma.class.findMany({ select: { id: true, name: true } }),
+        prisma.enrollment.groupBy({
+            by: ['class_id'],
+            where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
+            _count: { _all: true },
+        }),
+        prisma.dMRollCallEntry.findMany({
+            where: {
+                dm_roll_call: { academic_year_id: yearId, date: { gte: fromDate, lte: toDate } },
+                enrollment: { student: { status: { not: 'WITHDRAWN' } } },
+            },
+            select: { status: true, enrollment: { select: { class_id: true } } },
+        }),
+    ]);
+
+    const enrollmentByClass = new Map(enrollmentCounts.map((e) => [e.class_id, e._count._all]));
+    const presentByClass = new Map<number, number>();
+    const absentByClass = new Map<number, number>();
+    for (const entry of rollCallEntries) {
+        const classId = entry.enrollment?.class_id;
+        if (classId == null) continue;
+        if (entry.status === 'PRESENT' || entry.status === 'LATE') {
+            presentByClass.set(classId, (presentByClass.get(classId) ?? 0) + 1);
+        } else if (entry.status === 'ABSENT') {
+            absentByClass.set(classId, (absentByClass.get(classId) ?? 0) + 1);
+        }
+    }
+
+    return classes
+        .map((c) => {
+            const present = presentByClass.get(c.id) ?? 0;
+            const absence = absentByClass.get(c.id) ?? 0;
+            return {
+                classId: c.id,
+                className: c.name,
+                enrollment: enrollmentByClass.get(c.id) ?? 0,
+                present,
+                absence,
+                percentagePresent: toPct(present, present + absence),
+            };
+        })
+        .filter((r) => r.enrollment > 0 || r.present > 0 || r.absence > 0)
+        .sort((a, b) => a.className.localeCompare(b.className));
 }
 
 // ---------------------------------------------------------------------------
@@ -677,6 +752,12 @@ export async function getStatisticsReport(params: {
     academicYearId?: number;
     from: string;
     to: string;
+    // Dean of Discipline / Discipline Coordinator get this report too, but
+    // only the discipline side -- Teaching/Work Coverage/Financial are
+    // payroll- and fee-adjacent and stay out of their reach. Skipping their
+    // computation entirely (rather than computing and hiding client-side)
+    // also avoids the extra work for a role that never sees the result.
+    disciplineOnly?: boolean;
 }): Promise<StatisticsReportData> {
     if (!params.from || !params.to) throw new Error('from and to are required (YYYY-MM-DD)');
 
@@ -688,17 +769,21 @@ export async function getStatisticsReport(params: {
     const fromDate = parseDateOnly(params.from);
     const toDate = endOfDay(params.to);
 
-    const [discipline, teaching, workCoverage, financial] = await Promise.all([
+    const [disciplineBase, classAttendance, teaching, workCoverage, financial] = await Promise.all([
         getDisciplineSection(yearId, fromDate, toDate),
-        getTeachingSection(yearId, params.from, params.to),
-        getWorkCoverageSection(yearId, params.to),
-        getFinancialSection(yearId, fromDate, toDate),
+        getClassAttendanceSection(yearId, fromDate, toDate),
+        params.disciplineOnly ? Promise.resolve([]) : getTeachingSection(yearId, params.from, params.to),
+        params.disciplineOnly ? Promise.resolve([]) : getWorkCoverageSection(yearId, params.to),
+        params.disciplineOnly
+            ? Promise.resolve({ subClasses: [], personsOfInterest: [] })
+            : getFinancialSection(yearId, fromDate, toDate),
     ]);
 
     return {
         range: { from: params.from, to: params.to },
         academicYear: academicYear ? { id: academicYear.id, name: academicYear.name } : null,
-        discipline,
+        reportScope: params.disciplineOnly ? 'discipline' : 'full',
+        discipline: { ...disciplineBase, classAttendance },
         teaching,
         workCoverage,
         financial,
@@ -737,6 +822,7 @@ export async function generateStatisticsReportPdf(params: {
     academicYearId?: number;
     from: string;
     to: string;
+    disciplineOnly?: boolean;
 }): Promise<{ buffer: Buffer; filename: string }> {
     const data = await getStatisticsReport(params);
 

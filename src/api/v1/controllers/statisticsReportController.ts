@@ -1,6 +1,12 @@
 import { Request, Response } from 'express';
 import * as statisticsReportService from '../services/statisticsReportService';
 
+// Roles that see the full report (Teaching/Work Coverage/Financial included).
+// Anyone else authorized for this route (currently Dean of Discipline and
+// Discipline Coordinator) gets discipline-only -- see
+// statisticsReportRoutes' authorize() list for who can reach this at all.
+const FULL_REPORT_ROLES = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL'];
+
 function parseParams(req: Request) {
     const q = req.finalQuery as any;
     const from = q.from as string | undefined;
@@ -10,10 +16,13 @@ function parseParams(req: Request) {
         e.statusCode = 400;
         throw e;
     }
+    const callerRoles = req.user?.role ?? [];
+    const disciplineOnly = !callerRoles.some((r) => FULL_REPORT_ROLES.includes(r));
     return {
         academicYearId: q.academic_year_id ? parseInt(q.academic_year_id) : undefined,
         from,
         to,
+        disciplineOnly,
     };
 }
 
