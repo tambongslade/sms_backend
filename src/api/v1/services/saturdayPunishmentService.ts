@@ -64,8 +64,11 @@ export async function listSaturdayPunishments(opts: ListSaturdayPunishmentOption
                 ...(yearId && { academic_year_id: yearId }),
             },
         }),
+        // Roster-style browsing (no specific student/enrollment target) must
+        // exclude withdrawn students -- see the same pattern in
+        // disciplineService.ts's listStudentWarnings/listParentSummons.
         ...(!opts.student_id && !opts.enrollment_id && yearId && {
-            enrollment: { academic_year_id: yearId },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         }),
     };
 

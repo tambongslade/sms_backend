@@ -913,6 +913,22 @@ export async function getAllDisciplineIssues(
         delete processedFilters.end_date;
     }
 
+    // Exclude withdrawn students from general/roster-style issue listings
+    // (this is what the Discipline Issues register and the DM attendance
+    // page browse). A student_id filter is a deliberate exception -- it
+    // resolves to one specific enrollment/student above, i.e. an admin
+    // explicitly asked for that student's history, which should show
+    // regardless of status (matches getDisciplineHistory's behavior).
+    if (!filterOptions?.student_id) {
+        processedFilters.enrollment = {
+            ...(processedFilters.enrollment || {}),
+            student: {
+                ...(processedFilters.enrollment?.student || {}),
+                status: { not: 'WITHDRAWN' },
+            },
+        };
+    }
+
     // Include relations
     const include: any = {};
 
@@ -1886,14 +1902,19 @@ export async function listStudentWarnings(filters: {
     if (filters.enrollment_id) where.enrollment_id = filters.enrollment_id;
     if (filters.resolved !== undefined) where.resolved = filters.resolved;
 
+    // Exclude withdrawn students from roster-style browsing (sub_class_id,
+    // or no filter at all -- e.g. the "Active Warnings" register). A
+    // student_id (or enrollment_id) is a deliberate exception: an explicit
+    // single-student target should still show regardless of status.
     if (filters.student_id || filters.sub_class_id) {
         where.enrollment = {
             academic_year_id: yearId,
             ...(filters.student_id ? { student_id: filters.student_id } : {}),
             ...(filters.sub_class_id ? { sub_class_id: filters.sub_class_id } : {}),
+            ...(filters.student_id ? {} : { student: { status: { not: 'WITHDRAWN' } } }),
         };
     } else if (!filters.enrollment_id) {
-        where.enrollment = { academic_year_id: yearId };
+        where.enrollment = { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } };
     }
 
     return prisma.studentWarning.findMany({
@@ -1965,14 +1986,17 @@ export async function listParentSummons(filters: {
     if (filters.enrollment_id) where.enrollment_id = filters.enrollment_id;
     if (filters.status) where.status = filters.status;
 
+    // Exclude withdrawn students from roster-style browsing -- see the same
+    // exception rationale in listStudentWarnings above.
     if (filters.student_id || filters.sub_class_id) {
         where.enrollment = {
             academic_year_id: yearId,
             ...(filters.student_id ? { student_id: filters.student_id } : {}),
             ...(filters.sub_class_id ? { sub_class_id: filters.sub_class_id } : {}),
+            ...(filters.student_id ? {} : { student: { status: { not: 'WITHDRAWN' } } }),
         };
     } else if (!filters.enrollment_id) {
-        where.enrollment = { academic_year_id: yearId };
+        where.enrollment = { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } };
     }
 
     return prisma.parentSummons.findMany({

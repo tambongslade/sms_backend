@@ -196,7 +196,10 @@ export async function listSeizedItems(filters: ListSeizedItemsFilters) {
             : {}),
         ...(filters.student_id
             ? { enrollment: { student_id: filters.student_id } }
-            : {}),
+            // Roster-style browsing (no specific student target) must exclude
+            // withdrawn students -- see the same pattern in
+            // disciplineService.ts's listStudentWarnings/listParentSummons.
+            : { enrollment: { student: { status: { not: 'WITHDRAWN' } } } }),
     };
     return prisma.seizedItem.findMany({
         where,
