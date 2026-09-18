@@ -184,7 +184,7 @@ export async function assignStudentToSubclass(data: SubclassAssignmentData) {
         include: {
             class: true,
             enrollments: {
-                where: { academic_year_id: yearId }
+                where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } }
             }
         }
     });
@@ -327,7 +327,7 @@ export async function getAvailableSubclasses(classId: number, academicYearId?: n
         include: {
             class: true,
             enrollments: {
-                where: { academic_year_id: yearId }
+                where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } }
             },
             class_master: {
                 select: { id: true, name: true }
@@ -366,7 +366,7 @@ export async function getEnrollmentStats(academicYearId?: number) {
     ] = await Promise.all([
         // Total enrollments this year
         prisma.enrollment.count({
-            where: { academic_year_id: yearId }
+            where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } }
         }),
 
         // Students enrolled but no interview yet
@@ -375,6 +375,7 @@ export async function getEnrollmentStats(academicYearId?: number) {
                 academic_year_id: yearId,
                 sub_class_id: null,
                 student: {
+                    status: { not: 'WITHDRAWN' },
                     interview_marks: {
                         none: {}
                     }
@@ -388,6 +389,7 @@ export async function getEnrollmentStats(academicYearId?: number) {
                 academic_year_id: yearId,
                 sub_class_id: null,
                 student: {
+                    status: { not: 'WITHDRAWN' },
                     interview_marks: {
                         some: {}
                     }
@@ -399,7 +401,8 @@ export async function getEnrollmentStats(academicYearId?: number) {
         prisma.enrollment.count({
             where: {
                 academic_year_id: yearId,
-                NOT: { sub_class_id: null }
+                NOT: { sub_class_id: null },
+                student: { status: { not: 'WITHDRAWN' } }
             }
         }),
 

@@ -762,7 +762,7 @@ export async function getHealthOverview(academicYearId?: number) {
             where: yearId ? { enrollment: { academic_year_id: yearId } } : undefined,
         }),
         prisma.student.count({
-            where: { health_conditions: { isEmpty: false } },
+            where: { health_conditions: { isEmpty: false }, status: { not: 'WITHDRAWN' } },
         }),
         prisma.nurseVisitLog.findMany({
             where: {
@@ -844,13 +844,17 @@ export async function getReamStockOverview(academicYearId?: number) {
             where: {
                 ream_of_paper_collected: true,
                 ...(yearId ? { academic_year_id: yearId } : {}),
+                student: { status: { not: 'WITHDRAWN' } },
             },
         }),
         // Denominator: new students eligible to hand in a ream this year
         prisma.enrollment.count({
             where: {
                 ...(yearId ? { academic_year_id: yearId } : {}),
-                student: yearId ? { first_enrollment_year_id: yearId } : undefined,
+                student: {
+                    status: { not: 'WITHDRAWN' },
+                    ...(yearId ? { first_enrollment_year_id: yearId } : {}),
+                },
             },
         }),
     ]);
@@ -1154,18 +1158,23 @@ export async function getEnrollmentOverview(academicYearId?: number) {
         studentsByStatus,
     ] = await Promise.all([
         prisma.enrollment.count({
-            where: yearId ? { academic_year_id: yearId } : undefined,
+            where: {
+                ...(yearId ? { academic_year_id: yearId } : {}),
+                student: { status: { not: 'WITHDRAWN' } },
+            },
         }),
         prisma.enrollment.count({
             where: {
                 sub_class_id: null,
                 ...(yearId ? { academic_year_id: yearId } : {}),
+                student: { status: { not: 'WITHDRAWN' } },
             },
         }),
         prisma.enrollment.count({
             where: {
                 created_at: { gte: startOfMonth() },
                 ...(yearId ? { academic_year_id: yearId } : {}),
+                student: { status: { not: 'WITHDRAWN' } },
             },
         }),
         prisma.class.findMany({
@@ -1178,7 +1187,10 @@ export async function getEnrollmentOverview(academicYearId?: number) {
                         id: true,
                         name: true,
                         enrollments: {
-                            where: yearId ? { academic_year_id: yearId } : undefined,
+                            where: {
+                                ...(yearId ? { academic_year_id: yearId } : {}),
+                                student: { status: { not: 'WITHDRAWN' } },
+                            },
                             select: { id: true },
                         },
                     },
@@ -1187,9 +1199,10 @@ export async function getEnrollmentOverview(academicYearId?: number) {
         }),
         prisma.student.groupBy({
             by: ['gender'],
-            where: yearId
-                ? { enrollments: { some: { academic_year_id: yearId } } }
-                : undefined,
+            where: {
+                status: { not: 'WITHDRAWN' },
+                ...(yearId ? { enrollments: { some: { academic_year_id: yearId } } } : {}),
+            },
             _count: { id: true },
         }),
         prisma.student.groupBy({

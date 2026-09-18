@@ -1835,7 +1835,8 @@ export async function getManagerDashboard(academicYearId?: number): Promise<any>
             recentModifications,
             
             // Class Profiles
-            classUtilization
+            classUtilization,
+            classEnrollmentCounts
         ] = await Promise.all([
             // Financial Overview
             prisma.paymentTransaction.aggregate({
@@ -1859,9 +1860,9 @@ export async function getManagerDashboard(academicYearId?: number): Promise<any>
             yearId ?
                 prisma.enrollment.groupBy({
                     by: ['student_id'],
-                    where: { academic_year_id: yearId }
+                    where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } }
                 }).then(result => result.length) :
-                prisma.student.count(),
+                prisma.student.count({ where: { status: { not: 'WITHDRAWN' } } }),
 
             prisma.class.count(),
             prisma.subClass.count(),
@@ -1967,12 +1968,14 @@ export async function getManagerDashboard(academicYearId?: number): Promise<any>
                 }
             }),
 
-            // Class Utilization
+            // Class Utilization -- live counts, not the SubClass.current_students
+            // cache column: that field is only ever incremented on assignment and
+            // never decremented on withdrawal, so it drifts upward forever and
+            // overstates utilization more and more as students get withdrawn.
             prisma.subClass.findMany({
                 select: {
                     id: true,
                     name: true,
-                    current_students: true,
                     class: {
                         select: {
                             name: true,
@@ -1980,7 +1983,15 @@ export async function getManagerDashboard(academicYearId?: number): Promise<any>
                         }
                     }
                 }
-            })
+            }),
+
+            yearId
+                ? prisma.enrollment.groupBy({
+                    by: ['sub_class_id'],
+                    where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
+                    _count: { _all: true }
+                })
+                : Promise.resolve([] as { sub_class_id: number | null; _count: { _all: number } }[])
         ]);
 
         // Calculate key metrics
@@ -1996,8 +2007,11 @@ export async function getManagerDashboard(academicYearId?: number): Promise<any>
             attendanceRate: 85 + Math.random() * 10 // Placeholder - would calculate from actual data
         }));
 
+        const countBySubClassId = new Map(
+            classEnrollmentCounts.map((c: any) => [c.sub_class_id, c._count._all])
+        );
         const classProfileStats = classUtilization.map(subclass => {
-            const current = subclass.current_students || 0;
+            const current = countBySubClassId.get(subclass.id) ?? 0;
             return {
                 id: subclass.id,
                 name: subclass.name,
