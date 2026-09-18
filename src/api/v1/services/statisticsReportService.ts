@@ -119,9 +119,16 @@ export interface ClassAttendanceRow {
 export interface StatisticsReportData {
     range: { from: string; to: string };
     academicYear: { id: number; name: string } | null;
-    // 'discipline' means Teaching/Work Coverage/Financial were never
-    // computed and are empty -- see getStatisticsReport's disciplineOnly.
+    // 'discipline' means Work Coverage/Financial were never computed and
+    // are empty -- see getStatisticsReport's disciplineOnly. Teaching is
+    // always computed regardless -- see canSeeTeachingPay for its own,
+    // narrower gate on just the pay columns.
     reportScope: 'full' | 'discipline';
+    // Whether teaching[].hourRate/socials/total carry real values (true) or
+    // are zeroed out (false) -- Super Manager only. The Teaching table
+    // itself (periods columns) is visible to everyone who reaches this
+    // report.
+    canSeeTeachingPay: boolean;
     discipline: {
         lateness: OffenceRow[];
         absences: StudentAbsenceCountRow[];
@@ -442,7 +449,12 @@ async function getClassAttendanceSection(
 // 2. Teaching statistics — expected/taught/not-taught hours, rate, socials
 // ---------------------------------------------------------------------------
 
-async function getTeachingSection(yearId: number | null, from: string, to: string): Promise<TeachingRow[]> {
+async function getTeachingSection(
+    yearId: number | null,
+    from: string,
+    to: string,
+    canSeeTeachingPay: boolean
+): Promise<TeachingRow[]> {
     if (!yearId) return [];
     const dates = datesInRange(from, to);
     const dateToDow = new Map(dates.map((d) => [toISODate(d), dayOfWeekFromDate(d)]));
@@ -471,15 +483,20 @@ async function getTeachingSection(yearId: number | null, from: string, to: strin
     if (teachers.length === 0) return [];
     const teacherIds = teachers.map((t) => t.id);
 
+    // Skip the salary query entirely for callers who can't see pay figures --
+    // no reason to even read SalaryProfile rows for a role that never gets
+    // them back.
     const [teacherPeriods, salaryProfiles] = await Promise.all([
         prisma.teacherPeriod.findMany({
             where: { teacher_id: { in: teacherIds }, academic_year_id: yearId },
             include: { period: true },
         }),
-        prisma.salaryProfile.findMany({
-            where: { user_id: { in: teacherIds }, academic_year_id: yearId },
-            select: { user_id: true, hourly_rate: true },
-        }),
+        canSeeTeachingPay
+            ? prisma.salaryProfile.findMany({
+                  where: { user_id: { in: teacherIds }, academic_year_id: yearId },
+                  select: { user_id: true, hourly_rate: true },
+              })
+            : Promise.resolve([]),
     ]);
     const rateByTeacher = new Map(salaryProfiles.map((p) => [p.user_id, p.hourly_rate ?? 0]));
 
@@ -534,8 +551,11 @@ async function getTeachingSection(yearId: number | null, from: string, to: strin
         // never evaluated -- from the school's perspective, if it wasn't
         // confirmed delivered, it doesn't count as taught.
         const notTaughtPeriods = Math.max(expectedPeriods - taughtPeriods, 0);
-        const rate = rateByTeacher.get(t.id) ?? 0;
-        const total = round2(taughtHoursForPay * rate - FLAT_SOCIALS_DEDUCTION);
+        // Only Super Manager gets pay figures back -- see TEACHING_PAY_ROLES
+        // in statisticsReportController.ts. Everyone else in this report
+        // still sees the Teaching table, just without Hour Rate/Socials/Total.
+        const rate = canSeeTeachingPay ? rateByTeacher.get(t.id) ?? 0 : 0;
+        const total = canSeeTeachingPay ? round2(taughtHoursForPay * rate - FLAT_SOCIALS_DEDUCTION) : 0;
 
         return {
             teacherId: t.id,
@@ -545,7 +565,7 @@ async function getTeachingSection(yearId: number | null, from: string, to: strin
             periodsTaught: taughtPeriods,
             periodsNotTaught: notTaughtPeriods,
             hourRate: rate,
-            socials: FLAT_SOCIALS_DEDUCTION,
+            socials: canSeeTeachingPay ? FLAT_SOCIALS_DEDUCTION : 0,
             total,
         };
     });
@@ -759,11 +779,14 @@ export async function getStatisticsReport(params: {
     from: string;
     to: string;
     // Dean of Discipline / Discipline Coordinator get this report too, but
-    // only the discipline side -- Teaching/Work Coverage/Financial are
-    // payroll- and fee-adjacent and stay out of their reach. Skipping their
-    // computation entirely (rather than computing and hiding client-side)
-    // also avoids the extra work for a role that never sees the result.
+    // only the discipline + teaching side -- Work Coverage/Financial are
+    // fee-adjacent and stay out of their reach. Skipping their computation
+    // entirely (rather than computing and hiding client-side) also avoids
+    // the extra work for a role that never sees the result.
     disciplineOnly?: boolean;
+    // Only Super Manager -- see TEACHING_PAY_ROLES in
+    // statisticsReportController.ts.
+    canSeeTeachingPay?: boolean;
 }): Promise<StatisticsReportData> {
     if (!params.from || !params.to) throw new Error('from and to are required (YYYY-MM-DD)');
 
@@ -778,7 +801,7 @@ export async function getStatisticsReport(params: {
     const [disciplineBase, classAttendance, teaching, workCoverage, financial] = await Promise.all([
         getDisciplineSection(yearId, fromDate, toDate),
         getClassAttendanceSection(yearId, fromDate, toDate),
-        params.disciplineOnly ? Promise.resolve([]) : getTeachingSection(yearId, params.from, params.to),
+        getTeachingSection(yearId, params.from, params.to, !!params.canSeeTeachingPay),
         params.disciplineOnly ? Promise.resolve([]) : getWorkCoverageSection(yearId, params.to),
         params.disciplineOnly
             ? Promise.resolve({ subClasses: [], personsOfInterest: [] })
@@ -789,6 +812,7 @@ export async function getStatisticsReport(params: {
         range: { from: params.from, to: params.to },
         academicYear: academicYear ? { id: academicYear.id, name: academicYear.name } : null,
         reportScope: params.disciplineOnly ? 'discipline' : 'full',
+        canSeeTeachingPay: !!params.canSeeTeachingPay,
         discipline: { ...disciplineBase, classAttendance },
         teaching,
         workCoverage,
@@ -829,6 +853,7 @@ export async function generateStatisticsReportPdf(params: {
     from: string;
     to: string;
     disciplineOnly?: boolean;
+    canSeeTeachingPay?: boolean;
 }): Promise<{ buffer: Buffer; filename: string }> {
     const data = await getStatisticsReport(params);
 

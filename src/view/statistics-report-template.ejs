@@ -209,7 +209,6 @@
         <% } %>
     </section>
 
-    <% if (reportScope === 'full') { %>
     <section>
         <h2 class="section-title">Teaching Statistics</h2>
         <h3 class="sub-title">Hours Taught</h3>
@@ -220,15 +219,19 @@
             <thead>
                 <tr>
                     <th>Name</th><th class="num">Expected Periods</th><th class="num">Periods Taught</th>
-                    <th class="num">Periods Not Taught</th><th class="num">Hour Rate</th><th class="num">Socials</th><th class="num">Total</th>
+                    <th class="num">Periods Not Taught</th>
+                    <% if (canSeeTeachingPay) { %><th class="num">Hour Rate</th><th class="num">Socials</th><th class="num">Total</th><% } %>
                 </tr>
             </thead>
             <tbody>
                 <% teaching.forEach(function(t) { %>
                 <tr>
                     <td><%= t.name %></td><td class="num"><%= t.expectedPeriods %></td><td class="num"><%= t.periodsTaught %></td>
-                    <td class="num"><%= t.periodsNotTaught %></td><td class="num"><%= t.hourRate.toLocaleString() %></td>
+                    <td class="num"><%= t.periodsNotTaught %></td>
+                    <% if (canSeeTeachingPay) { %>
+                    <td class="num"><%= t.hourRate.toLocaleString() %></td>
                     <td class="num"><%= t.socials.toLocaleString() %></td><td class="num"><%= t.total.toLocaleString() %></td>
+                    <% } %>
                 </tr>
                 <% }); %>
             </tbody>
@@ -238,15 +241,18 @@
                     <td class="num"><%= teaching.reduce((s,t)=>s+t.expectedPeriods,0) %></td>
                     <td class="num"><%= teaching.reduce((s,t)=>s+t.periodsTaught,0) %></td>
                     <td class="num"><%= teaching.reduce((s,t)=>s+t.periodsNotTaught,0) %></td>
+                    <% if (canSeeTeachingPay) { %>
                     <td class="num">-</td>
                     <td class="num"><%= teaching.reduce((s,t)=>s+t.socials,0).toLocaleString() %></td>
                     <td class="num"><%= teaching.reduce((s,t)=>s+t.total,0).toLocaleString() %></td>
+                    <% } %>
                 </tr>
             </tfoot>
         </table>
         <% } %>
     </section>
 
+    <% if (reportScope === 'full') { %>
     <section>
         <h2 class="section-title">Work Coverage</h2>
         <% if (workCoverage.length === 0) { %>
