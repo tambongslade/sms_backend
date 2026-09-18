@@ -889,9 +889,10 @@ export async function exportTeacherTimetablePdf(
     // Summary chips
     const uniqueClasses = new Set(teacherPeriods.map(tp => tp.sub_class_id)).size;
     const uniqueSubjects = subjectNames.length;
-    const weeklyHours = teacherPeriods.reduce((acc, tp) => {
-        return acc + (toMinutes(tp.period.end_time) - toMinutes(tp.period.start_time)) / 60;
-    }, 0);
+    // Count of periods, not summed clock-hours -- periods aren't a fixed
+    // length (TEACHING slots run 50/55/110 min), so this is the number that
+    // actually matches "how many periods does this teacher teach".
+    const weeklyPeriods = teacherPeriods.length;
 
     const details: Array<{ label: string; value: string }> = [];
     if (departments.length) {
@@ -909,7 +910,7 @@ export async function exportTeacherTimetablePdf(
             `Matricule: ${teacher.matricule || '—'}`,
             `Classes: ${uniqueClasses}`,
             `Subjects: ${uniqueSubjects}`,
-            `Weekly Hours: ${weeklyHours.toFixed(1)}`,
+            `Weekly Periods: ${weeklyPeriods}`,
         ],
         days,
         rows,

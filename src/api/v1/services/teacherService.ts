@@ -59,7 +59,6 @@ export interface TeacherDashboard {
     totalStudents: number;
     totalClasses: number;
     weeklyPeriods: number;
-    weeklyHours: number;
     marksToEnter?: number;
     upcomingPeriods?: number;
 }
@@ -432,8 +431,7 @@ export async function getTeacherDashboard(
             assignedSubjects: 0,
             totalStudents: 0,
             totalClasses: 0,
-            weeklyPeriods: 0,
-            weeklyHours: 0
+            weeklyPeriods: 0
         };
     }
 
@@ -442,7 +440,6 @@ export async function getTeacherDashboard(
         subjectCount,
         subClassCount,
         weeklyPeriods,
-        periodDurations,
         studentCountResult
     ] = await Promise.all([
         // Count unique subjects
@@ -468,17 +465,6 @@ export async function getTeacherDashboard(
             where: {
                 teacher_id: teacherId,
                 academic_year_id: currentYear
-            }
-        }),
-
-        // Fetch each teacher-period's slot start/end so we can total the hours
-        prisma.teacherPeriod.findMany({
-            where: {
-                teacher_id: teacherId,
-                academic_year_id: currentYear
-            },
-            select: {
-                period: { select: { start_time: true, end_time: true } }
             }
         }),
 
@@ -508,19 +494,11 @@ export async function getTeacherDashboard(
         })
     ]);
 
-    const weeklyHours = periodDurations.reduce((acc, tp) => {
-        const start = new Date(`1970-01-01T${tp.period.start_time}Z`);
-        const end = new Date(`1970-01-01T${tp.period.end_time}Z`);
-        const duration = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-        return acc + (Number.isFinite(duration) && duration > 0 ? duration : 0);
-    }, 0);
-
     return {
         assignedSubjects: subjectCount,
         totalStudents: studentCountResult,
         totalClasses: subClassCount,
         weeklyPeriods: weeklyPeriods,
-        weeklyHours: Math.round(weeklyHours * 10) / 10,
         marksToEnter: 10, // Placeholder
         upcomingPeriods: 5 // Placeholder
     };
@@ -1438,7 +1416,7 @@ export async function getTeacherTimetable(teacherId: number, academicYearId?: nu
             summary: {
                 totalClasses: 0,
                 totalSubjects: 0,
-                weeklyHours: 0,
+                weeklyPeriods: 0,
                 todayClasses: 0,
             },
             schedule: [],
@@ -1448,12 +1426,12 @@ export async function getTeacherTimetable(teacherId: number, academicYearId?: nu
     const totalClasses = new Set(teacherPeriods.map(tp => tp.sub_class_id)).size;
     const totalSubjects = new Set(teacherPeriods.map(tp => tp.subject_id)).size;
 
-    const weeklyHours = teacherPeriods.reduce((acc, tp) => {
-        const start = new Date(`1970-01-01T${tp.period.start_time}Z`);
-        const end = new Date(`1970-01-01T${tp.period.end_time}Z`);
-        const duration = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-        return acc + duration;
-    }, 0);
+    // Count of periods, not summed clock-hours: periods here aren't a fixed
+    // length (TEACHING slots run 50/55/110 min depending on the timetable), so
+    // "how many periods does this teacher have this week" and "how many hours"
+    // are genuinely different numbers -- and it's the period count the roster
+    // view actually needs.
+    const weeklyPeriods = teacherPeriods.length;
 
     const today = new Date().toLocaleString('en-US', { weekday: 'long' }).toUpperCase();
     const todayClasses = teacherPeriods.filter(tp => tp.period.day_of_week === today).length;
@@ -1462,7 +1440,7 @@ export async function getTeacherTimetable(teacherId: number, academicYearId?: nu
         summary: {
             totalClasses,
             totalSubjects,
-            weeklyHours,
+            weeklyPeriods,
             todayClasses,
         },
         schedule: teacherPeriods.map(tp => ({ ...tp, teacher_period_id: tp.id })),
