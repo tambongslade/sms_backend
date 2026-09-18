@@ -32,6 +32,18 @@ export interface SanctionRow extends OffenceRow {
     status: string;
 }
 
+// Class Absences is reported per student (one row, total count) rather than
+// one row per individual absence -- the raw instance list was unreadable for
+// a school-wide range.
+export interface StudentAbsenceCountRow {
+    studentId: number;
+    studentName: string;
+    matricule: string | null;
+    className: string;
+    subClassName: string;
+    count: number;
+}
+
 export interface DisciplinePoiRow {
     studentId: number;
     studentName: string;
@@ -48,9 +60,15 @@ export interface TeachingRow {
     teacherId: number;
     name: string;
     matricule: string | null;
-    expectedHours: number;
-    hoursTaught: number;
-    hoursNotTaught: number;
+    // Period COUNTS, not durations -- teaching slots aren't a fixed length
+    // (see teacherService.getTeacherTimetable for the same reasoning), so a
+    // count is what "how many periods was this teacher scheduled/taught"
+    // actually means. Pay (hourRate x total) still runs on real duration-
+    // hours internally -- see getTeachingSection -- since SalaryProfile's
+    // rate is denominated per hour, not per period.
+    expectedPeriods: number;
+    periodsTaught: number;
+    periodsNotTaught: number;
     hourRate: number;
     socials: number;
     total: number;
@@ -90,7 +108,7 @@ export interface StatisticsReportData {
     academicYear: { id: number; name: string } | null;
     discipline: {
         lateness: OffenceRow[];
-        absences: OffenceRow[];
+        absences: StudentAbsenceCountRow[];
         sanctions: SanctionRow[];
         personsOfInterest: DisciplinePoiRow[];
     };
@@ -112,7 +130,7 @@ const FLAT_SOCIALS_DEDUCTION = 2000;
 // pipeline already uses elsewhere in this codebase.
 const POI_OFFENCE_THRESHOLD = 5;
 const POI_LIMIT = 15;
-const FINANCIAL_POI_LIMIT = 30;
+const FINANCIAL_POI_LIMIT = 50;
 
 // ---------------------------------------------------------------------------
 // Small local helpers (deliberately not shared with salaryService.ts's
@@ -249,7 +267,25 @@ async function getDisciplineSection(
     ]);
 
     const lateness = latenessRaw.map(offenceRow).filter((r): r is OffenceRow => r !== null);
-    const absences = absencesRaw.map(offenceRow).filter((r): r is OffenceRow => r !== null);
+    const absenceInstances = absencesRaw.map(offenceRow).filter((r): r is OffenceRow => r !== null);
+    // One row per student with their total count, not one row per absence --
+    // the raw instance list is unreadable for a school-wide range.
+    const absencesByStudent = new Map<number, StudentAbsenceCountRow>();
+    for (const a of absenceInstances) {
+        const existing = absencesByStudent.get(a.studentId);
+        if (existing) existing.count += 1;
+        else {
+            absencesByStudent.set(a.studentId, {
+                studentId: a.studentId,
+                studentName: a.studentName,
+                matricule: a.matricule,
+                className: a.className,
+                subClassName: a.subClassName,
+                count: 1,
+            });
+        }
+    }
+    const absences = Array.from(absencesByStudent.values()).sort((a, b) => b.count - a.count);
     const sanctions = sanctionsRaw
         .map((r) => {
             const base = offenceRow(r);
@@ -376,36 +412,40 @@ async function getTeachingSection(yearId: number | null, from: string, to: strin
             byDow.set(tp.period.day_of_week, list);
         }
 
-        let expectedHours = 0;
-        let taughtHours = 0;
+        let expectedPeriods = 0;
+        let taughtPeriods = 0;
+        // Duration-weighted, for pay only -- SalaryProfile.hourly_rate is
+        // FCFA per hour, and periods run non-uniform lengths (50/55/110 min
+        // etc.), so paying periodsTaught x rate directly would be wrong.
+        let taughtHoursForPay = 0;
         for (const date of dates) {
             const key = toISODate(date);
             const dow = dateToDow.get(key)!;
             const scheduled = byDow.get(dow) ?? [];
             for (const tp of scheduled) {
-                const hours = periodDurationHours(tp.period.start_time, tp.period.end_time);
-                expectedHours += hours;
+                expectedPeriods += 1;
                 const status = attByKey.get(`${tp.id}|${key}`);
-                if (status === 'PRESENT' || status === 'LATE') taughtHours += hours;
+                if (status === 'PRESENT' || status === 'LATE') {
+                    taughtPeriods += 1;
+                    taughtHoursForPay += periodDurationHours(tp.period.start_time, tp.period.end_time);
+                }
             }
         }
 
-        const expected = round2(expectedHours);
-        const taught = round2(taughtHours);
         // "Not taught" folds in both explicit ABSENT marks and periods the DM
         // never evaluated -- from the school's perspective, if it wasn't
         // confirmed delivered, it doesn't count as taught.
-        const notTaught = round2(Math.max(expected - taught, 0));
+        const notTaughtPeriods = Math.max(expectedPeriods - taughtPeriods, 0);
         const rate = rateByTeacher.get(t.id) ?? 0;
-        const total = round2(taught * rate - FLAT_SOCIALS_DEDUCTION);
+        const total = round2(taughtHoursForPay * rate - FLAT_SOCIALS_DEDUCTION);
 
         return {
             teacherId: t.id,
             name: t.name,
             matricule: t.matricule,
-            expectedHours: expected,
-            hoursTaught: taught,
-            hoursNotTaught: notTaught,
+            expectedPeriods,
+            periodsTaught: taughtPeriods,
+            periodsNotTaught: notTaughtPeriods,
             hourRate: rate,
             socials: FLAT_SOCIALS_DEDUCTION,
             total,

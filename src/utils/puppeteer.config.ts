@@ -19,8 +19,15 @@ export const getPuppeteerConfig = (): Record<string, any> => {
         ],
     };
 
-    // If running in production and PUPPETEER_EXECUTABLE_PATH is set (e.g., on Render)
-    if (process.env.NODE_ENV === 'production' && process.env.PUPPETEER_EXECUTABLE_PATH) {
+    // Honor an explicit PUPPETEER_EXECUTABLE_PATH whenever it's set, regardless
+    // of NODE_ENV. This matters on Windows in particular: pm2 there can run the
+    // process as a service account (e.g. NT AUTHORITY\SYSTEM) whose Puppeteer
+    // cache dir (%SystemRoot%\system32\config\systemprofile\.cache\puppeteer)
+    // is completely separate from whatever user account ran `npm install` and
+    // downloaded the Chrome build during deploy -- so the auto-detected cache
+    // path silently never has a browser in it. An explicit path sidesteps that
+    // per-account cache resolution entirely.
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
         config.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
     }
 

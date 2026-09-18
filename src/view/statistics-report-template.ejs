@@ -147,10 +147,10 @@
             <p class="empty">No class absences recorded in this range.</p>
         <% } else { %>
         <table>
-            <thead><tr><th>Student</th><th>Matricule</th><th>Class</th><th>Date</th></tr></thead>
+            <thead><tr><th>Student</th><th>Matricule</th><th>Class</th><th class="num">Total Absences</th></tr></thead>
             <tbody>
                 <% discipline.absences.forEach(function(r) { %>
-                <tr><td><%= r.studentName %></td><td><%= r.matricule || '-' %></td><td><%= r.className %> &middot; <%= r.subClassName %></td><td><%= r.date %></td></tr>
+                <tr><td><%= r.studentName %></td><td><%= r.matricule || '-' %></td><td><%= r.className %> &middot; <%= r.subClassName %></td><td class="num"><%= r.count %></td></tr>
                 <% }); %>
             </tbody>
         </table>
@@ -194,15 +194,15 @@
         <table>
             <thead>
                 <tr>
-                    <th>Name</th><th class="num">Expected Hrs</th><th class="num">Hrs Taught</th>
-                    <th class="num">Hrs Not Taught</th><th class="num">Hour Rate</th><th class="num">Socials</th><th class="num">Total</th>
+                    <th>Name</th><th class="num">Expected Periods</th><th class="num">Periods Taught</th>
+                    <th class="num">Periods Not Taught</th><th class="num">Hour Rate</th><th class="num">Socials</th><th class="num">Total</th>
                 </tr>
             </thead>
             <tbody>
                 <% teaching.forEach(function(t) { %>
                 <tr>
-                    <td><%= t.name %></td><td class="num"><%= t.expectedHours %></td><td class="num"><%= t.hoursTaught %></td>
-                    <td class="num"><%= t.hoursNotTaught %></td><td class="num"><%= t.hourRate.toLocaleString() %></td>
+                    <td><%= t.name %></td><td class="num"><%= t.expectedPeriods %></td><td class="num"><%= t.periodsTaught %></td>
+                    <td class="num"><%= t.periodsNotTaught %></td><td class="num"><%= t.hourRate.toLocaleString() %></td>
                     <td class="num"><%= t.socials.toLocaleString() %></td><td class="num"><%= t.total.toLocaleString() %></td>
                 </tr>
                 <% }); %>
@@ -210,9 +210,9 @@
             <tfoot>
                 <tr>
                     <td>Total</td>
-                    <td class="num"><%= teaching.reduce((s,t)=>s+t.expectedHours,0).toFixed(1) %></td>
-                    <td class="num"><%= teaching.reduce((s,t)=>s+t.hoursTaught,0).toFixed(1) %></td>
-                    <td class="num"><%= teaching.reduce((s,t)=>s+t.hoursNotTaught,0).toFixed(1) %></td>
+                    <td class="num"><%= teaching.reduce((s,t)=>s+t.expectedPeriods,0) %></td>
+                    <td class="num"><%= teaching.reduce((s,t)=>s+t.periodsTaught,0) %></td>
+                    <td class="num"><%= teaching.reduce((s,t)=>s+t.periodsNotTaught,0) %></td>
                     <td class="num">-</td>
                     <td class="num"><%= teaching.reduce((s,t)=>s+t.socials,0).toLocaleString() %></td>
                     <td class="num"><%= teaching.reduce((s,t)=>s+t.total,0).toLocaleString() %></td>
