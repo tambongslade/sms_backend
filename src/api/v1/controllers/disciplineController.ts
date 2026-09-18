@@ -433,6 +433,7 @@ export const listAbsences = async (req: Request, res: Response): Promise<any> =>
             is_excused: q.is_excused === 'true' ? true : q.is_excused === 'false' ? false : undefined,
             sub_class_id: q.sub_class_id ? parseInt(q.sub_class_id) : undefined,
             slot: q.slot as any,
+            source: q.source as any,
             page: q.page ? parseInt(q.page) : undefined,
             limit: q.limit ? parseInt(q.limit) : undefined,
         });

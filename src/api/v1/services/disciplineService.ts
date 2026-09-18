@@ -716,6 +716,12 @@ export async function deleteStudentAbsence(id: number): Promise<void> {
 // actually populated and worth filtering/displaying by.
 export type AbsenceSlot = 'SLOT_2' | 'SLOT_5' | 'SLOT_8';
 
+// Which side actually recorded the absence: a Discipline Master's daily/slot
+// roll call (linked via DMRollCallEntry) or a teacher's period roll call
+// (linked via TeacherRollCallEntry) -- see the comment above AbsenceSlot for
+// why teacher_period_id itself isn't a reliable signal for this.
+export type AbsenceSource = 'DM' | 'TEACHER';
+
 export async function listAbsences(filters: {
     absence_type?: AbsenceType;
     academic_year_id?: number;
@@ -724,6 +730,7 @@ export async function listAbsences(filters: {
     is_excused?: boolean;
     sub_class_id?: number;
     slot?: AbsenceSlot;
+    source?: AbsenceSource;
     page?: number;
     limit?: number;
 }): Promise<PaginatedResult<any>> {
@@ -731,12 +738,21 @@ export async function listAbsences(filters: {
     const page = filters.page && filters.page > 0 ? filters.page : 1;
     const limit = filters.limit && filters.limit > 0 ? filters.limit : 50;
 
+    // filters.slot implies source=DM (a slot only exists on a DM roll call), so
+    // both narrow the same dm_roll_call_entries relation -- merge them into one
+    // condition rather than two separate spreads, which would silently let the
+    // second overwrite the first if both were ever passed together.
+    const dmEntriesWhere = filters.slot
+        ? { some: { dm_roll_call: { slot: filters.slot } } }
+        : filters.source === 'DM'
+            ? { some: {} }
+            : undefined;
+
     const where: Prisma.StudentAbsenceWhereInput = {
         ...(filters.absence_type && { absence_type: filters.absence_type }),
         ...(filters.is_excused !== undefined && { is_excused: filters.is_excused }),
-        ...(filters.slot && {
-            dm_roll_call_entries: { some: { dm_roll_call: { slot: filters.slot } } },
-        }),
+        ...(dmEntriesWhere && { dm_roll_call_entries: dmEntriesWhere }),
+        ...(filters.source === 'TEACHER' && { teacher_roll_call_entries: { some: {} } }),
         enrollment: {
             ...(yearId && { academic_year_id: yearId }),
             ...(filters.sub_class_id && { sub_class_id: filters.sub_class_id }),
@@ -775,6 +791,9 @@ export async function listAbsences(filters: {
                     take: 1,
                     include: { dm_roll_call: { select: { slot: true } } },
                 },
+                _count: {
+                    select: { dm_roll_call_entries: true, teacher_roll_call_entries: true },
+                },
             },
         }),
         // Per-student total within the same filters (date range, period,
@@ -807,6 +826,13 @@ export async function listAbsences(filters: {
         excused_by: r.excused_by,
         teacher_period: r.teacher_period,
         slot: r.dm_roll_call_entries?.[0]?.dm_roll_call?.slot ?? null,
+        // Prefer DM when a row is somehow linked from both sides -- a DM daily
+        // roll call is the more authoritative record of the two in practice.
+        recorded_via: r._count?.dm_roll_call_entries > 0
+            ? 'DM'
+            : r._count?.teacher_roll_call_entries > 0
+                ? 'TEACHER'
+                : null,
         total_in_range: totalByEnrollmentId.get(r.enrollment_id) ?? 1,
     }));
 
