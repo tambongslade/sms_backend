@@ -103,10 +103,10 @@ export interface FinancialPoiRow {
     outstandingAmount: number;
 }
 
-// Cumulative per-class DM roll-call summary for the range -- Present folds
-// in LATE (the student did attend), Absence is ABSENT marks; each row is a
-// raw sum of roll-call entries across every slot/day in the range, not a
-// per-day-deduplicated headcount.
+// Per-class DM roll-call headcount for the range -- Present is the number of
+// DISTINCT students marked present (or late) at least once in the range, out
+// of that class's Enrollment; Absence is the complement (enrollment minus
+// present), not a count of ABSENT marks, so the two always sum to Enrollment.
 export interface ClassAttendanceRow {
     classId: number;
     className: string;
@@ -397,38 +397,44 @@ async function getClassAttendanceSection(
             where: {
                 dm_roll_call: { academic_year_id: yearId, date: { gte: fromDate, lte: toDate } },
                 enrollment: { student: { status: { not: 'WITHDRAWN' } } },
+                status: { in: ['PRESENT', 'LATE'] },
             },
-            select: { status: true, enrollment: { select: { class_id: true } } },
+            select: { enrollment_id: true, enrollment: { select: { class_id: true } } },
         }),
     ]);
 
     const enrollmentByClass = new Map(enrollmentCounts.map((e) => [e.class_id, e._count._all]));
-    const presentByClass = new Map<number, number>();
-    const absentByClass = new Map<number, number>();
+
+    // Students present, headcount not roll-call-mark count -- a student
+    // shows up once here whether they were marked present in 1 slot or all
+    // 3, every day of the range or just one. "Present" = did this student
+    // attend at least once this range; "Absence" is the enrollment complement
+    // (everyone never marked present, whether explicitly ABSENT or simply
+    // never rolled-called), so the two always sum back to Enrollment.
+    const presentStudentsByClass = new Map<number, Set<number>>();
     for (const entry of rollCallEntries) {
         const classId = entry.enrollment?.class_id;
         if (classId == null) continue;
-        if (entry.status === 'PRESENT' || entry.status === 'LATE') {
-            presentByClass.set(classId, (presentByClass.get(classId) ?? 0) + 1);
-        } else if (entry.status === 'ABSENT') {
-            absentByClass.set(classId, (absentByClass.get(classId) ?? 0) + 1);
-        }
+        const set = presentStudentsByClass.get(classId) ?? new Set<number>();
+        set.add(entry.enrollment_id);
+        presentStudentsByClass.set(classId, set);
     }
 
     return classes
         .map((c) => {
-            const present = presentByClass.get(c.id) ?? 0;
-            const absence = absentByClass.get(c.id) ?? 0;
+            const enrollment = enrollmentByClass.get(c.id) ?? 0;
+            const present = presentStudentsByClass.get(c.id)?.size ?? 0;
+            const absence = Math.max(enrollment - present, 0);
             return {
                 classId: c.id,
                 className: c.name,
-                enrollment: enrollmentByClass.get(c.id) ?? 0,
+                enrollment,
                 present,
                 absence,
-                percentagePresent: toPct(present, present + absence),
+                percentagePresent: toPct(present, enrollment),
             };
         })
-        .filter((r) => r.enrollment > 0 || r.present > 0 || r.absence > 0)
+        .filter((r) => r.enrollment > 0 || r.present > 0)
         .sort((a, b) => a.className.localeCompare(b.className));
 }
 

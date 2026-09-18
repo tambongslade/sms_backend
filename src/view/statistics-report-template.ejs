@@ -145,7 +145,7 @@
                     <td>Total</td>
                     <td class="num"><%= _caTotals.enrollment %></td>
                     <td class="num"><%= _caTotals.present %></td>
-                    <td class="num"><%= _caTotals.present + _caTotals.absence > 0 ? Math.round((_caTotals.present / (_caTotals.present + _caTotals.absence)) * 10000) / 100 : 0 %>%</td>
+                    <td class="num"><%= _caTotals.enrollment > 0 ? Math.round((_caTotals.present / _caTotals.enrollment) * 10000) / 100 : 0 %>%</td>
                     <td class="num"><%= _caTotals.absence %></td>
                 </tr>
             </tfoot>
