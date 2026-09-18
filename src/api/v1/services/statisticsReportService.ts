@@ -132,6 +132,13 @@ const POI_OFFENCE_THRESHOLD = 5;
 const POI_LIMIT = 15;
 const FINANCIAL_POI_LIMIT = 50;
 
+// Accounts that carry a TEACHER role (and have scheduled periods) but should
+// never appear in Teaching Statistics, by explicit request -- e.g. a manager
+// who also teaches a period but isn't meant to be tracked in this report.
+// user 151 = "Enah Marcel" (MANAGER + TEACHER), the only manager/teacher
+// overlap in the roster at the time of this request.
+const EXCLUDED_TEACHER_USER_IDS: number[] = [151];
+
 // ---------------------------------------------------------------------------
 // Small local helpers (deliberately not shared with salaryService.ts's
 // versions -- see that file's own comment on why these stay per-service).
@@ -361,11 +368,21 @@ async function getTeachingSection(yearId: number | null, from: string, to: strin
 
     // Roster: teachers who actually have periods scheduled this year (not
     // just anyone holding the TEACHER role) -- matches this report's intent
-    // of "who was supposed to be teaching".
+    // of "who was supposed to be teaching". Excludes anyone who also holds
+    // SUPER_MANAGER (admin/dev accounts occasionally carry a TEACHER role
+    // too and shouldn't appear in a payroll-adjacent report), plus specific
+    // named exclusions requested for accounts that legitimately teach but
+    // aren't meant to be tracked here.
     const teachers = await prisma.user.findMany({
         where: {
             user_roles: { some: { role: 'TEACHER' } },
             teacher_periods: { some: { academic_year_id: yearId } },
+            NOT: {
+                OR: [
+                    { user_roles: { some: { role: 'SUPER_MANAGER' } } },
+                    { id: { in: EXCLUDED_TEACHER_USER_IDS } },
+                ],
+            },
         },
         select: { id: true, name: true, matricule: true },
         orderBy: { name: 'asc' },
