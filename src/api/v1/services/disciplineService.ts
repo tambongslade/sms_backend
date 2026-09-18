@@ -508,7 +508,7 @@ export async function getLatenessAlerts(academicYearId?: number): Promise<Array<
         where: {
             absence_type: AbsenceType.MORNING_LATENESS,
             created_at: { gte: term.start_date, lte: term.end_date },
-            enrollment: { academic_year_id: yearId },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         },
         _count: { enrollment_id: true },
         having: { enrollment_id: { _count: { gte: SATURDAY_PUNISHMENT_THRESHOLD } } },
@@ -2094,7 +2094,7 @@ export async function getDailyOverview(opts: {
         where: {
             absence_type: 'MORNING_LATENESS',
             created_at: { gte: dayStart, lte: dayEnd },
-            enrollment: { academic_year_id: yearId },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
             ...slotFilter,
         },
     });
@@ -2104,7 +2104,7 @@ export async function getDailyOverview(opts: {
         where: {
             absence_type: 'CLASS_ABSENCE',
             created_at: { gte: dayStart, lte: dayEnd },
-            enrollment: { academic_year_id: yearId },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
             ...slotFilter,
         },
     });
@@ -2118,7 +2118,7 @@ export async function getDailyOverview(opts: {
         where: {
             absence_type: 'CLASS_ABSENCE',
             created_at: { gte: dayStart, lte: dayEnd },
-            enrollment: { academic_year_id: yearId },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
             ...slotFilter,
         },
         select: { created_at: true },
@@ -2128,7 +2128,7 @@ export async function getDailyOverview(opts: {
     const actionsTodayPromise = prisma.disciplinaryAction.count({
         where: {
             created_at: { gte: dayStart, lte: dayEnd },
-            enrollment: { academic_year_id: yearId },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         },
     });
 
