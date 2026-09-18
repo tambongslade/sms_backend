@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title><%= documentTitle %></title>
+<style>
+    @page {
+        size: A4 portrait;
+        margin: 12mm;
+    }
+    * { box-sizing: border-box; }
+    body {
+        font-family: 'Helvetica', 'Arial', sans-serif;
+        color: #1f2937;
+        margin: 0;
+        padding: 0;
+        font-size: 8.5pt;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    .letterhead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid #000;
+        padding-bottom: 3px;
+        margin-bottom: 3px;
+        font-size: 6.5pt;
+        color: #111827;
+    }
+    .letterhead .col { width: 34%; text-align: center; line-height: 1.15; }
+    .letterhead .col p { margin: 0; }
+    .letterhead .col p.bold { font-weight: 700; }
+    .letterhead .logo { width: 32%; text-align: center; }
+    .letterhead .logo img { max-height: 42px; max-width: 100%; }
+    .school-info { text-align: center; margin: 2px 0 6px 0; }
+    .school-info h2 { margin: 0; font-size: 11pt; font-weight: 800; letter-spacing: 0.3px; }
+    .school-info .tagline { font-style: italic; font-size: 7.5pt; color: #374151; }
+    .school-info .contact { font-size: 7pt; color: #4b5563; }
+
+    .header {
+        border-bottom: 1.5px solid #1e3a8a;
+        padding-bottom: 4px;
+        margin-bottom: 8px;
+        text-align: center;
+    }
+    .header h1 { margin: 0; font-size: 13pt; color: #1e3a8a; }
+    .header .subtitle { font-size: 8.5pt; color: #374151; margin-top: 2px; }
+
+    section { margin-bottom: 12px; page-break-inside: avoid; }
+    h2.section-title {
+        font-size: 10pt;
+        color: #fff;
+        background: #1e3a8a;
+        padding: 3px 6px;
+        margin: 0 0 4px 0;
+    }
+    h3.sub-title {
+        font-size: 8.5pt;
+        color: #1e3a8a;
+        margin: 6px 0 3px 0;
+        border-bottom: 1px solid #cbd5e1;
+        padding-bottom: 2px;
+    }
+
+    table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+    th, td {
+        border: 0.5px solid #cbd5e1;
+        padding: 2.5px 4px;
+        text-align: left;
+        font-size: 7.6pt;
+        vertical-align: top;
+    }
+    th { background: #eef2ff; color: #1e3a8a; font-weight: 700; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr:nth-child(even) td { background: #f8fafc; }
+    .empty { color: #9ca3af; font-style: italic; padding: 3px 4px; font-size: 7.6pt; }
+    tfoot td { font-weight: 700; background: #eef2ff !important; }
+
+    .footer {
+        margin-top: 14px;
+        padding-top: 4px;
+        border-top: 0.5px solid #cbd5e1;
+        font-size: 6.8pt;
+        color: #6b7280;
+        text-align: center;
+    }
+</style>
+</head>
+<body>
+    <div class="letterhead">
+        <div class="col">
+            <p class="bold">REPUBLIC OF CAMEROON</p>
+            <p>MINISTRY OF SECONDARY EDUCATION</p>
+            <p>REGIONAL DELEGATION FOR CENTRE</p>
+            <p>DIVISIONAL DELEGATION OF MFOUNDI</p>
+        </div>
+        <div class="logo">
+            <% if (schoolLogo) { %><img src="<%= schoolLogo %>" alt="School Logo" /><% } %>
+        </div>
+        <div class="col">
+            <p class="bold">REPUBLIQUE DU CAMEROUN</p>
+            <p>MINISTERE DES ENSEIGNEMENTS SECONDAIRES</p>
+            <p>DELEGATION REGIONALE DU CENTRE</p>
+            <p>DELEGATION DEPARTEMENTALE DU MFOUNDI</p>
+        </div>
+    </div>
+    <div class="school-info">
+        <h2><%= schoolName %></h2>
+        <% if (schoolTagline) { %><div class="tagline"><%= schoolTagline %></div><% } %>
+        <% if (schoolAddress || schoolPhone) { %>
+            <div class="contact">
+                <% if (schoolAddress) { %><%= schoolAddress %><% } %>
+                <% if (schoolAddress && schoolPhone) { %> &middot; <% } %>
+                <% if (schoolPhone) { %>Tel: <%= schoolPhone %><% } %>
+            </div>
+        <% } %>
+    </div>
+
+    <div class="header">
+        <h1>Statistics Report</h1>
+        <div class="subtitle">
+            <%= academicYearName %> &middot; <%= range.from %> &rarr; <%= range.to %>
+        </div>
+    </div>
+
+    <section>
+        <h2 class="section-title">Discipline Overview</h2>
+
+        <h3 class="sub-title">Lateness (<%= discipline.lateness.length %>)</h3>
+        <% if (discipline.lateness.length === 0) { %>
+            <p class="empty">No lateness recorded in this range.</p>
+        <% } else { %>
+        <table>
+            <thead><tr><th>Student</th><th>Matricule</th><th>Class</th><th>Date</th></tr></thead>
+            <tbody>
+                <% discipline.lateness.forEach(function(r) { %>
+                <tr><td><%= r.studentName %></td><td><%= r.matricule || '-' %></td><td><%= r.className %> &middot; <%= r.subClassName %></td><td><%= r.date %></td></tr>
+                <% }); %>
+            </tbody>
+        </table>
+        <% } %>
+
+        <h3 class="sub-title">Class Absences (<%= discipline.absences.length %>)</h3>
+        <% if (discipline.absences.length === 0) { %>
+            <p class="empty">No class absences recorded in this range.</p>
+        <% } else { %>
+        <table>
+            <thead><tr><th>Student</th><th>Matricule</th><th>Class</th><th>Date</th></tr></thead>
+            <tbody>
+                <% discipline.absences.forEach(function(r) { %>
+                <tr><td><%= r.studentName %></td><td><%= r.matricule || '-' %></td><td><%= r.className %> &middot; <%= r.subClassName %></td><td><%= r.date %></td></tr>
+                <% }); %>
+            </tbody>
+        </table>
+        <% } %>
+
+        <h3 class="sub-title">Sanctions (<%= discipline.sanctions.length %>)</h3>
+        <% if (discipline.sanctions.length === 0) { %>
+            <p class="empty">No sanctions recorded in this range.</p>
+        <% } else { %>
+        <table>
+            <thead><tr><th>Student</th><th>Matricule</th><th>Class</th><th>Offence</th><th>Reason</th><th>Status</th><th>Date</th></tr></thead>
+            <tbody>
+                <% discipline.sanctions.forEach(function(r) { %>
+                <tr><td><%= r.studentName %></td><td><%= r.matricule || '-' %></td><td><%= r.className %> &middot; <%= r.subClassName %></td><td><%= r.actionType %></td><td><%= r.reason || '-' %></td><td><%= r.status %></td><td><%= r.date %></td></tr>
+                <% }); %>
+            </tbody>
+        </table>
+        <% } %>
+
+        <h3 class="sub-title">Persons of Interest (<%= discipline.personsOfInterest.length %>)</h3>
+        <% if (discipline.personsOfInterest.length === 0) { %>
+            <p class="empty">No students crossed the offence threshold in this range.</p>
+        <% } else { %>
+        <table>
+            <thead><tr><th>Student</th><th>Matricule</th><th>Class</th><th class="num">Absences</th><th class="num">Lateness</th><th class="num">Sanctions</th><th class="num">Total</th></tr></thead>
+            <tbody>
+                <% discipline.personsOfInterest.forEach(function(r) { %>
+                <tr><td><%= r.studentName %></td><td><%= r.matricule || '-' %></td><td><%= r.className %> &middot; <%= r.subClassName %></td><td class="num"><%= r.classAbsences %></td><td class="num"><%= r.lateness %></td><td class="num"><%= r.sanctions %></td><td class="num"><%= r.totalOffences %></td></tr>
+                <% }); %>
+            </tbody>
+        </table>
+        <% } %>
+    </section>
+
+    <section>
+        <h2 class="section-title">Teaching Statistics</h2>
+        <h3 class="sub-title">Hours Taught</h3>
+        <% if (teaching.length === 0) { %>
+            <p class="empty">No teaching data for this range.</p>
+        <% } else { %>
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th><th class="num">Expected Hrs</th><th class="num">Hrs Taught</th>
+                    <th class="num">Hrs Not Taught</th><th class="num">Hour Rate</th><th class="num">Socials</th><th class="num">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <% teaching.forEach(function(t) { %>
+                <tr>
+                    <td><%= t.name %></td><td class="num"><%= t.expectedHours %></td><td class="num"><%= t.hoursTaught %></td>
+                    <td class="num"><%= t.hoursNotTaught %></td><td class="num"><%= t.hourRate.toLocaleString() %></td>
+                    <td class="num"><%= t.socials.toLocaleString() %></td><td class="num"><%= t.total.toLocaleString() %></td>
+                </tr>
+                <% }); %>
+            </tbody>
+            <tfoot>
+                <tr>
+                    <td>Total</td>
+                    <td class="num"><%= teaching.reduce((s,t)=>s+t.expectedHours,0).toFixed(1) %></td>
+                    <td class="num"><%= teaching.reduce((s,t)=>s+t.hoursTaught,0).toFixed(1) %></td>
+                    <td class="num"><%= teaching.reduce((s,t)=>s+t.hoursNotTaught,0).toFixed(1) %></td>
+                    <td class="num">-</td>
+                    <td class="num"><%= teaching.reduce((s,t)=>s+t.socials,0).toLocaleString() %></td>
+                    <td class="num"><%= teaching.reduce((s,t)=>s+t.total,0).toLocaleString() %></td>
+                </tr>
+            </tfoot>
+        </table>
+        <% } %>
+    </section>
+
+    <section>
+        <h2 class="section-title">Work Coverage</h2>
+        <% if (workCoverage.length === 0) { %>
+            <p class="empty">No scheme-of-work data available.</p>
+        <% } else { %>
+        <table>
+            <thead><tr><th>Class</th><th>Sub Class</th><th class="num">% Coverage</th></tr></thead>
+            <tbody>
+                <% workCoverage.forEach(function(c) { %>
+                <tr><td><%= c.className %></td><td><%= c.subClassName %></td><td class="num"><%= c.coveragePercent %>%</td></tr>
+                <% }); %>
+            </tbody>
+        </table>
+        <% } %>
+    </section>
+
+    <section>
+        <h2 class="section-title">Financial</h2>
+        <% if (financial.subClasses.length === 0) { %>
+            <p class="empty">No financial data for this range.</p>
+        <% } else { %>
+        <table>
+            <thead>
+                <tr>
+                    <th>Sub Class</th><th class="num">Students Owing</th><th class="num">Collected This Range</th>
+                    <th class="num">Total Collected</th><th class="num">1st Installment Outstanding</th><th class="num">% Collected</th>
+                </tr>
+            </thead>
+            <tbody>
+                <% financial.subClasses.forEach(function(f) { %>
+                <tr>
+                    <td><%= f.className %> &middot; <%= f.subClassName %></td>
+                    <td class="num"><%= f.studentsOwing %></td>
+                    <td class="num">FCFA <%= f.collectedThisRange.toLocaleString() %></td>
+                    <td class="num">FCFA <%= f.totalCollected.toLocaleString() %></td>
+                    <td class="num">FCFA <%= f.outstandingInstallment1.toLocaleString() %></td>
+                    <td class="num"><%= f.percentCollected %>%</td>
+                </tr>
+                <% }); %>
+            </tbody>
+        </table>
+        <% } %>
+
+        <h3 class="sub-title">Persons of Interest &mdash; Top <%= financial.personsOfInterest.length %> Owing</h3>
+        <% if (financial.personsOfInterest.length === 0) { %>
+            <p class="empty">No students owing fees.</p>
+        <% } else { %>
+        <table>
+            <thead><tr><th>#</th><th>Student</th><th>Matricule</th><th>Class</th><th class="num">Outstanding</th></tr></thead>
+            <tbody>
+                <% financial.personsOfInterest.forEach(function(p, i) { %>
+                <tr><td><%= i + 1 %></td><td><%= p.studentName %></td><td><%= p.matricule || '-' %></td><td><%= p.className %> &middot; <%= p.subClassName %></td><td class="num">FCFA <%= p.outstandingAmount.toLocaleString() %></td></tr>
+                <% }); %>
+            </tbody>
+        </table>
+        <% } %>
+    </section>
+
+    <div class="footer">Generated <%= generatedAt %> &middot; <%= brand %></div>
+</body>
+</html>

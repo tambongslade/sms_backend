@@ -7,6 +7,7 @@
 import { Router } from 'express';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 import * as overview from '../controllers/superManagerOverviewController';
+import * as statisticsReport from '../controllers/statisticsReportController';
 
 const router = Router();
 
@@ -28,5 +29,10 @@ router.get('/tasks',          authorize(OVERVIEW_ROLES), overview.getTasksOvervi
 router.get('/inventory',      authorize(OVERVIEW_ROLES), overview.getInventoryOverview);
 router.get('/audit',          authorize(['SUPER_MANAGER', 'MANAGER']), overview.getAuditOverview);
 router.get('/enrollment',     authorize(OVERVIEW_ROLES), overview.getEnrollmentOverview);
+
+// Statistics report — a date-ranged (weekly by default) discipline/teaching/
+// work-coverage/financial snapshot with a letterhead PDF export.
+router.get('/statistics-report',     authorize(OVERVIEW_ROLES), statisticsReport.getStatisticsReport);
+router.get('/statistics-report/pdf', authorize(OVERVIEW_ROLES), statisticsReport.exportStatisticsReportPdf);
 
 export default router;
