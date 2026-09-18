@@ -1133,7 +1133,8 @@ async function calculateComparativeAnalytics(studentId: number, subClassId: numb
     const classmates = await prisma.enrollment.findMany({
         where: {
             sub_class_id: subClassId,
-            academic_year_id: academicYearId
+            academic_year_id: academicYearId,
+            student: { status: { not: 'WITHDRAWN' } }
         },
         include: {
             marks: {

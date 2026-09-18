@@ -198,7 +198,8 @@ export async function getComparisonSummary(academicYearId?: number): Promise<Com
     // Get all enrollments for the academic year
     const enrollments = await prisma.enrollment.findMany({
         where: {
-            academic_year_id: yearId
+            academic_year_id: yearId,
+            student: { status: { not: 'WITHDRAWN' } }
         },
         include: {
             school_fees: {

@@ -584,7 +584,8 @@ async function generateSubclassReportCards(
     const enrollments = await prisma.enrollment.findMany({
         where: {
             sub_class_id: sub_classId,
-            academic_year_id: academicYearId
+            academic_year_id: academicYearId,
+            student: { status: { not: 'WITHDRAWN' } }
         },
         select: {
             student_id: true

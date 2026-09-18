@@ -58,7 +58,7 @@ async function generateStudentReportDataForWorker(
 
     // 2. Fetch data for rank/stat calculations (All enrollments and marks in subclass)
     const allEnrollmentsInSubclass = await prisma.enrollment.findMany({
-        where: { sub_class_id: sub_classId, academic_year_id: academicYearId },
+        where: { sub_class_id: sub_classId, academic_year_id: academicYearId, student: { status: { not: 'WITHDRAWN' } } },
         include: {
             marks: {
                 where: { exam_sequence_id: examSequenceId },
@@ -314,7 +314,8 @@ export async function generateAndSaveSubclassPdf(
         const enrollments = await prisma.enrollment.findMany({
             where: {
                 sub_class_id: subClassId,
-                academic_year_id: academicYearId
+                academic_year_id: academicYearId,
+                student: { status: { not: 'WITHDRAWN' } }
             },
             select: { student_id: true }, // Only need student IDs to iterate
             orderBy: { student: { name: 'asc' } } // Sort for consistent PDF page order

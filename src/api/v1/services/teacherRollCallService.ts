@@ -240,6 +240,7 @@ async function loadRollCallView(
             where: {
                 sub_class_id: tp.sub_class_id,
                 academic_year_id: tp.academic_year_id,
+                student: { status: { not: 'WITHDRAWN' } },
             },
             include: {
                 student: {
@@ -355,6 +356,7 @@ export async function recordTeacherRollCall(input: {
             id: { in: enrollmentIds },
             sub_class_id: tp.sub_class_id,
             academic_year_id: tp.academic_year_id,
+            student: { status: { not: 'WITHDRAWN' } },
         },
         select: { id: true },
     });

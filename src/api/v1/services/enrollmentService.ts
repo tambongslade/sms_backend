@@ -275,7 +275,8 @@ export async function getUnassignedStudents(academicYearId?: number) {
     const unassignedStudents = await prisma.enrollment.findMany({
         where: {
             academic_year_id: yearId,
-            sub_class_id: null // Not yet assigned to subclass
+            sub_class_id: null, // Not yet assigned to subclass
+            student: { status: { not: 'WITHDRAWN' } }
         },
         include: {
             student: {

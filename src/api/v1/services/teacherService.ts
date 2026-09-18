@@ -1042,7 +1042,8 @@ export async function getSubClassAttendance(
     const enrollments = await prisma.enrollment.findMany({
         where: {
             sub_class_id: subClassId,
-            academic_year_id: currentYear
+            academic_year_id: currentYear,
+            student: { status: { not: 'WITHDRAWN' } }
         },
         include: {
             student: true,

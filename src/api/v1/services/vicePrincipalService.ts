@@ -461,6 +461,7 @@ export async function getInterviewManagement(
             where: {
                 academic_year_id: yearId,
                 sub_class_id: null,      // But not to a subclass
+                student: { status: { not: 'WITHDRAWN' } },
             },
             include: {
                 student: {
@@ -840,7 +841,7 @@ export async function getEnrollmentAnalytics(academicYearId?: number): Promise<a
             // Enrollment trends over time (simplified)
             prisma.enrollment.groupBy({
                 by: ['created_at'],
-                where: { academic_year_id: currentYear.id },
+                where: { academic_year_id: currentYear.id, student: { status: { not: 'WITHDRAWN' } } },
                 _count: { id: true }
             }),
 
@@ -848,6 +849,7 @@ export async function getEnrollmentAnalytics(academicYearId?: number): Promise<a
             prisma.student.groupBy({
                 by: ['gender'],
                 where: {
+                    status: { not: 'WITHDRAWN' },
                     enrollments: {
                         some: { academic_year_id: currentYear.id }
                     }
@@ -858,6 +860,7 @@ export async function getEnrollmentAnalytics(academicYearId?: number): Promise<a
             // Age distribution (simplified calculation)
             prisma.student.findMany({
                 where: {
+                    status: { not: 'WITHDRAWN' },
                     enrollments: {
                         some: { academic_year_id: currentYear.id }
                     }
@@ -868,7 +871,7 @@ export async function getEnrollmentAnalytics(academicYearId?: number): Promise<a
             // Class distribution
             prisma.enrollment.groupBy({
                 by: ['class_id'],
-                where: { academic_year_id: currentYear.id },
+                where: { academic_year_id: currentYear.id, student: { status: { not: 'WITHDRAWN' } } },
                 _count: { id: true },
                 _max: { created_at: true }
             })

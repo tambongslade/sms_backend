@@ -918,7 +918,7 @@ export async function getSubclassFeesStatus(
     if (!yearId) throw new Error('Academic year is required');
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { sub_class_id: subClassId, academic_year_id: yearId },
+        where: { sub_class_id: subClassId, academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         include: { student: true, school_fees: { where: { academic_year_id: yearId } } },
         orderBy: { student: { name: 'asc' } },
     });
@@ -1442,7 +1442,8 @@ export async function updateFeesOnClassFeeChange(classId: number, academicYearId
             academic_year_id: yearId,
             sub_class: {
                 class_id: classId
-            }
+            },
+            student: { status: { not: 'WITHDRAWN' } }
         },
         include: {
             student: true,

@@ -605,7 +605,8 @@ async function getVPStudentManagement(yearId?: number) {
         yearId ? prisma.enrollment.findMany({
             where: {
                 academic_year_id: yearId,
-                sub_class_id: null
+                sub_class_id: null,
+                student: { status: { not: 'WITHDRAWN' } }
             },
             include: {
                 student: true,
@@ -614,7 +615,7 @@ async function getVPStudentManagement(yearId?: number) {
         }) : [],
 
         yearId ? prisma.enrollment.count({
-            where: { academic_year_id: yearId }
+            where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } }
         }) : 0,
 
         prisma.class.findMany({
@@ -622,7 +623,7 @@ async function getVPStudentManagement(yearId?: number) {
                 sub_classes: {
                     include: {
                         enrollments: yearId ? {
-                            where: { academic_year_id: yearId }
+                            where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } }
                         } : true
                     }
                 }

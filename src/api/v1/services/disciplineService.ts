@@ -580,7 +580,7 @@ export async function getAbsenceFormData(subClassId: number, date: string, acade
     const dayOfWeek = DAY_OF_WEEK_FROM_INDEX[target.getDay()];
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { sub_class_id: subClassId, academic_year_id: yearId },
+        where: { sub_class_id: subClassId, academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         include: { student: true },
         orderBy: { student: { name: 'asc' } },
     });
@@ -1139,7 +1139,7 @@ export async function getDailyRollCall(subClassId: number, date: string, academi
     const dayOfWeek = DAY_OF_WEEK_FROM_INDEX[target.getDay()];
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { sub_class_id: subClassId, academic_year_id: yearId },
+        where: { sub_class_id: subClassId, academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         include: { student: true },
         orderBy: { student: { name: 'asc' } },
     });
@@ -1204,7 +1204,7 @@ export async function recordDailyRollCall(input: DailyRollCallInput): Promise<{
 
     const enrollmentIds = input.entries.map(e => e.enrollment_id);
     const enrollments = await prisma.enrollment.findMany({
-        where: { id: { in: enrollmentIds }, academic_year_id: yearId, sub_class_id: input.sub_class_id },
+        where: { id: { in: enrollmentIds }, academic_year_id: yearId, sub_class_id: input.sub_class_id, student: { status: { not: 'WITHDRAWN' } } },
         select: { id: true },
     });
     const validIds = new Set(enrollments.map(e => e.id));
@@ -1310,7 +1310,7 @@ export async function getPeriodRollCall(teacherPeriodId: number): Promise<Period
     const tp = await loadTeacherPeriod(teacherPeriodId);
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { sub_class_id: tp.sub_class_id, academic_year_id: tp.academic_year_id },
+        where: { sub_class_id: tp.sub_class_id, academic_year_id: tp.academic_year_id, student: { status: { not: 'WITHDRAWN' } } },
         include: { student: true },
         orderBy: { student: { name: 'asc' } },
     });
@@ -1382,6 +1382,7 @@ export async function recordPeriodRollCall(input: PeriodRollCallInput): Promise<
             id: { in: input.entries.map(e => e.enrollment_id) },
             sub_class_id: tp.sub_class_id,
             academic_year_id: tp.academic_year_id,
+            student: { status: { not: 'WITHDRAWN' } },
         },
         select: { id: true },
     });
@@ -2111,7 +2112,7 @@ export async function getDailyOverview(opts: {
         where: {
             absence_type: 'CLASS_ABSENCE',
             is_excused: false,
-            enrollment: { academic_year_id: yearId },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
             ...slotFilter,
         },
         _count: { enrollment_id: true },

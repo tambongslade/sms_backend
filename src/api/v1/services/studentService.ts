@@ -1315,7 +1315,7 @@ export async function exportSubclassStudentListExcel(
     }
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { sub_class_id: subClassId, academic_year_id: yearId },
+        where: { sub_class_id: subClassId, academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         include: { student: true }
     });
 
@@ -1353,7 +1353,7 @@ export async function exportClassStudentListExcel(
                 orderBy: { name: 'asc' },
                 include: {
                     enrollments: {
-                        where: { academic_year_id: yearId },
+                        where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
                         include: { student: true }
                     }
                 }
@@ -1628,7 +1628,7 @@ export async function exportSubclassStudentListPdf(
     }
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { sub_class_id: subClassId, academic_year_id: yearId },
+        where: { sub_class_id: subClassId, academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         include: {
             student: {
                 include: {
@@ -1674,7 +1674,7 @@ export async function exportClassStudentListPdf(
                 orderBy: { name: 'asc' },
                 include: {
                     enrollments: {
-                        where: { academic_year_id: yearId },
+                        where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
                         include: {
                             student: {
                                 include: {
@@ -1741,7 +1741,7 @@ export async function getPromotionPreview(
     }
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { academic_year_id: fromAcademicYearId },
+        where: { academic_year_id: fromAcademicYearId, student: { status: { not: 'WITHDRAWN' } } },
         include: {
             student: true,
             class: { include: { next_class: true } },

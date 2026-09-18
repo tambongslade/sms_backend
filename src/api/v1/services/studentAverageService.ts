@@ -26,6 +26,7 @@ export const calculateAndSaveStudentAverages = async (
         // Get all enrollments for the academic year, optionally filtered by sub_class
         const enrollmentQuery: any = {
             academic_year_id: examSequence.academic_year_id,
+            student: { status: { not: 'WITHDRAWN' } },
         };
 
         if (sub_classId) {
@@ -137,7 +138,7 @@ export const updateRankings = async (examSequenceId: number, sub_classId?: numbe
         if (sub_classId) {
             // Get all averages for students in this sub_class
             const enrollments = await prisma.enrollment.findMany({
-                where: { sub_class_id: sub_classId },
+                where: { sub_class_id: sub_classId, student: { status: { not: 'WITHDRAWN' } } },
                 select: { id: true },
             });
 
@@ -225,7 +226,7 @@ export const getStudentAverages = async (examSequenceId: number, sub_classId?: n
     if (sub_classId) {
         // Get enrollments for this sub_class
         const enrollments = await prisma.enrollment.findMany({
-            where: { sub_class_id: sub_classId },
+            where: { sub_class_id: sub_classId, student: { status: { not: 'WITHDRAWN' } } },
             select: { id: true },
         });
 

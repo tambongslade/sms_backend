@@ -1029,7 +1029,8 @@ export async function updateControlFeesOnClassFeeChange(classId: number, academi
             academic_year_id: yearId,
             sub_class: {
                 class_id: classId
-            }
+            },
+            student: { status: { not: 'WITHDRAWN' } }
         },
         include: {
             student: true,
