@@ -40,7 +40,14 @@ router.post('/register-with-roles', registerAndAssignRoles);
 router.post('/create-with-role', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY']), auditTrailMiddleware('User', 'CREATE_USER'), createUserWithRole);
 
 // User CRUD operations (requires authentication, some require specific roles)
-router.get('/', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_MASTER', 'BURSAR', 'SECRETARY']), getAllUsers);
+// DEAN_OF_DISCIPLINE, DISCIPLINE_COORDINATOR, SENIOR_DISCIPLINE_MASTER, CONTROLLER
+// added alongside the existing list so the DM Assignments page's read side
+// (GET /users?role=DISCIPLINE_MASTER, to list assignable Discipline Masters)
+// matches who can already create/remove those assignments -- see the
+// assignments/discipline-master routes below, which grant all of these.
+// Without this, those roles got a 403 loading the roster and the page
+// looked broken even though the write endpoints worked fine for them.
+router.get('/', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_MASTER', 'BURSAR', 'SECRETARY', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR', 'SENIOR_DISCIPLINE_MASTER', 'CONTROLLER']), getAllUsers);
 router.post('/', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_MASTER', 'BURSAR', 'SECRETARY']), auditTrailMiddleware('User', 'CREATE_USER'), createUser);
 
 // Get all teachers (optionally filtered by subject)
