@@ -371,6 +371,7 @@ export async function getWeekOverview(opts: {
         today: new Date().toISOString().slice(0, 10),
         days,
         attendance: attendances.map((a) => ({
+            id: a.id,
             teacher_period_id: a.teacher_period_id,
             date: a.date.toISOString().slice(0, 10),
             status: a.status,
