@@ -465,3 +465,79 @@ export async function setDeanSubClasses(userId: number, subClassIds: number[], a
     ]);
     return { user_id: userId, academic_year_id: yearId, sub_class_ids: wanted };
 }
+
+/**
+ * Bulk "mark all present" for ONE day. Creates a PRESENT record (all four conduct
+ * checks positive, like a fresh row on the DM screen) for every teacher period
+ * scheduled that day that has no attendance record yet. It never touches a
+ * period that already has a record, so a Late / Absent a DM saved is kept, and
+ * it is safe to press twice. Future days are refused.
+ *
+ * sub_class_ids narrows the scope (the caller's tab); restrict_to_sub_class_ids
+ * is the role-based limit (a Discipline Master's assigned classes) and always wins.
+ */
+export async function markAllPresentForDay(input: {
+    date: Date | string;
+    recorded_by_id: number;
+    academic_year_id?: number;
+    sub_class_ids?: number[];
+    restrict_to_sub_class_ids?: number[];
+}) {
+    const yearId = input.academic_year_id ?? (await getAcademicYearId());
+    if (!yearId) throw new Error('No current academic year is set');
+
+    const dateOnly = normalizeDate(input.date);
+    const todayOnly = normalizeDate(new Date());
+    if (dateOnly.getTime() > todayOnly.getTime()) {
+        throw new Error('Cannot mark attendance for a future day.');
+    }
+    const dow = dayOfWeekFromDate(dateOnly);
+
+    // Effective sub-class scope = requested scope, capped by the role restriction.
+    let scope: number[] | undefined = input.sub_class_ids && input.sub_class_ids.length ? input.sub_class_ids : undefined;
+    if (input.restrict_to_sub_class_ids) {
+        scope = scope
+            ? scope.filter((id) => input.restrict_to_sub_class_ids!.includes(id))
+            : input.restrict_to_sub_class_ids;
+        if (scope.length === 0) throw new Error('Access denied: none of these sub-classes are assigned to you');
+    }
+
+    const periods = await prisma.teacherPeriod.findMany({
+        where: {
+            academic_year_id: yearId,
+            teacher_id: { not: null },
+            period: { day_of_week: dow },
+            ...(scope && { sub_class_id: { in: scope } }),
+        },
+        select: { id: true },
+    });
+
+    if (periods.length === 0) {
+        return { date: dateOnly, academic_year_id: yearId, total: 0, created: 0, already_recorded: 0 };
+    }
+
+    // skipDuplicates + the (teacher_period_id, date) unique key make this atomic:
+    // a record saved a moment ago by a DM is skipped, never overwritten.
+    const result = await prisma.teacherPeriodAttendance.createMany({
+        data: periods.map((p) => ({
+            teacher_period_id: p.id,
+            academic_year_id: yearId,
+            date: dateOnly,
+            status: 'PRESENT' as TeacherPeriodAttendanceStatus,
+            well_dressed: true,
+            class_management: true,
+            punctuality: true,
+            assiduity: true,
+            recorded_by_id: input.recorded_by_id,
+        })),
+        skipDuplicates: true,
+    });
+
+    return {
+        date: dateOnly,
+        academic_year_id: yearId,
+        total: periods.length,
+        created: result.count,
+        already_recorded: periods.length - result.count,
+    };
+}

@@ -263,3 +263,34 @@ export const setDeanClasses = async (req: Request, res: Response): Promise<any> 
         return res.status(status).json({ success: false, error: err.message });
     }
 };
+
+// POST /discipline-master/teacher-attendance/mark-all-present
+// Body: { date, sub_class_ids?: number[], academic_year_id? } -- one day only; never overwrites.
+export const markAllPresent = async (req: Request, res: Response): Promise<any> => {
+    try {
+        if (!req.user) return res.status(401).json({ success: false, error: 'Unauthenticated' });
+
+        const date = parseDate(req.body?.date);
+        if (!date) return res.status(400).json({ success: false, error: 'Valid date is required (YYYY-MM-DD)' });
+
+        const rawIds = req.body?.sub_class_ids;
+        if (rawIds !== undefined && (!Array.isArray(rawIds) || !rawIds.every((n: any) => Number.isInteger(n)))) {
+            return res.status(400).json({ success: false, error: 'sub_class_ids must be an array of integers' });
+        }
+        const academicYearId = req.body?.academic_year_id ? parseInt(req.body.academic_year_id, 10) : undefined;
+        const restriction = await getRestriction(req, academicYearId);
+
+        const data = await svc.markAllPresentForDay({
+            date,
+            recorded_by_id: req.user.id,
+            academic_year_id: Number.isFinite(academicYearId as number) ? (academicYearId as number) : undefined,
+            sub_class_ids: rawIds,
+            restrict_to_sub_class_ids: restriction ?? undefined,
+        });
+        return res.json({ success: true, data });
+    } catch (err: any) {
+        console.error('Error marking all teachers present:', err);
+        const status = /Access denied/i.test(err.message) ? 403 : 400;
+        return res.status(status).json({ success: false, error: err.message });
+    }
+};

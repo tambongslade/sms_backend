@@ -148,6 +148,11 @@ router.put('/teacher-attendance/deans/:userId/sub-classes',
     authorize(['PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_COORDINATOR']),
     teacherPeriodAttendanceController.setDeanClasses
 );
+// Bulk "mark all present" for one day (only fills periods with no record yet).
+router.post('/teacher-attendance/mark-all-present',
+    authorize(TEACHER_ATTENDANCE_ROLES),
+    teacherPeriodAttendanceController.markAllPresent
+);
 router.get('/teacher-attendance/:id',
     authorize(TEACHER_ATTENDANCE_ROLES),
     teacherPeriodAttendanceController.getById
