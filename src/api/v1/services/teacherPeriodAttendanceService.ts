@@ -542,3 +542,28 @@ export async function markAllPresentForDay(input: {
         already_recorded: periods.length - result.count,
     };
 }
+
+// ---- Dean of Discipline: current day only ---------------------------------------
+// A Dean of Discipline may record / change / remove teacher attendance for TODAY only,
+// never for past or future days. Roles that can correct any day (executives, principal,
+// vice principal, discipline coordinator) are exempt even if they also hold the dean role.
+const ANY_DAY_ROLES = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_COORDINATOR'];
+
+export function mustBeTodayOnly(roles: string[]): boolean {
+    return roles.includes('DEAN_OF_DISCIPLINE') && !roles.some((r) => ANY_DAY_ROLES.includes(r));
+}
+
+/** Throws "Access denied: ..." (mapped to 403) when a today-only role targets any other day. */
+export function assertTodayOnly(roles: string[], date: Date | string): void {
+    if (!mustBeTodayOnly(roles)) return;
+    if (normalizeDate(date).getTime() !== normalizeDate(new Date()).getTime()) {
+        throw new Error('Access denied: a Dean of Discipline can only record or change attendance for the current day.');
+    }
+}
+
+/** Same rule for an existing record addressed by id (edit / remove): its day must be today. */
+export async function assertRecordEditableToday(id: number, roles: string[]): Promise<void> {
+    if (!mustBeTodayOnly(roles)) return;
+    const rec = await prisma.teacherPeriodAttendance.findUnique({ where: { id }, select: { date: true } });
+    if (rec) assertTodayOnly(roles, rec.date);
+}

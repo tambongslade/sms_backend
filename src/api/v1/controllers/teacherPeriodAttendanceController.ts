@@ -27,6 +27,8 @@ function parseDate(input: any): Date | null {
     return Number.isNaN(d.getTime()) ? null : d;
 }
 
+const rolesOf = (req: Request): string[] => ((req.user?.role as any) || []) as string[];
+
 async function getRestriction(req: Request, academicYearId?: number): Promise<number[] | null> {
     const user = req.user!;
     const roles: string[] = (user.role as any) || [];
@@ -84,6 +86,7 @@ export const upsert = async (req: Request, res: Response): Promise<any> => {
 
         const date = parseDate(req.body.date);
         if (!date) return res.status(400).json({ success: false, error: 'Valid date is required' });
+        svc.assertTodayOnly(rolesOf(req), date);
 
         const rawEntries: any[] = Array.isArray(req.body.entries) ? req.body.entries : [];
         if (rawEntries.length === 0) {
@@ -158,6 +161,7 @@ export const update = async (req: Request, res: Response): Promise<any> => {
             statusVal = st as TeacherPeriodAttendanceStatus;
         }
 
+        await svc.assertRecordEditableToday(id, rolesOf(req));
         const restriction = await getRestriction(req);
 
         const data = await svc.updateAttendance(
@@ -193,6 +197,7 @@ export const remove = async (req: Request, res: Response): Promise<any> => {
         const id = parseInt(req.params.id, 10);
         if (Number.isNaN(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
 
+        await svc.assertRecordEditableToday(id, rolesOf(req));
         const restriction = await getRestriction(req);
         await svc.deleteAttendance(id, { restrict_to_sub_class_ids: restriction ?? undefined });
         return res.json({ success: true });
@@ -272,6 +277,7 @@ export const markAllPresent = async (req: Request, res: Response): Promise<any> 
 
         const date = parseDate(req.body?.date);
         if (!date) return res.status(400).json({ success: false, error: 'Valid date is required (YYYY-MM-DD)' });
+        svc.assertTodayOnly(rolesOf(req), date);
 
         const rawIds = req.body?.sub_class_ids;
         if (rawIds !== undefined && (!Array.isArray(rawIds) || !rawIds.every((n: any) => Number.isInteger(n)))) {
