@@ -206,3 +206,24 @@ export const remove = async (req: Request, res: Response): Promise<any> => {
         return res.status(status).json({ success: false, error: err.message });
     }
 };
+
+// GET /discipline-master/teacher-attendance/overview?weekStart=YYYY-MM-DD[&academicYearId=]
+// Read-only weekly grid (teachers x days) built from what the DMs have recorded.
+export const weekOverview = async (req: Request, res: Response): Promise<any> => {
+    try {
+        if (!req.user) return res.status(401).json({ success: false, error: 'Unauthenticated' });
+
+        const q = (req.finalQuery ?? req.query) as any;
+        const weekStart = parseDate(q.week_start ?? q.weekStart) ?? new Date();
+        const academicYearId = q.academic_year_id ? parseInt(q.academic_year_id, 10) : undefined;
+
+        const data = await svc.getWeekOverview({
+            week_start: weekStart,
+            academic_year_id: Number.isFinite(academicYearId as number) ? (academicYearId as number) : undefined,
+        });
+        return res.json({ success: true, data });
+    } catch (err: any) {
+        console.error('Error building teacher-attendance week overview:', err);
+        return res.status(400).json({ success: false, error: err.message });
+    }
+};

@@ -132,6 +132,12 @@ router.post('/teacher-attendance',
     authorize(TEACHER_ATTENDANCE_ROLES),
     teacherPeriodAttendanceController.upsert
 );
+// Weekly overview for the Dean of Discipline (Manager / Super Manager pass authorize() as usual).
+// Registered before '/:id' so 'overview' is not parsed as an attendance id.
+router.get('/teacher-attendance/overview',
+    authorize(['DEAN_OF_DISCIPLINE']),
+    teacherPeriodAttendanceController.weekOverview
+);
 router.get('/teacher-attendance/:id',
     authorize(TEACHER_ATTENDANCE_ROLES),
     teacherPeriodAttendanceController.getById
