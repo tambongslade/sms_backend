@@ -12,6 +12,7 @@ import prisma, {
     DayOfWeek,
 } from '../../../config/db';
 import { getAcademicYearId } from '../../../utils/academicYear';
+import { getFullSchoolTimetable } from './timetableService';
 
 const DAY_INDEX_TO_ENUM: DayOfWeek[] = [
     'SUNDAY' as DayOfWeek,
@@ -324,11 +325,15 @@ export async function getDmSubClassRestriction(
 }
 
 /**
- * Weekly teacher-attendance overview: one row per teacher, one cell per day,
- * each cell listing that teacher's timetable periods for the day with the
- * status the discipline masters recorded (null = not recorded yet).
- * Read-only -- it derives everything from TeacherPeriod + TeacherPeriodAttendance,
- * so a record saved by a DM shows up here on the next fetch with no extra step.
+ * Weekly teacher-attendance overview, shaped like the school-wide timetable:
+ * the full-school timetable (bell-schedule groups, sub-class columns, the
+ * teacher+subject in every slot -- exactly what /timetables/full-school
+ * returns) plus the attendance the discipline masters recorded for that week.
+ * Slot ids are TeacherPeriod ids, so the client joins
+ * attendance[].teacher_period_id + date onto slot.id + the day column.
+ * Read-only: nothing is stored here, a record a DM saves shows up on the next
+ * fetch. (/timetables/full-school itself is not open to the Dean of Discipline,
+ * hence this endpoint.)
  */
 export async function getWeekOverview(opts: {
     week_start: Date | string;
@@ -341,97 +346,32 @@ export async function getWeekOverview(opts: {
     const anchor = normalizeDate(opts.week_start);
     const back = (anchor.getUTCDay() + 6) % 7; // Mon=0 ... Sun=6
     const weekStart = new Date(anchor.getTime() - back * 86400000);
-    const dayList = Array.from({ length: 7 }, (_, i) => {
+    const days = Array.from({ length: 7 }, (_, i) => {
         const date = new Date(weekStart.getTime() + i * 86400000);
-        return { date, iso: date.toISOString().slice(0, 10), day_of_week: dayOfWeekFromDate(date) };
+        return { date: date.toISOString().slice(0, 10), day_of_week: dayOfWeekFromDate(date) };
     });
-    const weekEnd = dayList[6].date;
+    const weekEnd = new Date(weekStart.getTime() + 6 * 86400000);
 
-    const teacherPeriods = await prisma.teacherPeriod.findMany({
-        where: { academic_year_id: yearId, teacher_id: { not: null } },
-        include: {
-            period: true,
-            subject: { select: { id: true, name: true } },
-            sub_class: { select: { id: true, name: true, class: { select: { id: true, name: true } } } },
-            teacher: { select: { id: true, name: true, matricule: true } },
-        },
-    });
-
-    const attendances = teacherPeriods.length
-        ? await prisma.teacherPeriodAttendance.findMany({
-              where: {
-                  academic_year_id: yearId,
-                  date: { gte: weekStart, lte: weekEnd },
-                  teacher_period_id: { in: teacherPeriods.map((tp) => tp.id) },
-              },
-              include: { recorded_by: { select: { id: true, name: true } } },
-          })
-        : [];
-    // key = "<teacher_period_id>|<yyyy-mm-dd>"
-    const attendanceByKey = new Map(
-        attendances.map((a) => [`${a.teacher_period_id}|${a.date.toISOString().slice(0, 10)}`, a])
-    );
-
-    const todayIso = new Date().toISOString().slice(0, 10);
-    const teachers = new Map<
-        number,
-        { id: number; name: string; matricule: string | null; days: Record<string, any[]>; totals: Record<string, number> }
-    >();
-
-    for (const tp of teacherPeriods) {
-        const teacher = tp.teacher!;
-        let row = teachers.get(teacher.id);
-        if (!row) {
-            row = {
-                id: teacher.id,
-                name: teacher.name,
-                matricule: teacher.matricule ?? null,
-                days: Object.fromEntries(dayList.map((d) => [d.iso, [] as any[]])),
-                totals: { present: 0, late: 0, absent: 0, pending: 0, upcoming: 0 },
-            };
-            teachers.set(teacher.id, row);
-        }
-        const day = dayList.find((d) => d.day_of_week === tp.period.day_of_week);
-        if (!day) continue;
-
-        const att = attendanceByKey.get(`${tp.id}|${day.iso}`) ?? null;
-        row.days[day.iso].push({
-            teacher_period_id: tp.id,
-            period: {
-                id: tp.period.id,
-                name: tp.period.name,
-                start_time: tp.period.start_time,
-                end_time: tp.period.end_time,
-                sequence: tp.period.sequence,
-            },
-            subject: tp.subject,
-            sub_class: tp.sub_class,
-            status: att ? att.status : null,
-            reason: att?.reason ?? null,
-            recorded_by: att?.recorded_by ?? null,
-        });
-
-        if (att) row.totals[att.status.toLowerCase()] += 1;
-        else if (day.iso > todayIso) row.totals.upcoming += 1;
-        else row.totals.pending += 1;
-    }
-
-    for (const row of teachers.values()) {
-        for (const iso of Object.keys(row.days)) {
-            row.days[iso].sort((a, b) => a.period.start_time.localeCompare(b.period.start_time));
-        }
-    }
-
-    // Sunday only appears when someone actually teaches on it.
-    const hasSunday = [...teachers.values()].some((r) => r.days[dayList[6].iso].length > 0);
-    const shownDays = hasSunday ? dayList : dayList.slice(0, 6);
+    const [timetable, attendances] = await Promise.all([
+        getFullSchoolTimetable(yearId),
+        prisma.teacherPeriodAttendance.findMany({
+            where: { academic_year_id: yearId, date: { gte: weekStart, lte: weekEnd } },
+            include: { recorded_by: { select: { id: true, name: true } } },
+        }),
+    ]);
 
     return {
-        academic_year_id: yearId,
-        week_start: dayList[0].iso,
-        week_end: shownDays[shownDays.length - 1].iso,
-        today: todayIso,
-        days: shownDays.map((d) => ({ date: d.iso, day_of_week: d.day_of_week })),
-        teachers: [...teachers.values()].sort((a, b) => a.name.localeCompare(b.name)),
+        ...timetable,
+        week_start: days[0].date,
+        week_end: days[6].date,
+        today: new Date().toISOString().slice(0, 10),
+        days,
+        attendance: attendances.map((a) => ({
+            teacher_period_id: a.teacher_period_id,
+            date: a.date.toISOString().slice(0, 10),
+            status: a.status,
+            reason: a.reason,
+            recorded_by: a.recorded_by,
+        })),
     };
 }
