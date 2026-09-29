@@ -138,6 +138,16 @@ router.get('/teacher-attendance/overview',
     authorize(['DEAN_OF_DISCIPLINE']),
     teacherPeriodAttendanceController.weekOverview
 );
+// Which sub-classes each Dean of Discipline is responsible for (drives their "My classes" table).
+// Managed by Manager / Super Manager (they pass authorize() automatically) and the roles below.
+router.get('/teacher-attendance/deans',
+    authorize(['PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_COORDINATOR']),
+    teacherPeriodAttendanceController.listDeans
+);
+router.put('/teacher-attendance/deans/:userId/sub-classes',
+    authorize(['PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_COORDINATOR']),
+    teacherPeriodAttendanceController.setDeanClasses
+);
 router.get('/teacher-attendance/:id',
     authorize(TEACHER_ATTENDANCE_ROLES),
     teacherPeriodAttendanceController.getById

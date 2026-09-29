@@ -220,10 +220,46 @@ export const weekOverview = async (req: Request, res: Response): Promise<any> =>
         const data = await svc.getWeekOverview({
             week_start: weekStart,
             academic_year_id: Number.isFinite(academicYearId as number) ? (academicYearId as number) : undefined,
+            viewer_id: req.user.id,
         });
         return res.json({ success: true, data });
     } catch (err: any) {
         console.error('Error building teacher-attendance week overview:', err);
         return res.status(400).json({ success: false, error: err.message });
+    }
+};
+
+// GET /discipline-master/teacher-attendance/deans[?academicYearId=]
+// Deans of Discipline with the sub-classes assigned to each (for the assignment screen).
+export const listDeans = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const q = (req.finalQuery ?? req.query) as any;
+        const academicYearId = q.academic_year_id ? parseInt(q.academic_year_id, 10) : undefined;
+        const data = await svc.listDeansWithAssignments(
+            Number.isFinite(academicYearId as number) ? (academicYearId as number) : undefined
+        );
+        return res.json({ success: true, data });
+    } catch (err: any) {
+        console.error('Error listing deans of discipline:', err);
+        return res.status(400).json({ success: false, error: err.message });
+    }
+};
+
+// PUT /discipline-master/teacher-attendance/deans/:userId/sub-classes
+// Body: { sub_class_ids: number[], academic_year_id?: number } -- replaces the dean's set.
+export const setDeanClasses = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const userId = parseInt(req.params.userId, 10);
+        const { sub_class_ids, academic_year_id } = req.body || {};
+        if (!Number.isFinite(userId)) return res.status(400).json({ success: false, error: 'Invalid user id' });
+        if (!Array.isArray(sub_class_ids) || !sub_class_ids.every((n: any) => Number.isInteger(n))) {
+            return res.status(400).json({ success: false, error: 'sub_class_ids must be an array of integers' });
+        }
+        const data = await svc.setDeanSubClasses(userId, sub_class_ids, academic_year_id);
+        return res.json({ success: true, data });
+    } catch (err: any) {
+        console.error('Error setting dean of discipline classes:', err);
+        const status = /not found|does not have/i.test(err.message) ? 404 : 400;
+        return res.status(status).json({ success: false, error: err.message });
     }
 };

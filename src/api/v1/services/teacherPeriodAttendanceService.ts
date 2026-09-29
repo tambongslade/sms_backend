@@ -338,6 +338,7 @@ export async function getDmSubClassRestriction(
 export async function getWeekOverview(opts: {
     week_start: Date | string;
     academic_year_id?: number;
+    viewer_id?: number;
 }) {
     const yearId = opts.academic_year_id ?? (await getAcademicYearId());
     if (!yearId) throw new Error('No current academic year is set');
@@ -352,16 +353,19 @@ export async function getWeekOverview(opts: {
     });
     const weekEnd = new Date(weekStart.getTime() + 6 * 86400000);
 
-    const [timetable, attendances] = await Promise.all([
+    const [timetable, attendances, mine] = await Promise.all([
         getFullSchoolTimetable(yearId),
         prisma.teacherPeriodAttendance.findMany({
             where: { academic_year_id: yearId, date: { gte: weekStart, lte: weekEnd } },
             include: { recorded_by: { select: { id: true, name: true } } },
         }),
+        // The viewer's own classes, when they are a Dean of Discipline with assignments.
+        opts.viewer_id ? getDeanSubClassIds(opts.viewer_id, yearId) : Promise.resolve([] as number[]),
     ]);
 
     return {
         ...timetable,
+        my_sub_class_ids: mine,
         week_start: days[0].date,
         week_end: days[6].date,
         today: new Date().toISOString().slice(0, 10),
@@ -374,4 +378,90 @@ export async function getWeekOverview(opts: {
             recorded_by: a.recorded_by,
         })),
     };
+}
+
+// ---- Dean of Discipline class assignments -----------------------------------
+// Stored in RoleAssignment (role_type DEAN_OF_DISCIPLINE + sub_class_id + year),
+// the same table DM assignments use, so no schema change.
+
+/** Sub-class ids assigned to a Dean of Discipline for the year. */
+export async function getDeanSubClassIds(userId: number, yearId: number): Promise<number[]> {
+    const rows = await prisma.roleAssignment.findMany({
+        where: {
+            user_id: userId,
+            role_type: 'DEAN_OF_DISCIPLINE',
+            academic_year_id: yearId,
+            sub_class_id: { not: null },
+        },
+        select: { sub_class_id: true },
+    });
+    return rows.map((r) => r.sub_class_id as number);
+}
+
+/** Every user holding the DEAN_OF_DISCIPLINE role, with their assigned sub-classes. */
+export async function listDeansWithAssignments(academicYearId?: number) {
+    const yearId = academicYearId ?? (await getAcademicYearId());
+    if (!yearId) throw new Error('No current academic year is set');
+
+    const deans = await prisma.user.findMany({
+        where: { user_roles: { some: { role: 'DEAN_OF_DISCIPLINE' } } },
+        select: { id: true, name: true, matricule: true },
+        orderBy: { name: 'asc' },
+    });
+    const assignments = await prisma.roleAssignment.findMany({
+        where: {
+            role_type: 'DEAN_OF_DISCIPLINE',
+            academic_year_id: yearId,
+            sub_class_id: { not: null },
+            user_id: { in: deans.map((d) => d.id) },
+        },
+        select: { user_id: true, sub_class_id: true },
+    });
+    return {
+        academic_year_id: yearId,
+        deans: deans.map((d) => ({
+            ...d,
+            sub_class_ids: assignments.filter((a) => a.user_id === d.id).map((a) => a.sub_class_id as number),
+        })),
+    };
+}
+
+/**
+ * Replace a Dean of Discipline's assigned sub-classes for the year with exactly
+ * the given set (idempotent; an empty list clears them).
+ */
+export async function setDeanSubClasses(userId: number, subClassIds: number[], academicYearId?: number) {
+    const yearId = academicYearId ?? (await getAcademicYearId());
+    if (!yearId) throw new Error('No current academic year is set');
+
+    const dean = await prisma.user.findFirst({
+        where: { id: userId, user_roles: { some: { role: 'DEAN_OF_DISCIPLINE' } } },
+        select: { id: true },
+    });
+    if (!dean) throw new Error(`User ${userId} not found or does not have the DEAN_OF_DISCIPLINE role.`);
+
+    const wanted = Array.from(new Set(subClassIds));
+    if (wanted.length) {
+        const found = await prisma.subClass.count({ where: { id: { in: wanted } } });
+        if (found !== wanted.length) throw new Error('One or more sub-classes were not found.');
+    }
+
+    await prisma.$transaction([
+        prisma.roleAssignment.deleteMany({
+            where: { user_id: userId, role_type: 'DEAN_OF_DISCIPLINE', academic_year_id: yearId },
+        }),
+        ...(wanted.length
+            ? [
+                  prisma.roleAssignment.createMany({
+                      data: wanted.map((sub_class_id) => ({
+                          user_id: userId,
+                          role_type: 'DEAN_OF_DISCIPLINE' as const,
+                          sub_class_id,
+                          academic_year_id: yearId,
+                      })),
+                  }),
+              ]
+            : []),
+    ]);
+    return { user_id: userId, academic_year_id: yearId, sub_class_ids: wanted };
 }
