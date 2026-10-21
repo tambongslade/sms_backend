@@ -9,6 +9,7 @@ import path from 'path';
 import { convertCamelToSnakeCase, convertSnakeToCamelCase } from './api/v1/middleware/caseConversion.middleware';
 import syncRoutes from './sync/sync-routes';
 import apiV1Routes from './api/v1/routes/index';
+import fileManagementRoutes from './api/v1/routes/fileManagementRoutes';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -35,6 +36,10 @@ app.use(cors({
     allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
 }));
 
+
+// File Management (the LAN file app, proxied for signed-in staff). Mounted BEFORE the body parsers and the case
+// conversion on purpose: it streams uploads and downloads through untouched.
+app.use('/api/v1/file-management', fileManagementRoutes);
 
 // Middleware
 app.use(express.json());

@@ -12682,3 +12682,25 @@ Enrollment counts, class utilization, gender split, students by status.
 - `lastUpdated` is always ISO-8601 UTC — use it for cache-busting or a "refreshed X seconds ago" label.
 - SUPER_MANAGER retains full write access to the underlying modules; these endpoints are additive.
 
+
+
+## File Management (`/file-management`)
+
+Opens the school's LAN file-sharing app (send files to colleagues, shared ARCHIVES) inside the SMS. The backend checks the SMS login, turns the person's role into a file profile, and proxies the file app with a signed identity. Mounted before the JSON body parser and the case conversion, so uploads/downloads stream through untouched (the file app caps uploads at 32 MB).
+
+**Profiles from roles:** SUPER_MANAGER, MANAGER → `management` (all folders). PRINCIPAL, VICE_PRINCIPAL, DEAN_OF_STUDIES, HOD, FEE_AUDITOR, GUIDANCE_COUNSELOR, SECRETARY, CONTROLLER, BURSAR, NURSE → `administration` (everything except MANAGEMENT DOCUMENTS). DISCIPLINE_MASTER, SENIOR_DISCIPLINE_MASTER, DEAN_OF_DISCIPLINE, DISCIPLINE_COORDINATOR → `discipline` (open files + DISCIPLINE). TEACHER → `default` (open files only). PARENT / STUDENT only → no access (403). A person with several roles gets the best profile; an unlisted role gets `default`.
+
+**Environment:** `FILE_APP_SECRET` (shared with the file app's `sms-secret.txt`), `FILE_APP_URL` (default `http://127.0.0.1:8080`; on the VPS, the far end of the reverse tunnel to the school server).
+
+### POST `/file-management/session`
+- **Auth:** Bearer token (any role except parent/student).
+- **Response 200:** `{ "success": true, "data": { "url": "/api/v1/file-management/open?t=<one-minute signed ticket>" } }`
+- **Errors:** 401 (no/invalid token), 403 `{ "success": false, "error": "Your account does not have access to File Management." }`, 503 when `FILE_APP_SECRET` is not configured.
+
+### GET `/file-management/open?t=<ticket>`
+- **Auth:** the ticket from `/session` (an iframe cannot send an Authorization header).
+- Sets an HttpOnly, SameSite=Lax session cookie (`fm_session`, 8 hours, `Path=/api/v1/file-management`) and redirects (302) to `/api/v1/file-management/app/?embed=1`. An expired/invalid ticket returns 401.
+
+### ANY `/file-management/app/*`
+- **Auth:** the `fm_session` cookie. Without a valid cookie: 401 (HTML message).
+- Proxied to the file app; the request carries `X-SMS-Identity` / `X-SMS-Signature` (HMAC-SHA256 with `FILE_APP_SECRET`), and any such headers sent by the browser are discarded. File app down: 502 (HTML message).
