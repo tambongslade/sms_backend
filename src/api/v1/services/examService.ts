@@ -1891,14 +1891,17 @@ export async function getMarkSubmissionTracking(examSequenceId: number) {
     // subject this year. SubjectTeacher is school-wide, so it would list every teacher of the
     // subject in every class.
     const periods = await prisma.teacherPeriod.findMany({
-        where: { academic_year_id: sequence.academic_year_id, teacher_id: { not: null } },
+        where: { academic_year_id: sequence.academic_year_id },
         select: { sub_class_id: true, subject_id: true, teacher: { select: { id: true, name: true } } },
     });
 
+    // A subject that is not on a subclass's timetable is not counted for that subclass.
+    const timetabled = new Set<string>();
     const teacherMap = new Map<string, Map<number, { id: number; name: string }>>();
     for (const p of periods) {
-        if (!p.teacher) continue;
         const key = `${p.sub_class_id}:${p.subject_id}`;
+        timetabled.add(key);
+        if (!p.teacher) continue;
         if (!teacherMap.has(key)) teacherMap.set(key, new Map());
         teacherMap.get(key)!.set(p.teacher.id, p.teacher);
     }
@@ -1911,7 +1914,7 @@ export async function getMarkSubmissionTracking(examSequenceId: number) {
         const studentCount = sc.enrollments.length;
         const enrollmentIds = new Set(sc.enrollments.map(e => e.id));
 
-        const subjects = sc.sub_class_subjects.map(scs => {
+        const subjects = sc.sub_class_subjects.filter(scs => timetabled.has(`${sc.id}:${scs.subject_id}`)).map(scs => {
             const subjectMarks = marksBySubjectMap.get(scs.id) || [];
             const submittedCount = subjectMarks.filter(m => enrollmentIds.has(m.enrollment_id)).length;
             const assignedTeachers = Array.from(teacherMap.get(`${sc.id}:${scs.subject_id}`)?.values() ?? []);
