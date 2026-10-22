@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { SyncManager } from './sync-manager';
 import { DatabaseSyncer } from './database-syncer';
 import prisma from '../config/db';
+import { getLocalTableStats } from './sync-overview';
 
 const router = Router();
 const syncManager = new SyncManager();
@@ -166,6 +167,15 @@ router.get('/sync/changes/:tableName', requireSyncAuth, async (req: Request, res
       success: false,
       error: error.message
     });
+  }
+});
+
+// Row count and newest change per synced table, for the peer's Sync Status page.
+router.get('/sync/stats', requireSyncAuth, async (_req: Request, res: Response) => {
+  try {
+    res.json({ server_id: process.env.SERVER_ID || 'local', stats: await getLocalTableStats() });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

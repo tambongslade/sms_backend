@@ -14,6 +14,7 @@ import unifiedPaymentRoutes from './unifiedPaymentRoutes';
 import subjectRoutes from './subjectRoutes';
 import disciplineRoutes from './disciplineRoutes';
 import examRoutes, { marksRouter, reportCardsRouter } from './examRoutes';
+import syncOverviewRoutes from './syncOverviewRoutes';
 import communicationRoutes from './communicationRoutes';
 import mobileRoutes from './mobileRoutes';
 import fileRoutes from './fileRoutes';
@@ -65,6 +66,7 @@ import attendanceRoutes from './attendanceRoutes';
 
 // Mount routes with the appropriate base paths
 router.use('/ai', aiRoutes);
+router.use('/sync-overview', syncOverviewRoutes);
 router.use('/auth', authRoutes);
 router.use('/academic-years', academicYearRoutes);
 router.use('/users', userRoutes);
