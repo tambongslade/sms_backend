@@ -3,6 +3,7 @@
 import prisma, { DayOfWeek } from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
 import * as academicYearService from './academicYearService';
+import * as subjectService from './subjectService';
 import * as XLSX from 'xlsx';
 import ejs from 'ejs';
 import fs from 'fs';
@@ -488,6 +489,9 @@ export async function bulkUpdateTimetable(
                 });
                 result.created++;
             }
+
+            // Marks are keyed by SubClassSubject; keep it in step with the timetable.
+            await subjectService.ensureSubClassSubjectLink(subclassId, parsedSubjectId);
         } catch (error: any) {
             console.error(`Error processing slot for period ${parsedPeriodId}:`, error);
             result.errors.push({ periodId: parsedPeriodId, error: error.message });

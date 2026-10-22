@@ -813,4 +813,57 @@
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 
+/**
+ * @swagger
+ * /exams/marksheet/pdf:
+ *   get:
+ *     summary: Download a mark sheet PDF (one subject, one subclass, sequences 1–6)
+ *     description: |
+ *       Rows are enrolled students (name, sex); columns are the 1st to 6th sequence.
+ *       Recorded marks are filled in unless blank=true. Teachers may only print a subject
+ *       they teach in the subclass; SUPER_MANAGER, MANAGER, PRINCIPAL, VICE_PRINCIPAL,
+ *       DEAN_OF_STUDIES, HOD, SECRETARY and BURSAR may print any.
+ *     tags: [Marks]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: subClassId
+ *         required: true
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: subjectId
+ *         required: true
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: academicYearId
+ *         schema: { type: integer }
+ *         description: Defaults to the current academic year
+ *       - in: query
+ *         name: blank
+ *         schema: { type: boolean, default: false }
+ *         description: Leave the sequence columns empty for filling in by hand
+ *     responses:
+ *       200:
+ *         description: PDF file
+ *         content:
+ *           application/pdf:
+ *             schema: { type: string, format: binary }
+ *       400:
+ *         description: subClassId / subjectId missing or invalid
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ *       403:
+ *         description: Teacher not assigned to this subject in this subclass
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ *       404:
+ *         description: Subject is not assigned to this subclass
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ErrorResponse' }
+ */
+
 export { }; 

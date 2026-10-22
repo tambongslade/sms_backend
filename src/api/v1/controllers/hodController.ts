@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import * as hodService from '../services/hodService';
+import * as hodDepartmentStatus from '../services/hodDepartmentStatusService';
 
 /**
  * Get HOD dashboard overview
@@ -339,3 +340,31 @@ export const getMySubjects = async (req: Request, res: Response): Promise<void> 
         });
     }
 }; 
+/**
+ * Department status for the HOD's Period Tracking / Curriculum / Performance
+ * pages: teacher load + logbook activity, scheme-of-work coverage and
+ * marks-entry status, scoped to the subjects the HOD heads.
+ * GET /api/v1/hod/department-status[?academicYearId=&hodId=]
+ * (hodId is honoured for SUPER_MANAGER / PRINCIPAL viewing a given HOD.)
+ */
+export const getDepartmentStatus = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const q: any = (req as any).finalQuery ?? req.query;
+        const callerRoles: string[] = (req.user?.role as unknown as string[]) ?? [];
+        let hodId = req.user?.id;
+        if (q.hod_id && callerRoles.some((r) => ['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_STUDIES'].includes(r))) {
+            const n = parseInt(q.hod_id as string);
+            if (!isNaN(n)) hodId = n;
+        }
+        if (!hodId) {
+            res.status(401).json({ success: false, error: 'User not authenticated' });
+            return;
+        }
+        const academicYearId = q.academic_year_id ? parseInt(q.academic_year_id as string) : undefined;
+        const data = await hodDepartmentStatus.getDepartmentStatus(hodId, academicYearId);
+        res.status(200).json({ success: true, data });
+    } catch (error: any) {
+        console.error('Error getting HOD department status:', error);
+        res.status(500).json({ success: false, error: 'Failed to retrieve department status' });
+    }
+};

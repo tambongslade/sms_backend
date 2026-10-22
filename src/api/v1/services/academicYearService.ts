@@ -5,8 +5,14 @@ import { getCurrentAcademicYear } from '../../../utils/academicYear';
 export async function getAllAcademicYears(): Promise<AcademicYear[]> {
     return prisma.academicYear.findMany({
         include: {
-            terms: true,
-            exam_sequences: true,
+            terms: {
+                include: {
+                    term_classes: { select: { class_id: true } }
+                },
+                // Teaching order everywhere: First, Second, Third term
+                orderBy: [{ start_date: 'asc' }, { id: 'asc' }]
+            },
+            exam_sequences: { orderBy: { sequence_number: 'asc' } },
             _count: {
                 select: {
                     enrollments: true
@@ -25,12 +31,21 @@ export async function createAcademicYear(data: {
         start_date?: string;
         end_date?: string;
         fee_deadline?: string;
+        is_holiday?: boolean;
+        class_ids?: number[];
     }[]
 }): Promise<AcademicYear> {
     const { terms, ...academicYearData } = data;
 
     // Create default terms if none provided
-    const termsToCreate = terms && terms.length > 0 ? terms : [
+    const termsToCreate: {
+        name: string;
+        start_date?: string;
+        end_date?: string;
+        fee_deadline?: string;
+        is_holiday?: boolean;
+        class_ids?: number[];
+    }[] = terms && terms.length > 0 ? terms : [
         { name: 'Term 1' },
         { name: 'Term 2' },
         { name: 'Term 3' }
@@ -46,12 +61,21 @@ export async function createAcademicYear(data: {
                     name: term.name,
                     start_date: term.start_date ? new Date(term.start_date) : null,
                     end_date: term.end_date ? new Date(term.end_date) : null,
-                    fee_deadline: term.fee_deadline ? new Date(term.fee_deadline) : null
+                    fee_deadline: term.fee_deadline ? new Date(term.fee_deadline) : null,
+                    is_holiday: term.is_holiday ?? false,
+                    term_classes: term.class_ids && term.class_ids.length > 0
+                        ? { create: term.class_ids.map(class_id => ({ class_id })) }
+                        : undefined
                 }))
             }
         },
         include: {
-            terms: true
+            terms: {
+                include: {
+                    term_classes: { select: { class_id: true } }
+                },
+                orderBy: [{ start_date: 'asc' }, { id: 'asc' }]
+            }
         }
     });
 }
@@ -60,7 +84,12 @@ export async function getAcademicYearById(id: number): Promise<AcademicYear | nu
     return prisma.academicYear.findUnique({
         where: { id },
         include: {
-            terms: true
+            terms: {
+                include: {
+                    term_classes: { select: { class_id: true } }
+                },
+                orderBy: [{ start_date: 'asc' }, { id: 'asc' }]
+            }
         }
     });
 }
@@ -80,7 +109,12 @@ export async function updateAcademicYear(
             end_date: data.end_date ? new Date(data.end_date) : undefined,
         },
         include: {
-            terms: true
+            terms: {
+                include: {
+                    term_classes: { select: { class_id: true } }
+                },
+                orderBy: [{ start_date: 'asc' }, { id: 'asc' }]
+            }
         }
     });
 }
@@ -159,7 +193,14 @@ export async function deleteAcademicYear(id: number): Promise<AcademicYear> {
 
 export async function addTermToYear(
     academicYearId: number,
-    data: { name: string; start_date: Date; end_date: Date; fee_deadline?: Date }
+    data: {
+        name: string;
+        start_date: Date;
+        end_date: Date;
+        fee_deadline?: Date;
+        is_holiday?: boolean;
+        class_ids?: number[];
+    }
 ): Promise<Term> {
     return prisma.term.create({
         data: {
@@ -167,7 +208,14 @@ export async function addTermToYear(
             start_date: data.start_date,
             end_date: data.end_date,
             fee_deadline: data.fee_deadline || null,
-            academic_year_id: academicYearId
+            is_holiday: data.is_holiday ?? false,
+            academic_year_id: academicYearId,
+            term_classes: data.class_ids && data.class_ids.length > 0
+                ? { create: data.class_ids.map(class_id => ({ class_id })) }
+                : undefined
+        },
+        include: {
+            term_classes: { select: { class_id: true } }
         }
     });
 }
@@ -178,11 +226,10 @@ export async function getTermsByAcademicYearId(academicYearId: number): Promise<
             academic_year_id: academicYearId
         },
         include: {
-            exam_sequences: true
+            exam_sequences: { orderBy: { sequence_number: 'asc' } },
+            term_classes: { select: { class_id: true } }
         },
-        orderBy: {
-            start_date: 'asc'
-        }
+        orderBy: [{ start_date: 'asc' }, { id: 'asc' }]
     });
 }
 
@@ -201,19 +248,24 @@ export async function setCurrentAcademicYear(id: number): Promise<AcademicYear> 
             is_current: true
         },
         include: {
-            terms: true
+            terms: {
+                include: {
+                    term_classes: { select: { class_id: true } }
+                },
+                orderBy: [{ start_date: 'asc' }, { id: 'asc' }]
+            }
         }
     });
 }
 
 /**
  * Get academic years available for a specific user's role
- * Global roles (SUPER_MANAGER) get access to all academic years
+ * Global roles (SUPER_MANAGER, MANAGER) get access to all academic years
  * Year-specific roles get access only to years where THIS USER has that role assigned
  */
 export async function getAcademicYearsForUserRole(userId: number, role: string): Promise<AcademicYear[]> {
     // Global roles have access to all academic years
-    const globalRoles = ['SUPER_MANAGER'];
+    const globalRoles = ['SUPER_MANAGER', 'MANAGER'];
 
     if (globalRoles.includes(role)) {
         return getAllAcademicYears();
@@ -251,8 +303,14 @@ export async function getAcademicYearsForUserRole(userId: number, role: string):
             }
         },
         include: {
-            terms: true,
-            exam_sequences: true,
+            terms: {
+                include: {
+                    term_classes: { select: { class_id: true } }
+                },
+                // Teaching order everywhere: First, Second, Third term
+                orderBy: [{ start_date: 'asc' }, { id: 'asc' }]
+            },
+            exam_sequences: { orderBy: { sequence_number: 'asc' } },
             _count: {
                 select: {
                     enrollments: true

@@ -1,5 +1,6 @@
 // src/api/v1/services/controlFeeService.ts
 import prisma, { ControlSchoolFees, ControlPaymentTransaction, PaymentMethod } from '../../../config/db';
+import { normalizePaymentMethod } from '../../../utils/paymentMethod';
 import { getAcademicYearId, getStudentSubclassByStudentAndYear } from '../../../utils/academicYear';
 import { shouldPayNewStudentFees, getStudentStatus, StudentStatus } from '../../../utils/studentStatus';
 import { paginate, PaginationOptions, FilterOptions, PaginatedResult } from '../../../utils/pagination';
@@ -738,17 +739,6 @@ export async function getSubclassControlFeesSummary(sub_classId: number, academi
     };
 }
 
-/**
- * Normalizes payment method string to an enum value
- */
-function normalizePaymentMethod(method: string): 'EXPRESS_UNION' | 'CCA' | 'F3DC' | 'AFRILAND_FIRST_BANK' {
-    const upperMethod = method.toUpperCase();
-    if (Object.values(PaymentMethod).includes(upperMethod as PaymentMethod)) {
-        return upperMethod as 'EXPRESS_UNION' | 'CCA' | 'F3DC' | 'AFRILAND_FIRST_BANK';
-    }
-    // Default to a known method or throw an error if the method is invalid
-    throw new Error(`Invalid payment method: ${method}`);
-}
 
 // Four-eyes audit: the Controller only records payments. They never enter expected
 // amounts or due dates — the parent ControlSchoolFees row is auto-created as a

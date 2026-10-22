@@ -14,6 +14,7 @@ import { getStudentStatus, getStudentsWithStatus } from '../../../utils/studentS
 import { getAcademicYearId } from '../../../utils/academicYear'; // Import academic year utilities
 import upload, { PhotoType, getFileUrl, deletePhotoFile, isValidPhotoFilename } from '../../../utils/fileUpload';
 import { saveFileMetadata } from '../services/fileService';
+import * as classListDocx from '../services/classListDocxService';
 
 // Define an interface for ParentStudent with the parent relation included
 interface ParentStudentWithParent extends ParentStudent {
@@ -36,7 +37,10 @@ export const getAllStudents = async (req: Request, res: Response) => {
 
 
         // Extract enrollmentStatus separately
-        const enrollment_status_input = req.finalQuery.status as string | undefined; // e.g., 'enrolled', 'not_enrolled', 'all'
+        // The frontend sends `enrollmentStatus` (-> enrollment_status after case conversion);
+        // `status` is the legacy name. Accept both -- reading only `status` meant the
+        // Enrolled / Not-enrolled filter on the Students page was silently ignored.
+        const enrollment_status_input = (req.finalQuery.enrollment_status ?? req.finalQuery.status) as string | undefined; // e.g., 'enrolled', 'not_enrolled', 'all'
         let valid_enrollment_status: 'enrolled' | 'not_enrolled' | 'all' | undefined = 'all';
 
         if (enrollment_status_input) {
@@ -68,6 +72,12 @@ export const getAllStudents = async (req: Request, res: Response) => {
         // Defaults to excluding withdrawn (soft-deleted) students from ordinary listings.
         const includeWithdrawn = req.finalQuery.include_withdrawn === 'true' || req.finalQuery.include_withdrawn === true;
 
+        // ?search= : server-side, case-insensitive match on name OR matricule across ALL
+        // students (combined with the other filters, then paginated) -- the Students page
+        // used to filter only the 10 rows of the current page client-side.
+        const searchRaw = req.finalQuery.search ?? req.finalQuery.q;
+        const search = typeof searchRaw === 'string' ? searchRaw.trim() : undefined;
+
         // Call the service function that handles enrollment-based filtering
         const result = await studentService.getAllStudentsWithCurrentEnrollment(
             academic_year_id,
@@ -75,7 +85,8 @@ export const getAllStudents = async (req: Request, res: Response) => {
             filterOptions, // Pass the filters extracted (including sub_class_id)
             valid_enrollment_status, // Pass the validated enrollment status filter
             (req as any).teacherSubClassIds, // Pass teacher's accessible subclass IDs if present
-            includeWithdrawn
+            includeWithdrawn,
+            search || undefined
         );
 
         res.json({
@@ -938,6 +949,15 @@ export const exportStudentsBySubclass = async (req: Request, res: Response): Pro
             ? parseInt(req.finalQuery.academic_year_id as string)
             : undefined;
 
+        // ?format=docx -> a real Word document (this endpoint used to ignore
+        // the format and always send Excel, saved by the browser as .docx).
+        if (String(req.finalQuery.format ?? '').toLowerCase() === 'docx') {
+            const doc = await classListDocx.exportSubclassStudentListDocx(subclassId, academicYearId);
+            res.setHeader('Content-Type', classListDocx.DOCX_CONTENT_TYPE);
+            res.setHeader('Content-Disposition', `attachment; filename="${doc.filename}"`);
+            return res.send(doc.buffer);
+        }
+
         const { buffer, filename } = await studentService.exportSubclassStudentListExcel(
             subclassId,
             academicYearId
@@ -1033,6 +1053,13 @@ export const exportStudentsByClass = async (req: Request, res: Response): Promis
         const academicYearId = req.finalQuery.academic_year_id
             ? parseInt(req.finalQuery.academic_year_id as string)
             : undefined;
+
+        if (String(req.finalQuery.format ?? '').toLowerCase() === 'docx') {
+            const doc = await classListDocx.exportClassStudentListDocx(classId, academicYearId);
+            res.setHeader('Content-Type', classListDocx.DOCX_CONTENT_TYPE);
+            res.setHeader('Content-Disposition', `attachment; filename="${doc.filename}"`);
+            return res.send(doc.buffer);
+        }
 
         const { buffer, filename } = await studentService.exportClassStudentListExcel(
             classId,
@@ -1132,9 +1159,9 @@ export const unenrollStudent = async (req: Request, res: Response): Promise<any>
             case 'ACADEMIC_YEAR_NOT_FOUND':
                 return res.status(400).json({ success: false, error: 'No academic year specified and no current academic year is set' });
             case 'ENROLLMENT_HAS_ACADEMIC_RECORDS':
-                return res.status(409).json({ success: false, error: 'Cannot unenroll: student has marks, attendance or discipline records for this year' });
+                return res.status(409).json({ success: false, error: 'Cannot unenroll: student has marks, attendance or discipline records for this year. Use Transfer out (POST /students/:id/transfer-out) to record the departure and keep the records.', code: 'USE_TRANSFER_OUT' });
             case 'ENROLLMENT_HAS_FINANCIAL_RECORDS':
-                return res.status(409).json({ success: false, error: 'Cannot unenroll: student has payment or refund records for this year' });
+                return res.status(409).json({ success: false, error: 'Cannot unenroll: student has payment or refund records for this year. Use Transfer out (POST /students/:id/transfer-out) to record the departure and keep the records.', code: 'USE_TRANSFER_OUT' });
             default:
                 return res.status(500).json({ success: false, error: error.message });
         }

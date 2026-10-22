@@ -83,7 +83,6 @@ const F3_SUBJECTS = (): SubjectSpec[] => [
     { name: 'French',             category: 'LANGUAGES_AND_LITERATURE', coefficient: 3, teacher: 'Mme. KAMDEM SOPHIE',     mark: 11.5 },
     { name: 'History',            category: 'HUMAN_AND_SOCIAL_SCIENCE', coefficient: 2, teacher: 'Mr. NKENG DAVID',        mark: 13.5 },
     { name: 'Geography',          category: 'HUMAN_AND_SOCIAL_SCIENCE', coefficient: 2, teacher: 'Mrs. AWA GRACE',         mark: 14.0 },
-    { name: 'Civic Education',    category: 'OTHERS',                   coefficient: 1, teacher: 'Mr. NDONG ARMEL',        mark: 15.0 },
     { name: 'Physical Education', category: 'OTHERS',                   coefficient: 1, teacher: 'Mr. MOUSSA OUMAR',       mark: 17.0 },
 ];
 
@@ -96,7 +95,6 @@ const F5_SUBJECTS = (): SubjectSpec[] => [
     { name: 'French',             category: 'LANGUAGES_AND_LITERATURE', coefficient: 3, teacher: 'Mme. KAMDEM SOPHIE',     mark: 10.5 },
     { name: 'History',            category: 'HUMAN_AND_SOCIAL_SCIENCE', coefficient: 2, teacher: 'Mr. NKENG DAVID',        mark: 12.5 },
     { name: 'Geography',          category: 'HUMAN_AND_SOCIAL_SCIENCE', coefficient: 2, teacher: 'Mrs. AWA GRACE',         mark: 11.0 },
-    { name: 'Civic Education',    category: 'OTHERS',                   coefficient: 1, teacher: 'Mr. NDONG ARMEL',        mark: 14.5 },
     { name: 'Physical Education', category: 'OTHERS',                   coefficient: 1, teacher: 'Mr. MOUSSA OUMAR',       mark: 16.0 },
 ];
 

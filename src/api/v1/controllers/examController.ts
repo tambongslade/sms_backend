@@ -12,6 +12,7 @@ import fs from 'fs';
 import { RoleTier, userHasMinTier } from '../../../utils/roleHierarchy';
 import { hasTeacherAccess } from '../services/teacherService';
 import * as markEntryService from '../services/markEntryService';
+import { ResultsError } from '../services/resultsService';
 
 /**
  * Gate: a student's report card cannot be generated/downloaded unless school fees
@@ -246,6 +247,16 @@ export const updateExam = async (req: Request, res: Response): Promise<any> => {
     }
 };
 
+const EXAM_PAPER_ADMIN_ROLES = ['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL'];
+
+/** Teachers manage exam papers only for subjects they teach this year. */
+async function canManageExamPaper(req: Request, subjectId: number): Promise<boolean> {
+    const user = (req as any).user;
+    const roles: string[] = user?.role ?? [];
+    if (roles.some(r => EXAM_PAPER_ADMIN_ROLES.includes(r))) return true;
+    return hasTeacherAccess(user?.id, subjectId);
+}
+
 export const createExamPaper = async (req: Request, res: Response): Promise<any> => {
     try {
         // Validate required fields using snake_case
@@ -256,6 +267,10 @@ export const createExamPaper = async (req: Request, res: Response): Promise<any>
                 success: false,
                 error: 'Name, subject ID, exam date, and duration are required'
             });
+        }
+
+        if (!(await canManageExamPaper(req, parseInt(subject_id)))) {
+            return res.status(403).json({ success: false, error: 'You can only create exam papers for subjects you teach' });
         }
 
         // Use data directly - middleware handles conversion
@@ -716,7 +731,10 @@ export const createMark = async (req: Request, res: Response): Promise<any> => {
         });
     } catch (error: any) {
         console.error('Error creating mark:', error);
-        res.status(500).json({
+        const msg: string = error.message || '';
+        const status = msg.startsWith('Mark must be between') || msg.includes('not found') || msg.includes('not assigned') ? 400
+            : msg.includes('closed') || msg.includes('deadline has passed') ? 403 : 500;
+        res.status(status).json({
             success: false,
             error: error.message
         });
@@ -758,7 +776,10 @@ export const updateMark = async (req: Request, res: Response): Promise<any> => {
         });
     } catch (error: any) {
         console.error('Error updating mark:', error);
-        res.status(500).json({
+        const msg: string = error.message || '';
+        const status = msg.startsWith('Mark must be between') || msg.includes('not found') || msg.includes('not assigned') ? 400
+            : msg.includes('closed') || msg.includes('deadline has passed') ? 403 : 500;
+        res.status(status).json({
             success: false,
             error: error.message
         });
@@ -834,7 +855,9 @@ export const updateExamSequenceStatusController = async (req: Request, res: Resp
 
     } catch (error: any) {
         console.error(`Error updating exam sequence ${req.params.id} status:`, error);
-        if (error.message.includes('not found')) {
+        if (error instanceof ResultsError) {
+            res.status(error.status).json({ success: false, error: error.message });
+        } else if (error.message.includes('not found')) {
             res.status(404).json({ success: false, error: error.message });
         } else {
             res.status(500).json({ success: false, error: error.message || 'Internal server error updating exam sequence status.' });
@@ -901,6 +924,14 @@ export const deleteExamPaper = async (req: Request, res: Response): Promise<any>
             });
         }
 
+        const paper = await prisma.examPaper.findUnique({ where: { id }, select: { subject_id: true } });
+        if (!paper) {
+            return res.status(404).json({ success: false, error: 'Exam paper not found' });
+        }
+        if (!(await canManageExamPaper(req, paper.subject_id))) {
+            return res.status(403).json({ success: false, error: 'You can only delete exam papers for subjects you teach' });
+        }
+
         await examService.deleteExamPaper(id);
 
         res.json({
@@ -965,7 +996,7 @@ export const regenerateStudentReportCard = async (req: Request, res: Response): 
 
     } catch (error: any) {
         console.error('Error regenerating student report card:', error);
-        res.status(500).json({
+        res.status(error instanceof ResultsError ? error.status : 500).json({
             success: false,
             error: error.message || 'Internal server error while regenerating student report card.'
         });
@@ -1005,7 +1036,7 @@ export const regenerateSubclassReportCards = async (req: Request, res: Response)
 
     } catch (error: any) {
         console.error('Error regenerating subclass report cards:', error);
-        res.status(500).json({
+        res.status(error instanceof ResultsError ? error.status : 500).json({
             success: false,
             error: error.message || 'Internal server error while regenerating subclass report cards.'
         });
@@ -1149,6 +1180,51 @@ export const getPendingTeachers = async (req: Request, res: Response): Promise<v
         } else {
             res.status(500).json({ success: false, error: error.message });
         }
+    }
+};
+
+// Everyone here may print any subclass/subject; TEACHER is checked per assignment.
+// Matches the printable-forms roles (secretary/bursar Forms page) plus HOD.
+const MARKSHEET_ADMIN_ROLES = [
+    'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL',
+    'DEAN_OF_STUDIES', 'HOD', 'SECRETARY', 'BURSAR',
+];
+
+/**
+ * Download a mark sheet (one subject, one subclass, sequences 1–6) as PDF.
+ * Pass blank=true for an empty sheet to fill by hand.
+ * @route GET /exams/marksheet/pdf?subClassId=&subjectId=&academicYearId=&blank=
+ */
+export const exportMarksheetPdf = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const subClassId = parseInt(req.finalQuery.sub_class_id as string);
+        const subjectId = parseInt(req.finalQuery.subject_id as string);
+        if (isNaN(subClassId) || isNaN(subjectId)) {
+            return res.status(400).json({ success: false, error: 'subClassId and subjectId are required numbers' });
+        }
+        const academicYearId = req.finalQuery.academic_year_id
+            ? parseInt(req.finalQuery.academic_year_id as string) : undefined;
+        const blank = String(req.finalQuery.blank) === 'true';
+
+        const user = (req as any).user;
+        const roles: string[] = user?.role ?? [];
+        if (!roles.some(r => MARKSHEET_ADMIN_ROLES.includes(r))) {
+            const allowed = await hasTeacherAccess(user.id, subjectId, subClassId, academicYearId);
+            if (!allowed) {
+                return res.status(403).json({ success: false, error: 'You are not assigned to teach this subject in this class' });
+            }
+        }
+
+        const { buffer, filename } = await examService.generateMarksheetPdf({ subClassId, subjectId, academicYearId, blank });
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(buffer);
+    } catch (error: any) {
+        console.error('Error exporting mark sheet PDF:', error);
+        if (error.message?.includes('not found')) {
+            return res.status(404).json({ success: false, error: error.message });
+        }
+        res.status(500).json({ success: false, error: error.message });
     }
 };
 

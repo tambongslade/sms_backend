@@ -37,7 +37,11 @@ const router = Router();
 
 // Registration endpoint (public or specific roles)
 router.post('/register-with-roles', registerAndAssignRoles);
-router.post('/create-with-role', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY']), auditTrailMiddleware('User', 'CREATE_USER'), createUserWithRole);
+// Personnel "Add New Personnel" creates staff here with their staff role(s)
+// (not via the public /auth/register, which pre-assigns PARENT). MANAGER and
+// DISCIPLINE_COORDINATOR manage personnel too; the controller limits the
+// coordinator to DM / SDM / DoD roles.
+router.post('/create-with-role', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY', 'DISCIPLINE_COORDINATOR']), auditTrailMiddleware('User', 'CREATE_USER'), createUserWithRole);
 
 // User CRUD operations (requires authentication, some require specific roles)
 // DEAN_OF_DISCIPLINE, DISCIPLINE_COORDINATOR, SENIOR_DISCIPLINE_MASTER, CONTROLLER

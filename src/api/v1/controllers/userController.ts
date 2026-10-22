@@ -610,12 +610,42 @@ export const removeRole = async (req: Request, res: Response): Promise<void> => 
 export const createUserWithRole = async (req: Request, res: Response): Promise<void> => {
     try {
         const userData = req.body;
-        if (!userData.email || !userData.password || !userData.name || !userData.gender ||
-            !userData.date_of_birth || !userData.phone || !userData.address || !userData.role) {
+        // Accept `roles: Role[]` as well as `role`; the first becomes `role`.
+        if (!userData.role && Array.isArray(userData.roles) && userData.roles.length > 0) {
+            userData.role = userData.roles[0];
+        }
+        // Name only the fields that are actually missing, with readable labels.
+        const requiredLabels: Record<string, string> = {
+            name: 'Full name', email: 'Email', password: 'Password', gender: 'Gender',
+            date_of_birth: 'Date of birth', phone: 'Phone', address: 'Address', role: 'Role',
+        };
+        const missing = Object.keys(requiredLabels).filter(k =>
+            userData[k] === undefined || userData[k] === null || String(userData[k]).trim() === '');
+        if (missing.length) {
             res.status(400).json({
                 success: false,
-                error: 'Missing required fields'
+                error: `Missing required field(s): ${missing.map(k => requiredLabels[k]).join(', ')}`
             });
+            return;
+        }
+        const requestedRoles: string[] = [...new Set<string>([userData.role, ...(Array.isArray(userData.roles) ? userData.roles : [])])];
+        const invalidRoles = requestedRoles.filter(r => !Object.values(Role).includes(r as Role));
+        if (invalidRoles.length) {
+            res.status(400).json({ success: false, error: `Invalid role(s): ${invalidRoles.join(', ')}` });
+            return;
+        }
+        // Only SUPER_MANAGER may mint another SUPER_MANAGER.
+        if (requestedRoles.includes('SUPER_MANAGER') && !((req.user?.role as string[] | undefined) || []).includes('SUPER_MANAGER')) {
+            res.status(403).json({ success: false, error: 'Only a Super Manager can create a Super Manager account' });
+            return;
+        }
+        userData.roles = requestedRoles;
+        // Discipline Coordinator may only create DM / SDM / DoD accounts.
+        try {
+            const actorRoles = ((req.user?.role as string[] | undefined) || []) as Role[];
+            requestedRoles.forEach(r => userService.assertRoleWithinCoordinatorScope(actorRoles, r as Role));
+        } catch (scopeErr: any) {
+            res.status(scopeErr.statusCode || 403).json({ success: false, error: scopeErr.message });
             return;
         }
         // Privilege-escalation guard: a SECRETARY (without any higher admin role) may
@@ -625,7 +655,7 @@ export const createUserWithRole = async (req: Request, res: Response): Promise<v
             ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR'].includes(r)
         );
         const isOnlySecretary = requesterRoles.includes('SECRETARY') && !hasAdminRole;
-        if (isOnlySecretary && !['TEACHER', 'PARENT'].includes(userData.role)) {
+        if (isOnlySecretary && requestedRoles.some(r => !['TEACHER', 'PARENT'].includes(r))) {
             res.status(403).json({
                 success: false,
                 error: 'Secretary can only create users with TEACHER or PARENT role'
@@ -635,6 +665,8 @@ export const createUserWithRole = async (req: Request, res: Response): Promise<v
         if (typeof userData.date_of_birth === 'string') {
             userData.date_of_birth = new Date(userData.date_of_birth);
         }
+        if (userData.email) userData.email = String(userData.email).trim().toLowerCase();
+        if (userData.academic_year_id) userData.academic_year_id = Number(userData.academic_year_id);
         // Pass status if provided
         const result = await userService.createUserWithRole(userData);
         res.status(201).json({
@@ -896,7 +928,7 @@ const TEACHER_SEARCH_VALID_GENDERS = new Set(['Male', 'Female']);
 const TEACHER_SEARCH_VALID_STATUSES = new Set(['ACTIVE', 'INACTIVE', 'SUSPENDED']);
 const TEACHER_SEARCH_VALID_SORT_BY = new Set([
     'id', 'name', 'email', 'matricule', 'phone', 'gender', 'status',
-    'created_at', 'updated_at', 'date_of_birth', 'last_seen_at', 'total_hours_per_week'
+    'created_at', 'updated_at', 'date_of_birth', 'last_seen_at', 'total_hours_per_week', 'weekly_periods'
 ]);
 
 const parseBoolParam = (v: any): boolean | undefined => {
@@ -937,7 +969,10 @@ export const searchTeachers = async (req: Request, res: Response): Promise<void>
         }
 
         // Sort validation
-        const sortBy = (query.sort_by || query.sortBy) as string | undefined;
+        // Accept camelCase values too (the frontend sends e.g. sortBy=totalHoursPerWeek;
+        // the case middleware converts keys, not values).
+        const sortByRaw = (query.sort_by || query.sortBy) as string | undefined;
+        const sortBy = sortByRaw ? sortByRaw.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase()) : undefined;
         const sortOrderRaw = (query.sort_order || query.sortOrder) as string | undefined;
         if (sortBy && !TEACHER_SEARCH_VALID_SORT_BY.has(sortBy)) {
             res.status(400).json({

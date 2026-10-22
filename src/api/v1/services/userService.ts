@@ -6,6 +6,8 @@ import { paginate, PaginationOptions, FilterOptions, PaginatedResult } from '../
 import { getAcademicYearId, getCurrentAcademicYear } from '../../../utils/academicYear'; // Import the utility
 import { generateStaffMatricule } from '../../../utils/matriculeGenerator'; // Import staff matricule generator
 import { SUBCLASS_MAX_STUDENTS } from '../../../utils/capacity';
+import { computeWorkload } from '../../../utils/teacherWorkload';
+import { countActiveStudents, countStreams, countTeachers, INACTIVE_STUDENT_STATUSES } from '../../../utils/schoolCounts';
 import * as disciplineService from './disciplineService'; // Import discipline service for SDM dashboard
 
 // Type definition for the input data for registering with roles
@@ -295,7 +297,7 @@ export interface SearchTeachersParams {
 
 const TEACHER_SORTABLE_FIELDS = new Set([
     'id', 'name', 'email', 'matricule', 'phone', 'gender', 'status',
-    'created_at', 'updated_at', 'date_of_birth', 'last_seen_at', 'total_hours_per_week'
+    'created_at', 'updated_at', 'date_of_birth', 'last_seen_at', 'total_hours_per_week', 'weekly_periods'
 ]);
 
 export async function searchTeachers(params: SearchTeachersParams): Promise<PaginatedResult<any>> {
@@ -380,13 +382,10 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
         where.AND.push({ class_master_of: { none: {} } });
     }
 
-    // Hours per week range
-    if (params.min_hours_per_week !== undefined || params.max_hours_per_week !== undefined) {
-        const hoursFilter: any = {};
-        if (params.min_hours_per_week !== undefined) hoursFilter.gte = params.min_hours_per_week;
-        if (params.max_hours_per_week !== undefined) hoursFilter.lte = params.max_hours_per_week;
-        where.AND.push({ total_hours_per_week: hoursFilter });
-    }
+    // Hours per week range: hours are derived from the timetable (see
+    // utils/teacherWorkload), not the never-populated User.total_hours_per_week
+    // column, so this filter is applied in memory after the query below.
+    const hasHoursFilter = params.min_hours_per_week !== undefined || params.max_hours_per_week !== undefined;
 
     // has_assignments: any subject_teachers OR teacher_periods for the year
     if (params.has_assignments === true) {
@@ -413,6 +412,10 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
 
     const sortBy = params.sort_by && TEACHER_SORTABLE_FIELDS.has(params.sort_by) ? params.sort_by : 'name';
     const sortOrder: 'asc' | 'desc' = params.sort_order === 'desc' ? 'desc' : 'asc';
+    // Workload is computed, so sorting/filtering on it needs the whole matching
+    // set in memory (about 100 teachers, cheap) before paginating.
+    const sortByWorkload = sortBy === 'total_hours_per_week' || sortBy === 'weekly_periods';
+    const inMemory = sortByWorkload || hasHoursFilter;
 
     const include: any = {
         user_roles: {
@@ -437,6 +440,8 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
             select: {
                 sub_class_id: true,
                 subject_id: true,
+                period_id: true,
+                period: { select: { start_time: true, end_time: true, is_break: true, type: true } },
                 sub_class: {
                     select: {
                         id: true,
@@ -449,16 +454,30 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
         }
     };
 
-    const [total, data] = await Promise.all([
+    const [countAll, rows] = await Promise.all([
         prisma.user.count({ where }),
         prisma.user.findMany({
             where,
-            skip,
-            take: limit,
-            orderBy: { [sortBy]: sortOrder },
+            ...(inMemory ? {} : { skip, take: limit }),
+            orderBy: sortByWorkload ? { name: 'asc' } : { [sortBy]: sortOrder },
             include
         })
     ]);
+    let total = countAll;
+    let data: any[] = rows;
+    if (inMemory) {
+        let all = rows.map((t: any) => ({ t, w: computeWorkload(t.teacher_periods || []) }));
+        if (params.min_hours_per_week !== undefined) all = all.filter((x) => x.w.total_hours_per_week >= params.min_hours_per_week!);
+        if (params.max_hours_per_week !== undefined) all = all.filter((x) => x.w.total_hours_per_week <= params.max_hours_per_week!);
+        if (sortByWorkload) {
+            const dir = sortOrder === 'desc' ? -1 : 1;
+            all.sort((a, b) => (sortBy === 'weekly_periods'
+                ? a.w.weekly_periods - b.w.weekly_periods
+                : a.w.total_minutes - b.w.total_minutes) * dir);
+        }
+        total = all.length;
+        data = all.slice(skip, skip + limit).map((x) => x.t);
+    }
 
     // Shape response: derive subjects, subclasses, HOD info, class-master info
     const shaped = data.map((t: any) => {
@@ -474,6 +493,7 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
         for (const tp of t.teacher_periods || []) {
             if (tp.sub_class && !subClassMap.has(tp.sub_class.id)) subClassMap.set(tp.sub_class.id, tp.sub_class);
         }
+        const workload = computeWorkload(t.teacher_periods || []);
 
         return {
             id: t.id,
@@ -487,7 +507,9 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
             date_of_birth: t.date_of_birth,
             address: t.address,
             photo: t.photo,
-            total_hours_per_week: t.total_hours_per_week,
+            // Derived from the timetable; see utils/teacherWorkload.
+            total_hours_per_week: workload.total_hours_per_week,
+            weekly_periods: workload.weekly_periods,
             last_seen_at: t.last_seen_at,
             created_at: t.created_at,
             updated_at: t.updated_at,
@@ -599,7 +621,15 @@ export async function updateUser(id: number, data: Partial<User>): Promise<User>
     }
     const normalizedStatus = data.status ? (data.status as string).toUpperCase() as UserStatus : undefined;
     // Remove id from data if present (Prisma will error if you try to update the id)
-    const { id: _id, ...rest } = data;
+    const { id: _id, ...restRaw } = data;
+    // The case-conversion middleware keeps the original camelCase keys next to the
+    // snake_case copies (e.g. both `whatsappNumber` and `whatsapp_number`). Prisma
+    // rejects the camelCase duplicates ("Unknown argument"), which made editing a
+    // parent's WhatsApp number fail (QA U12). User columns are all snake_case, so
+    // drop any key containing an uppercase letter.
+    const rest = Object.fromEntries(
+        Object.entries(restRaw).filter(([key]) => !/[A-Z]/.test(key)),
+    ) as typeof restRaw;
     return prisma.user.update({
         where: { id },
         data: {
@@ -941,13 +971,22 @@ export async function createUserWithRole(userData: {
     phone: string;
     address: string;
     role: Role;
+    /** Extra roles to grant alongside `role` (e.g. TEACHER + HOD). */
+    roles?: Role[];
+    academic_year_id?: number;
     status?: string;
     parentAssignments?: { studentId: number }[];
     teacherAssignments?: { subjectId: number }[];
 }): Promise<any> {
     const hashedPassword = await bcrypt.hash(userData.password, 10);
-    const matricule = await generateStaffMatricule([userData.role]);
+    const allRoles = [...new Set<Role>([userData.role, ...(userData.roles ?? [])])];
+    // Matricule position code comes from the roles actually granted (a new
+    // teacher gets ST..., not the parent SO... code).
+    const matricule = await generateStaffMatricule(allRoles);
     const normalizedStatus = userData.status ? (userData.status as string).toUpperCase() as UserStatus : undefined;
+    // Every role in this system is year-scoped (see UserRole rows); a null-year
+    // role is invisible to the year-filtered staff lists (e.g. /users?role=).
+    const academicYearId = await getAcademicYearId(userData.academic_year_id);
     return prisma.$transaction(async (tx) => {
         const newUser = await tx.user.create({
             data: {
@@ -962,11 +1001,12 @@ export async function createUserWithRole(userData: {
                 ...(normalizedStatus && { status: normalizedStatus as UserStatus })
             },
         });
-        await tx.userRole.create({
-            data: {
+        await tx.userRole.createMany({
+            data: allRoles.map((role) => ({
                 user_id: newUser.id,
-                role: userData.role,
-            },
+                role,
+                academic_year_id: academicYearId ?? null,
+            })),
         });
         if (userData.role === 'PARENT' && userData.parentAssignments?.length) {
             const parentAssignmentPromises = userData.parentAssignments.map(assignment =>
@@ -1255,6 +1295,9 @@ export async function removeDisciplineMasterFromClass(
 export interface Teacher {
     id: number;
     name: string;
+    /** Distinguishes same/similar-name teachers in dropdowns and chat. */
+    matricule: string | null;
+    status: UserStatus;
     email: string;
     gender: Gender;
     subjects: {
@@ -1295,6 +1338,8 @@ export async function getAllTeachers(subjectId?: number): Promise<Teacher[]> {
     return teachers.map(teacher => ({
         id: teacher.id,
         name: teacher.name,
+        matricule: teacher.matricule,
+        status: teacher.status,
         email: teacher.email,
         gender: teacher.gender,
         subjects: teacher.subject_teachers.map(st => ({
@@ -1395,13 +1440,8 @@ export async function getSuperManagerDashboard(academicYearId?: number): Promise
                 _count: { user_id: true }
             }).then(result => result.length),
 
-            // Count active student enrollments for current/specified year
-            yearId ?
-                prisma.enrollment.groupBy({
-                    by: ['student_id'],
-                    where: { academic_year_id: yearId }
-                }).then(result => result.length) :
-                prisma.student.count(),
+            // Active students (shared definition, utils/schoolCounts.ts)
+            countActiveStudents(yearId),
 
             // Count total classes
             prisma.class.count(),
@@ -1474,7 +1514,7 @@ export async function getSuperManagerDashboard(academicYearId?: number): Promise
             matricule: teacher.matricule,
             subjects: teacher.subject_teachers.map(st => st.subject.name),
             totalHoursPerWeek: teacher.total_hours_per_week || 0,
-            attendanceRate: 85 // Placeholder - would calculate from actual attendance data
+            attendanceRate: null // Not tracked per teacher here; was a hard-coded 85 placeholder
         }));
 
         // Calculate financial metrics
@@ -1532,22 +1572,14 @@ export async function getPrincipalDashboard(academicYearId?: number): Promise<an
             pendingDisciplineIssues,
             averageAttendanceRate
         ] = await Promise.all([
-            // Count students for current academic year
-            yearId ?
-                prisma.enrollment.groupBy({
-                    by: ['student_id'],
-                    where: { academic_year_id: yearId }
-                }).then(result => result.length) :
-                prisma.student.count(),
+            // Active students (shared definition, utils/schoolCounts.ts)
+            countActiveStudents(yearId),
 
-            // Count teachers
-            prisma.userRole.groupBy({
-                by: ['user_id'],
-                where: { role: 'TEACHER' }
-            }).then(result => result.length),
+            // Teachers for the year (shared definition)
+            countTeachers(yearId),
 
-            // Count total classes
-            prisma.class.count(),
+            // "Classes" = streams (SubClasses)
+            countStreams(),
 
             // Count active exam sequences
             prisma.examSequence.count({
@@ -1566,7 +1598,7 @@ export async function getPrincipalDashboard(academicYearId?: number): Promise<an
                 }) : 0,
 
             // Calculate average attendance rate (simplified)
-            85 // Placeholder - could be calculated from actual attendance data
+            null // Not computed here (was a hard-coded 85 placeholder)
         ]);
 
         return {
@@ -1856,13 +1888,8 @@ export async function getManagerDashboard(academicYearId?: number): Promise<any>
                 }
             }),
 
-            // Student & Class Overview
-            yearId ?
-                prisma.enrollment.groupBy({
-                    by: ['student_id'],
-                    where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } }
-                }).then(result => result.length) :
-                prisma.student.count({ where: { status: { not: 'WITHDRAWN' } } }),
+            // Student & Class Overview (shared definition, utils/schoolCounts.ts)
+            countActiveStudents(yearId),
 
             prisma.class.count(),
             prisma.subClass.count(),
@@ -2226,13 +2253,9 @@ export async function getSecretaryDashboard(userId: number, academicYearId?: num
             recentStudents,
             recentTeachers
         ] = await Promise.all([
-            prisma.student.count(),
+            prisma.student.count({ where: { status: { notIn: INACTIVE_STUDENT_STATUSES } } }),
 
-            yearId
-                ? prisma.enrollment.count({
-                    where: { academic_year_id: yearId },
-                })
-                : 0,
+            yearId ? countActiveStudents(yearId) : 0,
 
             prisma.student.count({
                 where: { created_at: { gte: since } },

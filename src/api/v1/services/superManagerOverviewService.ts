@@ -6,6 +6,8 @@
 import prisma from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
 import { getClassMaxStudents, SUBCLASS_MAX_STUDENTS } from '../../../utils/capacity';
+import { activeEnrollmentWhere, INACTIVE_STUDENT_STATUSES, staffUserWhere, teacherUserWhere } from '../../../utils/schoolCounts';
+import { getTeacherWorkloads } from '../../../utils/teacherWorkload';
 
 // -------- helpers --------
 
@@ -601,10 +603,11 @@ export async function getFinancialOverview(academicYearId?: number) {
 export async function getStaffOverview(academicYearId?: number) {
     const yearId = await resolveYearId(academicYearId);
 
-    // "Staff" here = any user who holds at least one non-PARENT role. This
-    // excludes parent-only accounts (which are portal users, not personnel)
-    // but keeps parents who also work here (e.g. parent-teacher) in the count.
-    const staffWhere = { user_roles: { some: { role: { not: 'PARENT' as const } } } };
+    // "Staff" here = any user who holds at least one non-PARENT role for the
+    // year (or a global role). This excludes parent-only accounts (portal
+    // users, not personnel) but keeps parents who also work here. Shared
+    // definition with the Principal dashboard (utils/schoolCounts.ts).
+    const staffWhere = staffUserWhere(yearId);
 
     const [
         usersByRole,
@@ -616,7 +619,10 @@ export async function getStaffOverview(academicYearId?: number) {
     ] = await Promise.all([
         prisma.userRole.groupBy({
             by: ['role'],
-            where: yearId ? { OR: [{ academic_year_id: yearId }, { academic_year_id: null }] } : undefined,
+            where: {
+                role: { not: 'PARENT' },
+                ...(yearId ? { OR: [{ academic_year_id: yearId }, { academic_year_id: null }] } : {}),
+            },
             _count: { user_id: true },
         }),
         prisma.user.groupBy({
@@ -626,8 +632,8 @@ export async function getStaffOverview(academicYearId?: number) {
         }),
         prisma.user.count({ where: staffWhere }),
         prisma.user.findMany({
-            where: { user_roles: { some: { role: 'TEACHER' } } },
-            select: { id: true, total_hours_per_week: true },
+            where: teacherUserWhere(yearId),
+            select: { id: true },
         }),
         prisma.user.count({
             where: { created_at: { gte: startOfMonth() }, ...staffWhere },
@@ -640,8 +646,15 @@ export async function getStaffOverview(academicYearId?: number) {
     ]);
 
     const totalTeachers = teachers.length;
+    // Weekly load comes from the timetable (TeacherPeriod); the manual
+    // User.total_hours_per_week column is never written, so it was always 0.
+    const workloads = await getTeacherWorkloads(teachers.map(t => t.id), yearId);
+    const loads = teachers.map(t => workloads.get(t.id));
     const avgHours = totalTeachers > 0
-        ? teachers.reduce((s, t) => s + (t.total_hours_per_week || 0), 0) / totalTeachers
+        ? loads.reduce((s, w) => s + (w?.total_hours_per_week || 0), 0) / totalTeachers
+        : 0;
+    const avgPeriods = totalTeachers > 0
+        ? loads.reduce((s, w) => s + (w?.weekly_periods || 0), 0) / totalTeachers
         : 0;
 
     return {
@@ -649,8 +662,10 @@ export async function getStaffOverview(academicYearId?: number) {
             totalUsers,
             totalTeachers,
             averageTeachingHours: Math.round(avgHours * 100) / 100,
+            averageWeeklyPeriods: Math.round(avgPeriods * 100) / 100,
             newStaffThisMonth,
-            teachersWithFullSchedule: teachers.filter(t => (t.total_hours_per_week || 0) >= 40).length,
+            // Teachers with at least one timetable slot this year
+            teachersWithTimetable: loads.filter(w => (w?.weekly_periods || 0) > 0).length,
         },
         usersByRole: usersByRole.map(u => ({ role: u.role, count: u._count.user_id })),
         usersByStatus: usersByStatus.map(u => ({ status: u.status, count: u._count.id })),
@@ -1157,25 +1172,13 @@ export async function getEnrollmentOverview(academicYearId?: number) {
         genderRows,
         studentsByStatus,
     ] = await Promise.all([
+        // Active enrolments: shared definition (utils/schoolCounts.ts)
+        prisma.enrollment.count({ where: activeEnrollmentWhere(yearId) }),
         prisma.enrollment.count({
-            where: {
-                ...(yearId ? { academic_year_id: yearId } : {}),
-                student: { status: { not: 'WITHDRAWN' } },
-            },
+            where: { ...activeEnrollmentWhere(yearId), sub_class_id: null },
         }),
         prisma.enrollment.count({
-            where: {
-                sub_class_id: null,
-                ...(yearId ? { academic_year_id: yearId } : {}),
-                student: { status: { not: 'WITHDRAWN' } },
-            },
-        }),
-        prisma.enrollment.count({
-            where: {
-                created_at: { gte: startOfMonth() },
-                ...(yearId ? { academic_year_id: yearId } : {}),
-                student: { status: { not: 'WITHDRAWN' } },
-            },
+            where: { ...activeEnrollmentWhere(yearId), created_at: { gte: startOfMonth() } },
         }),
         prisma.class.findMany({
             select: {
@@ -1187,10 +1190,7 @@ export async function getEnrollmentOverview(academicYearId?: number) {
                         id: true,
                         name: true,
                         enrollments: {
-                            where: {
-                                ...(yearId ? { academic_year_id: yearId } : {}),
-                                student: { status: { not: 'WITHDRAWN' } },
-                            },
+                            where: activeEnrollmentWhere(yearId),
                             select: { id: true },
                         },
                     },
@@ -1200,7 +1200,7 @@ export async function getEnrollmentOverview(academicYearId?: number) {
         prisma.student.groupBy({
             by: ['gender'],
             where: {
-                status: { not: 'WITHDRAWN' },
+                status: { notIn: INACTIVE_STUDENT_STATUSES },
                 ...(yearId ? { enrollments: { some: { academic_year_id: yearId } } } : {}),
             },
             _count: { id: true },
@@ -1242,6 +1242,7 @@ export async function getEnrollmentOverview(academicYearId?: number) {
             totalEnrollments,
             unassignedEnrollments,
             newEnrollmentsThisMonth,
+            totalStreams: classUtilization.reduce((s, c) => s + c.subClasses.length, 0),
             averageClassUtilization: avgUtilization,
             assignmentRate: toPct(totalEnrollments - unassignedEnrollments, totalEnrollments),
         },

@@ -26,6 +26,19 @@ export const login = async (req: Request, res: Response) => {
             else creds.matricule = trimmed;
         }
 
+        // Users type identifiers in messy ways — strip stray whitespace, trim
+        // trailing dots on emails, and drop spaces/dashes from phone numbers so
+        // "671 68 21 52" and "user@gmail.com." don't fail.
+        if (creds.email) {
+            creds.email = String(creds.email).trim().replace(/\.+$/, '');
+        }
+        if (creds.matricule) {
+            creds.matricule = String(creds.matricule).trim();
+        }
+        if (creds.phone) {
+            creds.phone = String(creds.phone).replace(/[\s-]/g, '').trim();
+        }
+
         if ((!creds.email && !creds.matricule && !creds.phone) || !password) {
             return res.status(400).json({
                 success: false,

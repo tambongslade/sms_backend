@@ -32,7 +32,9 @@ export async function createProfile(req: Request, res: Response) {
         const data = await salaryService.createSalaryProfile(
             {
                 user_id: req.body.user_id,
-                salary_type: req.body.salary_type,
+                // Canonical field is salaryType; profileType/type are accepted as
+                // aliases because older UI builds sent profileType.
+                salary_type: req.body.salary_type ?? req.body.profile_type ?? req.body.type,
                 hourly_rate: req.body.hourly_rate,
                 base_salary: req.body.base_salary,
                 academic_year_id: req.body.academic_year_id,
@@ -50,7 +52,7 @@ export async function listProfiles(req: Request, res: Response) {
     try {
         const data = await salaryService.listSalaryProfiles({
             status: req.query.status as any,
-            salary_type: req.query.salary_type as any,
+            salary_type: (req.query.salary_type ?? req.query.salaryType) as string | undefined,
             academic_year_id: req.query.academic_year_id ? parseInt(req.query.academic_year_id as string) : undefined,
             user_id: req.query.user_id ? parseInt(req.query.user_id as string) : undefined,
             page: req.query.page ? parseInt(req.query.page as string) : undefined,

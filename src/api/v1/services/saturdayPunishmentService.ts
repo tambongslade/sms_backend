@@ -1,10 +1,12 @@
 import prisma, { SaturdayPunishment, PunishmentStatus, Prisma } from '../../../config/db';
+import { SaturdayPunishmentCategory } from '@prisma/client';
 import { getAcademicYearId, getStudentSubclassByStudentAndYear } from '../../../utils/academicYear';
 
 export interface CreateSaturdayPunishmentInput {
     student_id: number;
     academic_year_id?: number;
     reason: string;
+    reason_category?: SaturdayPunishmentCategory;
     scheduled_date?: string | null;
     notes?: string;
     assigned_by_id: number;
@@ -25,6 +27,7 @@ export async function createSaturdayPunishment(input: CreateSaturdayPunishmentIn
         data: {
             enrollment_id: enrollment.id,
             reason: input.reason.trim(),
+            reason_category: input.reason_category ?? 'STANDARD',
             scheduled_date: input.scheduled_date ? new Date(input.scheduled_date) : null,
             notes: input.notes?.trim() || null,
             status: 'PENDING',
@@ -106,6 +109,7 @@ export async function getSaturdayPunishmentById(id: number) {
 
 export interface UpdateSaturdayPunishmentInput {
     reason?: string;
+    reason_category?: SaturdayPunishmentCategory;
     scheduled_date?: string | null;
     served_date?: string | null;
     status?: PunishmentStatus;
@@ -125,6 +129,7 @@ export async function updateSaturdayPunishment(id: number, data: UpdateSaturdayP
         where: { id },
         data: {
             ...(data.reason !== undefined && { reason: data.reason.trim() }),
+            ...(data.reason_category !== undefined && { reason_category: data.reason_category }),
             ...(data.scheduled_date !== undefined && { scheduled_date: data.scheduled_date ? new Date(data.scheduled_date) : null }),
             ...(servedDate !== undefined && { served_date: servedDate }),
             ...(data.status !== undefined && { status: data.status }),

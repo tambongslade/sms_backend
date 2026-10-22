@@ -64,6 +64,14 @@ router.get('/teacher-performance/:teacherId',
     hodController.getTeacherPerformance
 );
 
+// GET /hod/department-status - Teacher load, scheme coverage and marks-entry
+// status for the HOD's department (Period Tracking / Curriculum / Performance pages)
+router.get('/department-status',
+    authenticate,
+    authorize(['HOD', 'SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_STUDIES']),
+    hodController.getDepartmentStatus
+);
+
 // GET /hod/my-subjects - Get subjects managed by HOD
 // HOD can view list of subjects they are head of
 router.get('/my-subjects',

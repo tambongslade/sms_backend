@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title><%= documentTitle %></title>
+<style>
+    @page {
+        size: A4 portrait;
+        margin: 12mm;
+    }
+    * { box-sizing: border-box; }
+    body {
+        font-family: 'Helvetica', 'Arial', sans-serif;
+        color: #1f2937;
+        margin: 0;
+        padding: 0;
+        font-size: 9pt;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    .letterhead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid #000;
+        padding-bottom: 3px;
+        margin-bottom: 3px;
+        font-size: 6.5pt;
+        color: #111827;
+    }
+    .letterhead .col { width: 34%; text-align: center; line-height: 1.15; }
+    .letterhead .col p { margin: 0; }
+    .letterhead .col p.bold { font-weight: 700; }
+    .letterhead .logo { width: 32%; text-align: center; }
+    .letterhead .logo img { max-height: 42px; max-width: 100%; }
+    .school-info { text-align: center; margin: 2px 0 6px 0; }
+    .school-info h2 { margin: 0; font-size: 11pt; font-weight: 800; letter-spacing: 0.3px; }
+    .school-info .tagline { font-style: italic; font-size: 7.5pt; color: #374151; }
+    .school-info .contact { font-size: 7pt; color: #4b5563; }
+
+    .header {
+        border-bottom: 1.5px solid #1e3a8a;
+        padding-bottom: 4px;
+        margin-bottom: 8px;
+        text-align: center;
+    }
+    .header h1 { margin: 0; font-size: 14pt; color: #1e3a8a; }
+    .header .subtitle { font-size: 9pt; color: #374151; margin-top: 2px; }
+
+    .summary {
+        display: flex;
+        justify-content: space-around;
+        margin: 6px 0 10px 0;
+        padding: 6px 8px;
+        border: 1px solid #cbd5e1;
+        background: #f8fafc;
+        border-radius: 4px;
+    }
+    .summary .item { text-align: center; }
+    .summary .item .label { font-size: 7.5pt; color: #6b7280; text-transform: uppercase; letter-spacing: 0.4px; }
+    .summary .item .value { font-size: 12pt; color: #1e3a8a; font-weight: 700; margin-top: 2px; }
+
+    .cover-page {
+        page-break-after: always;
+    }
+
+    .subclass-page {
+        page-break-after: always;
+    }
+    .subclass-page:last-child { page-break-after: auto; }
+
+    .subclass-header {
+        margin: 4px 0 6px 0;
+        padding: 4px 8px;
+        background: #1e3a8a;
+        color: #fff;
+        border-radius: 3px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .subclass-header .title { font-size: 11pt; font-weight: 700; }
+    .subclass-header .meta { font-size: 8pt; }
+
+    table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+    th, td {
+        border: 0.5px solid #cbd5e1;
+        padding: 4px 6px;
+        text-align: left;
+        font-size: 8.5pt;
+        vertical-align: top;
+    }
+    th {
+        background: #eef2ff;
+        color: #1e3a8a;
+        font-weight: 700;
+        font-size: 8pt;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    td.center, th.center { text-align: center; }
+    tr:nth-child(even) td { background: #f8fafc; }
+    tfoot td { font-weight: 700; background: #eef2ff !important; }
+
+    .status-pill {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 8px;
+        font-size: 7pt;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+    }
+    .status-new { background: #dcfce7; color: #166534; }
+    .status-old { background: #e0e7ff; color: #3730a3; }
+
+    .empty {
+        text-align: center;
+        color: #6b7280;
+        font-style: italic;
+        padding: 24px 8px;
+        border: 1px dashed #cbd5e1;
+        border-radius: 4px;
+    }
+
+    .footer {
+        margin-top: 8px;
+        padding-top: 4px;
+        border-top: 0.5px solid #cbd5e1;
+        font-size: 6.8pt;
+        color: #6b7280;
+        display: flex;
+        justify-content: space-between;
+    }
+</style>
+</head>
+<body>
+    <%
+        function fmt(n) {
+            if (n === null || n === undefined) return '0';
+            return Number(n).toLocaleString('en-GB');
+        }
+    %>
+
+    <section class="cover-page">
+        <div class="letterhead">
+            <div class="col">
+                <p class="bold">REPUBLIC OF CAMEROON</p>
+                <p>MINISTRY OF SECONDARY EDUCATION</p>
+                <p>REGIONAL DELEGATION FOR CENTRE</p>
+                <p>DIVISIONAL DELEGATION OF MFOUNDI</p>
+            </div>
+            <div class="logo">
+                <% if (schoolLogo) { %><img src="<%= schoolLogo %>" alt="School Logo" /><% } %>
+            </div>
+            <div class="col">
+                <p class="bold">REPUBLIQUE DU CAMEROUN</p>
+                <p>MINISTERE DES ENSEIGNEMENTS SECONDAIRES</p>
+                <p>DELEGATION REGIONALE DU CENTRE</p>
+                <p>DELEGATION DEPARTEMENTALE DU MFOUNDI</p>
+            </div>
+        </div>
+        <div class="school-info">
+            <h2><%= schoolName %></h2>
+            <% if (schoolTagline) { %><div class="tagline"><%= schoolTagline %></div><% } %>
+            <% if (schoolAddress || schoolPhone) { %>
+                <div class="contact">
+                    <% if (schoolAddress) { %><%= schoolAddress %><% } %>
+                    <% if (schoolAddress && schoolPhone) { %> &middot; <% } %>
+                    <% if (schoolPhone) { %>Tel: <%= schoolPhone %><% } %>
+                </div>
+            <% } %>
+        </div>
+
+        <%
+            var installmentLabelMap = { first: '1st Installment', second: '2nd Installment', third: '3rd Installment' };
+            var installmentLabel = installment ? installmentLabelMap[installment] : null;
+        %>
+        <div class="header">
+            <h1>Fees Defaulters Report<% if (installmentLabel) { %> &mdash; <%= installmentLabel %><% } %></h1>
+            <div class="subtitle">Academic Year <%= academicYearName %></div>
+        </div>
+
+        <div class="summary">
+            <div class="item">
+                <div class="label">Total Defaulters</div>
+                <div class="value"><%= fmt(totalDefaulters) %></div>
+            </div>
+            <div class="item">
+                <div class="label">Total Outstanding (FCFA)</div>
+                <div class="value"><%= fmt(totalOutstanding) %></div>
+            </div>
+            <div class="item">
+                <div class="label">Subclasses Covered</div>
+                <div class="value"><%= fmt(pages.length) %></div>
+            </div>
+        </div>
+    </section>
+
+    <% if (pages.length === 0) { %>
+        <div class="empty">No fee defaulters found for the selected filters.</div>
+    <% } else { %>
+        <% pages.forEach(function(page) { %>
+            <section class="subclass-page">
+                <div class="subclass-header">
+                    <div class="title"><%= page.className %> &middot; <%= page.subClassName %></div>
+                    <div class="meta">
+                        <%= page.students.length %> defaulter<%= page.students.length === 1 ? '' : 's' %>
+                        &middot; Outstanding: <%= fmt(page.totalOutstanding) %> FCFA
+                    </div>
+                </div>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <% if (installment) { %>
+                                <th style="width: 4%;" class="center">#</th>
+                                <th style="width: 34%;">Name</th>
+                                <th style="width: 10%;" class="center">Status</th>
+                                <th style="width: 15%;" class="num">Total Paid (FCFA)</th>
+                                <th style="width: 18%;" class="num"><%= installmentLabel %> Expected (FCFA)</th>
+                                <th style="width: 19%;" class="num"><%= installmentLabel %> Remaining (FCFA)</th>
+                            <% } else { %>
+                                <th style="width: 4%;" class="center">#</th>
+                                <th style="width: 28%;">Name</th>
+                                <th style="width: 10%;" class="center">Status</th>
+                                <th style="width: 13%;" class="num">Total Paid (FCFA)</th>
+                                <th style="width: 15%;" class="num">1st Inst. Remaining (FCFA)</th>
+                                <th style="width: 15%;" class="num">2nd Inst. Remaining (FCFA)</th>
+                                <th style="width: 15%;" class="num">3rd Inst. Remaining (FCFA)</th>
+                            <% } %>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% page.students.forEach(function(s, idx) { %>
+                            <%
+                                var inst = s.installments && installment ? s.installments[installment] : null;
+                            %>
+                            <tr>
+                                <td class="center"><%= idx + 1 %></td>
+                                <td>
+                                    <%= s.studentName %>
+                                    <% if (s.matricule) { %>
+                                        <div style="font-size: 7pt; color: #6b7280;"><%= s.matricule %></div>
+                                    <% } %>
+                                </td>
+                                <td class="center">
+                                    <span class="status-pill status-<%= String(s.studentStatus || 'NEW').toLowerCase() %>">
+                                        <%= s.studentStatus === 'OLD' ? 'OLD' : 'NEW' %>
+                                    </span>
+                                </td>
+                                <td class="num"><%= fmt(s.totalPaid) %></td>
+                                <% if (installment) { %>
+                                    <td class="num"><%= fmt(inst ? inst.expected : 0) %></td>
+                                    <td class="num"><%= fmt(inst ? inst.outstanding : 0) %></td>
+                                <% } else { %>
+                                    <td class="num"><%= fmt(s.installments && s.installments.first ? s.installments.first.outstanding : 0) %></td>
+                                    <td class="num"><%= fmt(s.installments && s.installments.second ? s.installments.second.outstanding : 0) %></td>
+                                    <td class="num"><%= fmt(s.installments && s.installments.third ? s.installments.third.outstanding : 0) %></td>
+                                <% } %>
+                            </tr>
+                        <% }); %>
+                    </tbody>
+                </table>
+
+                <div class="footer">
+                    <div>Generated <%= generatedAt %></div>
+                    <div><%= page.className %> &middot; <%= page.subClassName %> &middot; <%= academicYearName %></div>
+                </div>
+            </section>
+        <% }); %>
+    <% } %>
+</body>
+</html>

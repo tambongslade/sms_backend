@@ -408,7 +408,7 @@ export interface EnrolledStudentFeeRow {
         paymentsCount: number;
     };
     paidAmountDifference: number; // primary.amountPaid - control.amountPaid
-    status: 'MATCHED' | 'PAYMENT_MISMATCH' | 'MISSING_PRIMARY' | 'MISSING_CONTROL' | 'NO_RECORDS';
+    status: 'MATCHED' | 'NOT_PAID' | 'PAYMENT_MISMATCH' | 'MISSING_PRIMARY' | 'MISSING_CONTROL' | 'NO_RECORDS';
 }
 
 export async function getEnrolledStudentsFeeStatus(
@@ -419,7 +419,7 @@ export async function getEnrolledStudentsFeeStatus(
         classId?: number;
         subClassId?: number;
         search?: string; // name or matricule
-        status?: 'MATCHED' | 'PAYMENT_MISMATCH' | 'MISSING_PRIMARY' | 'MISSING_CONTROL' | 'NO_RECORDS';
+        status?: 'MATCHED' | 'NOT_PAID' | 'PAYMENT_MISMATCH' | 'MISSING_PRIMARY' | 'MISSING_CONTROL' | 'NO_RECORDS';
         studentStatus?: 'NEW' | 'OLD' | 'REPEATER';
     } = {}
 ): Promise<{ data: EnrolledStudentFeeRow[]; meta: { total: number; totalPages: number; page: number; limit: number; academicYearId: number } }> {
@@ -503,9 +503,10 @@ export async function getEnrolledStudentsFeeStatus(
         };
         const paidAmountDifference = primaryBlock.amountPaid - controlBlock.amountPaid;
 
-        // Status reflects whether the two ledgers actually disagree about money.
-        // Both sides at zero is MATCHED (nothing to reconcile), even if the
-        // controller hasn't opened a control-fee row yet.
+        // Status reflects whether the two ledgers agree about money that was
+        // actually paid. Both sides at zero is NOT_PAID — there is nothing to
+        // match yet (it used to read "MATCHED", which hid students who had paid
+        // nothing at all). MATCHED requires a real, equal, non-zero amount.
         let status: EnrolledStudentFeeRow['status'];
         if (!primary && !control) {
             status = 'NO_RECORDS';
@@ -513,6 +514,8 @@ export async function getEnrolledStudentsFeeStatus(
             if (!primary) status = 'MISSING_PRIMARY';
             else if (!control) status = 'MISSING_CONTROL';
             else status = 'PAYMENT_MISMATCH';
+        } else if (primaryBlock.amountPaid <= 0.01 && controlBlock.amountPaid <= 0.01) {
+            status = 'NOT_PAID';
         } else {
             status = 'MATCHED';
         }

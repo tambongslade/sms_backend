@@ -827,12 +827,6 @@ async function seedSubjects(users: any[]) {
                 category: 'HUMAN_AND_SOCIAL_SCIENCE',
             }
         }),
-        prisma.subject.create({
-            data: {
-                name: 'Government',
-                category: 'HUMAN_AND_SOCIAL_SCIENCE',
-            }
-        }),
 
         // Others
         prisma.subject.create({
@@ -844,12 +838,6 @@ async function seedSubjects(users: any[]) {
         prisma.subject.create({
             data: {
                 name: 'Religious Studies',
-                category: 'OTHERS',
-            }
-        }),
-        prisma.subject.create({
-            data: {
-                name: 'Civic Education',
                 category: 'OTHERS',
             }
         }),
@@ -1019,7 +1007,6 @@ async function seedSubclassSubjectAssignments(subclasses: any[], subjects: any[]
             { name: 'Biology', coefficient: 2 },
             { name: 'History', coefficient: 2 },
             { name: 'Geography', coefficient: 2 },
-            { name: 'Civic Education', coefficient: 1 },
             { name: 'Physical Education', coefficient: 1 },
         ],
         // Sixth form Arts subjects
@@ -1029,7 +1016,6 @@ async function seedSubclassSubjectAssignments(subclasses: any[], subjects: any[]
             { name: 'French', coefficient: 3 },
             { name: 'History', coefficient: 3 },
             { name: 'Geography', coefficient: 3 },
-            { name: 'Government', coefficient: 3 },
             { name: 'Economics', coefficient: 3 },
         ],
         // Sixth form Science subjects

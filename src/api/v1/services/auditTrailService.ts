@@ -53,10 +53,10 @@ export async function createAuditLog(data: AuditLogData) {
             }
         });
 
-        // Send notifications for changes
-        if (data.severity === 'CRITICAL' || data.severity === 'HIGH') {
-            await notifyAuditTrailChange(auditLog);
-        }
+        // Audit events are NOT pushed to users' notification feeds any more
+        // (QA U7: admins' feeds were flooded with "System Change Alert ...
+        // CREATE_USER" rows). They remain queryable via the audit-trail
+        // endpoints; notifications are reserved for actionable items.
 
         return auditLog;
     } catch (error: any) {
@@ -342,7 +342,9 @@ export async function getUserActivitySummary(
     }
 }
 
-// Notify about audit trail changes
+// Notify about audit trail changes -- no longer called (see createAuditLog).
+// Kept for reference; do not re-enable without filtering to actionable events.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function notifyAuditTrailChange(auditLog: any) {
     try {
         // Get administrators to notify

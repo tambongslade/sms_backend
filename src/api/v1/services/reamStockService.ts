@@ -10,7 +10,7 @@ import prisma, { Prisma, ReamStockEntryType } from '../../../config/db';
 function assertRoles(roles: string[], allowed: string[]) {
     if (roles.includes('SUPER_MANAGER') || roles.includes('MANAGER')) return;
     if (!allowed.some((r) => roles.includes(r))) {
-        throw new Error(`Forbidden: requires one of ${allowed.join(', ')}`);
+        throw new Error("Forbidden: you don't have permission to perform this action.");
     }
 }
 

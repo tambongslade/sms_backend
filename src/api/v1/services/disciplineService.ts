@@ -904,13 +904,55 @@ export async function getAllDisciplineIssues(
     }
 
     // Filter by date range
-    if (filterOptions?.start_date && filterOptions?.end_date) {
-        processedFilters.created_at = {
-            gte: new Date(filterOptions.start_date as string),
-            lte: new Date(filterOptions.end_date as string)
+    // Either bound may be given on its own (the Discipline Issues register
+    // lets the user fill just "From" or just "To"). Previously a lone bound
+    // was left in processedFilters and handed to Prisma as an unknown
+    // `start_date`/`end_date` column -> 500. The end date is inclusive of the
+    // whole day (a bare YYYY-MM-DD parses to midnight).
+    if (filterOptions?.start_date || filterOptions?.end_date) {
+        const range: any = {};
+        if (filterOptions?.start_date) {
+            const start = new Date(filterOptions.start_date as string);
+            if (!isNaN(start.getTime())) range.gte = start;
+        }
+        if (filterOptions?.end_date) {
+            const end = new Date(filterOptions.end_date as string);
+            if (!isNaN(end.getTime())) {
+                if (/^\d{4}-\d{2}-\d{2}$/.test(String(filterOptions.end_date))) {
+                    end.setUTCHours(23, 59, 59, 999);
+                }
+                range.lte = end;
+            }
+        }
+        if (Object.keys(range).length > 0) processedFilters.created_at = range;
+    }
+    delete processedFilters.start_date;
+    delete processedFilters.end_date;
+
+    // Scope the register to the selected/current academic year (the overview
+    // tiles that drill into this page are year-scoped too). A student_id
+    // filter already resolved to that year's enrollment above.
+    if (yearId && !filterOptions?.student_id) {
+        processedFilters.enrollment = {
+            ...(processedFilters.enrollment || {}),
+            academic_year_id: yearId,
         };
-        delete processedFilters.start_date;
-        delete processedFilters.end_date;
+    }
+
+    // Exclude withdrawn students from general/roster-style issue listings
+    // (this is what the Discipline Issues register and the DM attendance
+    // page browse). A student_id filter is a deliberate exception -- it
+    // resolves to one specific enrollment/student above, i.e. an admin
+    // explicitly asked for that student's history, which should show
+    // regardless of status (matches getDisciplineHistory's behavior).
+    if (!filterOptions?.student_id) {
+        processedFilters.enrollment = {
+            ...(processedFilters.enrollment || {}),
+            student: {
+                ...(processedFilters.enrollment?.student || {}),
+                status: { not: 'WITHDRAWN' },
+            },
+        };
     }
 
     // Exclude withdrawn students from general/roster-style issue listings
@@ -937,15 +979,16 @@ export async function getAllDisciplineIssues(
     // which is what extractPaginationAndFilters keys them by) -- these previously
     // checked the camelCase name, which never matched, so none of these three
     // includes ever actually fired and callers had to N+1 fetch enrollment details.
+    // Only id/name/matricule -- `true` returned the whole User row
+    // (password hash included) to the browser.
+    const staffSelect = { select: { id: true, name: true, matricule: true } };
     if (filterOptions?.include_assigned_by === 'true') {
-        include.assigned_by = true;
-        delete processedFilters.include_assigned_by;
+        include.assigned_by = staffSelect;
     }
 
     // Include staff who reviewed the issue
     if (filterOptions?.include_reviewed_by === 'true') {
-        include.reviewed_by = true;
-        delete processedFilters.include_reviewed_by;
+        include.reviewed_by = staffSelect;
     }
 
     // Include student information
@@ -960,8 +1003,12 @@ export async function getAllDisciplineIssues(
                 }
             }
         };
-        delete processedFilters.include_student;
     }
+    // Never let the include_* flags reach Prisma's `where` -- a value other
+    // than 'true' (e.g. 'false') used to stay in the filters and 500.
+    delete processedFilters.include_assigned_by;
+    delete processedFilters.include_reviewed_by;
+    delete processedFilters.include_student;
 
     return paginate<DisciplineIssue>(
         prisma.disciplineIssue,

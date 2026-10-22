@@ -3,6 +3,7 @@ import * as examController from '../controllers/examController';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 import { validateTeacherMarksAccess, validateTeacherSubjectAccess } from '../middleware/teacherAuth.middleware';
 import { Role } from '@prisma/client';
+import * as resultsController from '../controllers/resultsController';
 
 // Swagger documentation can be found in src/config/swagger/docs/examDocs.ts
 
@@ -23,11 +24,25 @@ router.post('/', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PR
 
 // POST /exams/papers - Create a new exam paper
 // Only SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL can create exam papers
-router.post('/papers', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL']), examController.createExamPaper);
+// TEACHER may create papers only for subjects they teach (checked in the controller)
+router.post('/papers', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']), examController.createExamPaper);
 
 // DELETE /exams/papers/:id - Delete an exam paper
 // Only SUPER_MANAGER, PRINCIPAL can delete exam papers
-router.delete('/papers/:id', authenticate, authorize([Role.SUPER_MANAGER, Role.PRINCIPAL]), examController.deleteExamPaper);
+// VICE_PRINCIPAL and TEACHER may delete papers too; TEACHER only for subjects they teach (checked in the controller)
+router.delete('/papers/:id', authenticate, authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL, Role.TEACHER]), examController.deleteExamPaper);
+
+// GET /exams/marksheet/pdf - Mark sheet for one subject in one subclass (sequences 1–6)
+// Teachers are limited to subjects they teach in that subclass (checked in the controller)
+router.get(
+    '/marksheet/pdf',
+    authenticate,
+    authorize([
+        'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL',
+        'DEAN_OF_STUDIES', 'HOD', 'SECRETARY', 'BURSAR', 'TEACHER',
+    ]),
+    examController.exportMarksheetPdf
+);
 
 // GET /exams/:id - Get exam details
 // All authenticated users can view exam details
@@ -85,6 +100,13 @@ router.post('/papers/:id/generate', authenticate, examController.generateExam);
 
 export const reportCardsRouter = Router();
 
+// Term and annual report cards (generated on demand from resultsService)
+const REPORT_CARD_STAFF = ['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_STUDIES'];
+reportCardsRouter.get('/term/subclass/:subClassId', authenticate, authorize(REPORT_CARD_STAFF), resultsController.termSubclassCards);
+reportCardsRouter.get('/term/student/:studentId', authenticate, authorize(REPORT_CARD_STAFF), resultsController.termStudentCard);
+reportCardsRouter.get('/annual/subclass/:subClassId', authenticate, authorize(REPORT_CARD_STAFF), resultsController.annualSubclassCards);
+reportCardsRouter.get('/annual/student/:studentId', authenticate, authorize(REPORT_CARD_STAFF), resultsController.annualStudentCard);
+
 // GET /report-cards/student/:studentId - Downloads a generated report card for a student
 reportCardsRouter.get('/student/:studentId', authenticate, examController.generateStudentReportCard);
 
@@ -141,7 +163,7 @@ marksRouter.get('/',
     // Add teacher access validation for TEACHER role only
     (req: any, res: any, next: any) => {
         // Check if user has TEACHER role
-        const userRoles = req.user?.roles || [];
+        const userRoles: string[] = req.user?.role || req.user?.roles || [];
         const isTeacher = userRoles.includes('TEACHER');
         const hasHigherRole = userRoles.some((role: string) =>
             ['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL'].includes(role)
@@ -157,6 +179,21 @@ marksRouter.get('/',
     examController.getAllMarks
 );
 
+// GET /marks/entry-sheet - Whole-class roster with saved marks for one sequence/subclass/subject
+// TEACHER limited to subjects they teach in that subclass (checked in the controller)
+marksRouter.get('/entry-sheet',
+    authenticate,
+    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
+    examController.getMarkEntrySheet
+);
+
+// POST /marks/bulk - Save many marks for one sequence/subclass/subject in one transaction
+marksRouter.post('/bulk',
+    authenticate,
+    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
+    examController.saveMarkEntrySheet
+);
+
 // POST /marks - Create a new mark
 // Only SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL, TEACHER can create marks
 // TEACHER can only create marks for their assigned subjects/subclasses
@@ -165,7 +202,7 @@ marksRouter.post('/',
     authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
     // Add teacher marks access validation for TEACHER role
     (req: any, res: any, next: any) => {
-        const userRoles = req.user?.roles || [];
+        const userRoles: string[] = req.user?.role || req.user?.roles || [];
         const isTeacher = userRoles.includes('TEACHER');
         const hasHigherRole = userRoles.some((role: string) =>
             ['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL'].includes(role)
@@ -188,7 +225,7 @@ marksRouter.put('/:id',
     authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
     // Add teacher marks access validation for TEACHER role
     (req: any, res: any, next: any) => {
-        const userRoles = req.user?.roles || [];
+        const userRoles: string[] = req.user?.role || req.user?.roles || [];
         const isTeacher = userRoles.includes('TEACHER');
         const hasHigherRole = userRoles.some((role: string) =>
             ['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL'].includes(role)
@@ -211,7 +248,7 @@ marksRouter.delete('/:id',
     authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
     // Add teacher marks access validation for TEACHER role
     (req: any, res: any, next: any) => {
-        const userRoles = req.user?.roles || [];
+        const userRoles: string[] = req.user?.role || req.user?.roles || [];
         const isTeacher = userRoles.includes('TEACHER');
         const hasHigherRole = userRoles.some((role: string) =>
             ['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL'].includes(role)

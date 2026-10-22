@@ -329,6 +329,31 @@ model Student {
   interview_marks            InterviewMark[] // VP interview marks
   fee_items                  FeeItem[]               @relation("StudentFeeItems")
   QuizSubmission             QuizSubmission[]
+  transfers_out              StudentTransfer[]
+}
+
+// Transfer-out record (student leaves for another school). Marks, fees and every
+// enrollment row are kept untouched; Student.status is set to TRANSFERRED.
+// One row per departure; certificate_number identifies the leaving certificate.
+// academic_year_id / recorded_by_id are plain ints (no FK) to keep this additive.
+model StudentTransfer {
+  id                 Int      @id @default(autoincrement())
+  student_id         Int
+  academic_year_id   Int?
+  transfer_date      DateTime
+  reason             String
+  destination_school String?
+  remarks            String?
+  last_class_name    String? // snapshot of class/subclass at departure (for the certificate)
+  certificate_number String   @unique
+  recorded_by_id     Int?
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+  server_id          String?
+  checksum           String?
+  student            Student  @relation(fields: [student_id], references: [id])
+
+  @@index([student_id])
 }
 
 model StudentPreviousSchool {
@@ -1131,6 +1156,8 @@ enum PaymentMethod {
   F3DC
   AFRILAND_FIRST_BANK
   CASH
+  MTN_MOMO
+  ORANGE_MONEY
 }
 
 enum Audience {

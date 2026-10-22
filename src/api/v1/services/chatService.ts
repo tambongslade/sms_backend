@@ -179,8 +179,14 @@ export async function getChannel(channelId: number, userId: number) {
     const memberIds = channel.members.map((m) => m.user_id);
     const presenceMap = await presenceLookup(memberIds);
 
+    // my_role: the caller's membership role. The channel list already sends
+    // it; the detail did not, so the client defaulted everyone to MEMBER and
+    // even a channel's creator (ADMIN) never saw "Add members".
+    const me = channel.members.find((m) => m.user_id === userId);
     return {
         ...channel,
+        my_role: me?.role ?? null,
+        member_count: channel.members.length,
         members: channel.members.map((m) => ({
             id: m.id,
             channel_id: m.channel_id,

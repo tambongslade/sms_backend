@@ -1,6 +1,10 @@
 import prisma from '../../../config/db';
 import { getAcademicYearId, getCurrentAcademicYear } from '../../../utils/academicYear';
 import { paginate, PaginationOptions, FilterOptions, PaginatedResult } from '../../../utils/pagination';
+import { Prisma } from '@prisma/client';
+import { activeEnrollmentWhere } from '../../../utils/schoolCounts';
+import { computeWorkload } from '../../../utils/teacherWorkload';
+import { schoolNow, timeToMinutes, SCHOOL_TZ } from '../../../utils/schoolClock';
 
 export interface TeacherSubject {
     id: number;
@@ -23,6 +27,15 @@ export interface TeacherStudent {
     id: number;
     name: string;
     matricule: string;
+    photo?: string | null;
+    enrollmentId?: number;
+    /** Mean /20 of marks in this teacher's subjects this year; null when no marks yet. */
+    average?: number | null;
+    marksCount?: number;
+    /** % of period roll-call entries this year marked PRESENT/LATE; null when never called. */
+    attendanceRate?: number | null;
+    /** Status in this teacher's roll call today (school timezone); null when not taken. */
+    todayStatus?: 'PRESENT' | 'LATE' | 'ABSENT' | null;
     subClass: {
         id: number;
         name: string;
@@ -34,7 +47,7 @@ export interface TeacherStudent {
     teacherSubjects: {
         subjectId: number;
         subjectName: string;
-        coefficient: number;
+        coefficient: number | null;
     }[];
 }
 
@@ -48,7 +61,7 @@ export interface TeacherSubClass {
     subjects: {
         id: number;
         name: string;
-        coefficient: number;
+        coefficient: number | null;
         periodsPerWeek: number;
     }[];
     studentCount: number;
@@ -59,8 +72,14 @@ export interface TeacherDashboard {
     totalStudents: number;
     totalClasses: number;
     weeklyPeriods: number;
-    marksToEnter?: number;
-    upcomingPeriods?: number;
+    totalHoursPerWeek: number;
+    /** Alias of totalHoursPerWeek kept for older clients. */
+    weeklyHours: number;
+    marksToEnter: number;
+    marksExpected: number;
+    marksEntered: number;
+    upcomingPeriods: number;
+    attendanceRate: number | null;
 }
 
 /**
@@ -112,7 +131,8 @@ export async function getTeacherSubjects(
                 include: {
                     class: true,
                     enrollments: {
-                        where: { academic_year_id: currentYear }
+                        where: activeEnrollmentWhere(currentYear),
+                        select: { id: true }
                     }
                 }
             }
@@ -211,7 +231,8 @@ export async function getTeacherSubjects(
                 include: {
                     class: true,
                     enrollments: {
-                        where: { academic_year_id: currentYear }
+                        where: activeEnrollmentWhere(currentYear),
+                        select: { id: true }
                     }
                 }
             }
@@ -242,19 +263,26 @@ export async function getTeacherSubjects(
             classId: scs.sub_class.class_id,
             className: scs.sub_class.class.name,
             coefficient: scs.coefficient, // Use coefficient from SubClassSubject
-            periodsPerWeek: 1, // Default since we don't have period data in fallback
+            // No timetable slots exist for this teacher, so 0 -- the old default
+            // of 1 showed a fake "1p/week" for every class.
+            periodsPerWeek: 0,
             studentCount: scs.sub_class.enrollments.length
         });
 
         subject.totalStudents += scs.sub_class.enrollments.length;
-        subject.totalPeriods += 1; // Default periods for fallback
     });
 
     return Array.from(subjectMap.values());
 }
 
 /**
- * Get students that a teacher teaches (across all subjects/subclasses)
+ * Get students that a teacher teaches (across all subjects/subclasses).
+ *
+ * Paginated in the database (not by loading every enrolment of every period),
+ * with real per-student figures for the page:
+ * - average: mean /20 of the student's marks in this teacher's subjects for the year (null if none)
+ * - attendanceRate: % of period roll-call entries this year marked PRESENT or LATE (null if never called)
+ * - todayStatus: status in this teacher's roll call today (school timezone), null if not taken yet
  */
 export async function getTeacherStudents(
     teacherId: number,
@@ -262,97 +290,160 @@ export async function getTeacherStudents(
         subClassId?: number;
         subjectId?: number;
         academicYearId?: number;
+        search?: string;
     } = {},
     paginationOptions?: PaginationOptions
 ): Promise<PaginatedResult<TeacherStudent>> {
+    const page = paginationOptions?.page || 1;
+    const limit = paginationOptions?.limit || 10;
+    const empty = { data: [], meta: { total: 0, page, limit, totalPages: 0 } };
+
     const currentYear = filters.academicYearId || (await getCurrentAcademicYear())?.id;
-    if (!currentYear) {
-        return {
-            data: [],
-            meta: { total: 0, page: paginationOptions?.page || 1, limit: paginationOptions?.limit || 10, totalPages: 0 }
-        };
-    }
-
-    // Get teacher periods for this teacher
-    const whereClause: any = {
-        teacher_id: teacherId,
-        academic_year_id: currentYear
-    };
-
-    if (filters.subClassId) whereClause.sub_class_id = filters.subClassId;
-    if (filters.subjectId) whereClause.subject_id = filters.subjectId;
+    if (!currentYear) return empty;
 
     const teacherPeriods = await prisma.teacherPeriod.findMany({
-        where: whereClause,
-        include: {
-            subject: true,
-            sub_class: {
-                include: {
-                    class: true,
-                    enrollments: {
-                        where: { academic_year_id: currentYear },
-                        include: {
-                            student: true
-                        }
+        where: {
+            teacher_id: teacherId,
+            academic_year_id: currentYear,
+            ...(filters.subClassId ? { sub_class_id: filters.subClassId } : {}),
+            ...(filters.subjectId ? { subject_id: filters.subjectId } : {})
+        },
+        select: { sub_class_id: true, subject: { select: { id: true, name: true } } }
+    });
+    if (teacherPeriods.length === 0) return empty;
+
+    // sub_class_id -> subject_id -> name
+    const subjectsBySubClass = new Map<number, Map<number, string>>();
+    for (const tp of teacherPeriods) {
+        const m = subjectsBySubClass.get(tp.sub_class_id) ?? new Map<number, string>();
+        m.set(tp.subject.id, tp.subject.name);
+        subjectsBySubClass.set(tp.sub_class_id, m);
+    }
+    const subClassIds = [...subjectsBySubClass.keys()];
+    const subjectIds = [...new Set(teacherPeriods.map(tp => tp.subject.id))];
+
+    const subClassSubjects = await prisma.subClassSubject.findMany({
+        where: { sub_class_id: { in: subClassIds }, subject_id: { in: subjectIds } },
+        select: { id: true, sub_class_id: true, subject_id: true, coefficient: true }
+    });
+    const scsByKey = new Map(subClassSubjects.map(s => [`${s.sub_class_id}-${s.subject_id}`, s]));
+    const teacherScsIds = subClassSubjects
+        .filter(s => subjectsBySubClass.get(s.sub_class_id)?.has(s.subject_id))
+        .map(s => s.id);
+
+    const term = filters.search?.trim();
+    const where: Prisma.EnrollmentWhereInput = {
+        AND: [
+            activeEnrollmentWhere(currentYear),
+            { sub_class_id: { in: subClassIds } },
+            ...(term
+                ? [{
+                    student: {
+                        OR: [
+                            { name: { contains: term, mode: 'insensitive' as const } },
+                            { matricule: { contains: term, mode: 'insensitive' as const } }
+                        ]
                     }
-                }
-            }
-        }
-    });
-
-    // Collect unique students
-    const studentMap = new Map<number, TeacherStudent>();
-
-    teacherPeriods.forEach(period => {
-        period.sub_class.enrollments.forEach(enrollment => {
-            const studentId = enrollment.student.id;
-
-            if (!studentMap.has(studentId)) {
-                studentMap.set(studentId, {
-                    id: enrollment.student.id,
-                    name: enrollment.student.name,
-                    matricule: enrollment.student.matricule,
-                    subClass: {
-                        id: period.sub_class.id,
-                        name: period.sub_class.name,
-                        class: {
-                            id: period.sub_class.class.id,
-                            name: period.sub_class.class.name
-                        }
-                    },
-                    teacherSubjects: []
-                });
-            }
-
-            const student = studentMap.get(studentId)!;
-
-            // Add subject if not already added
-            if (!student.teacherSubjects.find(ts => ts.subjectId === period.subject.id)) {
-                student.teacherSubjects.push({
-                    subjectId: period.subject.id,
-                    subjectName: period.subject.name,
-                    coefficient: 1 // Default - should fetch from SubClassSubject if needed
-                });
-            }
-        });
-    });
-
-    const students = Array.from(studentMap.values());
-
-    // Apply pagination manually since we're working with a complex aggregation
-    const startIndex = ((paginationOptions?.page || 1) - 1) * (paginationOptions?.limit || 10);
-    const endIndex = startIndex + (paginationOptions?.limit || 10);
-    const paginatedStudents = students.slice(startIndex, endIndex);
-
-    return {
-        data: paginatedStudents,
-        meta: {
-            total: students.length,
-            page: paginationOptions?.page || 1,
-            limit: paginationOptions?.limit || 10,
-            totalPages: Math.ceil(students.length / (paginationOptions?.limit || 10))
-        }
+                }]
+                : [])
+        ]
     };
+
+    const [total, enrollments] = await Promise.all([
+        prisma.enrollment.count({ where }),
+        prisma.enrollment.findMany({
+            where,
+            orderBy: { student: { name: 'asc' } },
+            skip: (page - 1) * limit,
+            take: limit,
+            select: {
+                id: true,
+                sub_class_id: true,
+                photo: true,
+                student: { select: { id: true, name: true, matricule: true } },
+                sub_class: { select: { id: true, name: true, class: { select: { id: true, name: true } } } }
+            }
+        })
+    ]);
+
+    const enrollmentIds = enrollments.map(e => e.id);
+    const today = schoolNow().dateOnly;
+
+    const [marks, attendanceGroups, todayEntries] = enrollmentIds.length === 0
+        ? [[], [], []] as [any[], any[], any[]]
+        : await Promise.all([
+            prisma.mark.findMany({
+                where: {
+                    enrollment_id: { in: enrollmentIds },
+                    sub_class_subject_id: { in: teacherScsIds },
+                    score: { not: null },
+                    exam_sequence: { academic_year_id: currentYear }
+                },
+                select: { enrollment_id: true, score: true }
+            }),
+            prisma.teacherRollCallEntry.groupBy({
+                by: ['enrollment_id', 'status'],
+                where: {
+                    enrollment_id: { in: enrollmentIds },
+                    teacher_roll_call: { academic_year_id: currentYear }
+                },
+                _count: { _all: true }
+            }),
+            prisma.teacherRollCallEntry.findMany({
+                where: {
+                    enrollment_id: { in: enrollmentIds },
+                    teacher_roll_call: { date: today, teacher_period: { teacher_id: teacherId } }
+                },
+                select: { enrollment_id: true, status: true, updated_at: true },
+                orderBy: { updated_at: 'asc' } // later rows overwrite -> latest wins
+            })
+        ]);
+
+    const markAgg = new Map<number, { sum: number; n: number }>();
+    for (const m of marks) {
+        const a = markAgg.get(m.enrollment_id) ?? { sum: 0, n: 0 };
+        a.sum += m.score ?? 0;
+        a.n += 1;
+        markAgg.set(m.enrollment_id, a);
+    }
+    const attAgg = new Map<number, { present: number; total: number }>();
+    for (const g of attendanceGroups as any[]) {
+        const a = attAgg.get(g.enrollment_id) ?? { present: 0, total: 0 };
+        a.total += g._count._all;
+        if (g.status === 'PRESENT' || g.status === 'LATE') a.present += g._count._all;
+        attAgg.set(g.enrollment_id, a);
+    }
+    const todayStatus = new Map<number, string>();
+    for (const e of todayEntries) todayStatus.set(e.enrollment_id, e.status);
+
+    const data: TeacherStudent[] = enrollments.map(e => {
+        const subjects = subjectsBySubClass.get(e.sub_class_id ?? -1) ?? new Map<number, string>();
+        const mk = markAgg.get(e.id);
+        const att = attAgg.get(e.id);
+        return {
+            id: e.student.id,
+            name: e.student.name,
+            matricule: e.student.matricule,
+            photo: e.photo ?? null,
+            enrollmentId: e.id,
+            subClass: {
+                id: e.sub_class?.id ?? 0,
+                name: e.sub_class?.name ?? '',
+                class: { id: e.sub_class?.class.id ?? 0, name: e.sub_class?.class.name ?? '' }
+            },
+            teacherSubjects: [...subjects.entries()].map(([subjectId, subjectName]) => ({
+                subjectId,
+                subjectName,
+                coefficient: scsByKey.get(`${e.sub_class_id}-${subjectId}`)?.coefficient ?? null
+            })),
+            average: mk && mk.n > 0 ? Math.round((mk.sum / mk.n) * 100) / 100 : null,
+            marksCount: mk?.n ?? 0,
+            attendanceRate: att && att.total > 0 ? Math.round((att.present / att.total) * 1000) / 10 : null,
+            todayStatus: (todayStatus.get(e.id) as TeacherStudent['todayStatus']) ?? null
+        };
+    });
+
+    return { data, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
 }
 
 /**
@@ -370,137 +461,180 @@ export async function getTeacherSubClasses(
             teacher_id: teacherId,
             academic_year_id: currentYear
         },
-        include: {
-            subject: true,
-            sub_class: {
-                include: {
-                    class: true,
-                    enrollments: {
-                        where: { academic_year_id: currentYear }
-                    }
-                }
-            }
+        select: {
+            sub_class_id: true,
+            period_id: true,
+            subject: { select: { id: true, name: true } },
+            sub_class: { select: { id: true, name: true, class: { select: { id: true, name: true } } } }
         }
     });
+    if (teacherPeriods.length === 0) return [];
 
-    // Group by subclass
+    const subClassIds = [...new Set(teacherPeriods.map(tp => tp.sub_class_id))];
+    const [subClassSubjects, enrollmentCounts] = await Promise.all([
+        prisma.subClassSubject.findMany({
+            where: {
+                sub_class_id: { in: subClassIds },
+                subject_id: { in: [...new Set(teacherPeriods.map(tp => tp.subject.id))] }
+            },
+            select: { sub_class_id: true, subject_id: true, coefficient: true }
+        }),
+        prisma.enrollment.groupBy({
+            by: ['sub_class_id'],
+            where: { AND: [activeEnrollmentWhere(currentYear), { sub_class_id: { in: subClassIds } }] },
+            _count: { _all: true }
+        })
+    ]);
+    const coefficientMap = new Map(subClassSubjects.map(s => [`${s.sub_class_id}-${s.subject_id}`, s.coefficient]));
+    const countMap = new Map(enrollmentCounts.map(c => [c.sub_class_id, c._count._all]));
+
+    // Group by subclass; count distinct timetable slots per subject.
     const subClassMap = new Map<number, TeacherSubClass>();
-
-    teacherPeriods.forEach(period => {
-        const subClassId = period.sub_class.id;
-
-        if (!subClassMap.has(subClassId)) {
-            subClassMap.set(subClassId, {
-                id: period.sub_class.id,
-                name: period.sub_class.name,
-                class: {
-                    id: period.sub_class.class.id,
-                    name: period.sub_class.class.name
-                },
+    const slotSets = new Map<string, Set<number>>();
+    for (const tp of teacherPeriods) {
+        let subClass = subClassMap.get(tp.sub_class_id);
+        if (!subClass) {
+            subClass = {
+                id: tp.sub_class.id,
+                name: tp.sub_class.name,
+                class: { id: tp.sub_class.class.id, name: tp.sub_class.class.name },
                 subjects: [],
-                studentCount: period.sub_class.enrollments.length
-            });
+                studentCount: countMap.get(tp.sub_class_id) ?? 0
+            };
+            subClassMap.set(tp.sub_class_id, subClass);
         }
-
-        const subClass = subClassMap.get(subClassId)!;
-
-        // Add subject if not already added
-        if (!subClass.subjects.find(s => s.id === period.subject.id)) {
-            subClass.subjects.push({
-                id: period.subject.id,
-                name: period.subject.name,
-                coefficient: 1, // Default coefficient - should be fetched from SubClassSubject if needed
-                periodsPerWeek: 1 // Count periods per week dynamically if needed
-            });
+        const key = `${tp.sub_class_id}-${tp.subject.id}`;
+        const slots = slotSets.get(key) ?? new Set<number>();
+        slots.add(tp.period_id);
+        slotSets.set(key, slots);
+        let subject = subClass.subjects.find(s => s.id === tp.subject.id);
+        if (!subject) {
+            subject = {
+                id: tp.subject.id,
+                name: tp.subject.name,
+                coefficient: coefficientMap.get(key) ?? null,
+                periodsPerWeek: 0
+            };
+            subClass.subjects.push(subject);
         }
-    });
+        subject.periodsPerWeek = slots.size;
+    }
 
     return Array.from(subClassMap.values());
 }
 
 /**
- * Get teacher dashboard statistics
+ * Get teacher dashboard statistics. Every figure is computed from real data:
+ * - weeklyPeriods / totalHoursPerWeek: distinct timetable slots and their clock time
+ * - totalStudents: active students in the teacher's sub-classes
+ * - marksToEnter: (active students x teacher's subjects) per OPEN sequence whose
+ *   term has started, minus marks already entered with a score
+ * - attendanceRate: teacher's own attendance as recorded per period by the
+ *   discipline master (PRESENT or LATE / all records); null when nothing recorded
+ * - upcomingPeriods: periods still to start today (school timezone)
  */
 export async function getTeacherDashboard(
     teacherId: number,
     academicYearId?: number
 ): Promise<TeacherDashboard> {
     const currentYear = academicYearId || (await getCurrentAcademicYear())?.id;
-    if (!currentYear) {
-        return {
-            assignedSubjects: 0,
-            totalStudents: 0,
-            totalClasses: 0,
-            weeklyPeriods: 0
-        };
-    }
+    const emptyDashboard: TeacherDashboard = {
+        assignedSubjects: 0,
+        totalStudents: 0,
+        totalClasses: 0,
+        weeklyPeriods: 0,
+        totalHoursPerWeek: 0,
+        weeklyHours: 0,
+        marksToEnter: 0,
+        marksExpected: 0,
+        marksEntered: 0,
+        upcomingPeriods: 0,
+        attendanceRate: null
+    };
+    if (!currentYear) return emptyDashboard;
 
-    // Get basic stats from teacher periods
-    const [
-        subjectCount,
-        subClassCount,
-        weeklyPeriods,
-        studentCountResult
-    ] = await Promise.all([
-        // Count unique subjects
-        prisma.teacherPeriod.groupBy({
-            by: ['subject_id'],
-            where: {
-                teacher_id: teacherId,
-                academic_year_id: currentYear
-            }
-        }).then(result => result.length),
+    const teacherPeriods = await prisma.teacherPeriod.findMany({
+        where: { teacher_id: teacherId, academic_year_id: currentYear },
+        select: {
+            subject_id: true,
+            sub_class_id: true,
+            period_id: true,
+            period: { select: { start_time: true, end_time: true, is_break: true, type: true, day_of_week: true } }
+        }
+    });
+    if (teacherPeriods.length === 0) return emptyDashboard;
 
-        // Count unique subclasses
-        prisma.teacherPeriod.groupBy({
+    const subClassIds = [...new Set(teacherPeriods.map(tp => tp.sub_class_id))];
+    const subjectIds = [...new Set(teacherPeriods.map(tp => tp.subject_id))];
+    const workload = computeWorkload(teacherPeriods);
+
+    const now = schoolNow();
+    const upcomingPeriods = new Set(
+        teacherPeriods
+            .filter(tp => tp.period.day_of_week === now.dayOfWeek && !tp.period.is_break
+                && timeToMinutes(tp.period.start_time) > now.minutes)
+            .map(tp => tp.period_id)
+    ).size;
+
+    const pairKeys = new Set(teacherPeriods.map(tp => `${tp.sub_class_id}-${tp.subject_id}`));
+
+    const [enrollmentCounts, subClassSubjects, openSequences, attendanceGroups] = await Promise.all([
+        prisma.enrollment.groupBy({
             by: ['sub_class_id'],
-            where: {
-                teacher_id: teacherId,
-                academic_year_id: currentYear
-            }
-        }).then(result => result.length),
-
-        // Sum weekly periods
-        prisma.teacherPeriod.count({
-            where: {
-                teacher_id: teacherId,
-                academic_year_id: currentYear
-            }
+            where: { AND: [activeEnrollmentWhere(currentYear), { sub_class_id: { in: subClassIds } }] },
+            _count: { _all: true }
         }),
-
-        // Get unique students across all subclasses
-        prisma.teacherPeriod.findMany({
+        prisma.subClassSubject.findMany({
+            where: { sub_class_id: { in: subClassIds }, subject_id: { in: subjectIds } },
+            select: { id: true, sub_class_id: true, subject_id: true }
+        }),
+        prisma.examSequence.findMany({
             where: {
-                teacher_id: teacherId,
-                academic_year_id: currentYear
+                academic_year_id: currentYear,
+                status: 'OPEN',
+                term: { OR: [{ start_date: null }, { start_date: { lte: new Date() } }] }
             },
-            include: {
-                sub_class: {
-                    include: {
-                        enrollments: {
-                            where: { academic_year_id: currentYear }
-                        }
-                    }
-                }
-            }
-        }).then(periods => {
-            const uniqueStudents = new Set<number>();
-            periods.forEach(period => {
-                period.sub_class.enrollments.forEach(enrollment => {
-                    uniqueStudents.add(enrollment.student_id);
-                });
-            });
-            return uniqueStudents.size;
+            select: { id: true }
+        }),
+        prisma.teacherPeriodAttendance.groupBy({
+            by: ['status'],
+            where: { academic_year_id: currentYear, teacher_period: { teacher_id: teacherId } },
+            _count: { _all: true }
         })
     ]);
 
+    const countBySubClass = new Map(enrollmentCounts.map(c => [c.sub_class_id, c._count._all]));
+    const totalStudents = enrollmentCounts.reduce((s, c) => s + c._count._all, 0);
+
+    const teacherScs = subClassSubjects.filter(s => pairKeys.has(`${s.sub_class_id}-${s.subject_id}`));
+    const sequenceIds = openSequences.map(s => s.id);
+    const marksExpected = teacherScs.reduce((s, scs) => s + (countBySubClass.get(scs.sub_class_id) ?? 0), 0) * sequenceIds.length;
+    const marksEntered = marksExpected === 0 ? 0 : await prisma.mark.count({
+        where: {
+            sub_class_subject_id: { in: teacherScs.map(s => s.id) },
+            exam_sequence_id: { in: sequenceIds },
+            score: { not: null },
+            enrollment: activeEnrollmentWhere(currentYear)
+        }
+    });
+
+    const attTotal = attendanceGroups.reduce((s, g) => s + g._count._all, 0);
+    const attPresent = attendanceGroups
+        .filter(g => g.status === 'PRESENT' || g.status === 'LATE')
+        .reduce((s, g) => s + g._count._all, 0);
+
     return {
-        assignedSubjects: subjectCount,
-        totalStudents: studentCountResult,
-        totalClasses: subClassCount,
-        weeklyPeriods: weeklyPeriods,
-        marksToEnter: 10, // Placeholder
-        upcomingPeriods: 5 // Placeholder
+        assignedSubjects: subjectIds.length,
+        totalStudents,
+        totalClasses: subClassIds.length,
+        weeklyPeriods: workload.weekly_periods,
+        totalHoursPerWeek: workload.total_hours_per_week,
+        weeklyHours: workload.total_hours_per_week,
+        marksToEnter: Math.max(marksExpected - marksEntered, 0),
+        marksExpected,
+        marksEntered,
+        upcomingPeriods,
+        attendanceRate: attTotal > 0 ? Math.round((attPresent / attTotal) * 1000) / 10 : null
     };
 }
 
@@ -1228,10 +1362,10 @@ export async function getTeacherCurrentAndNextSubjects(teacherId: number, academ
         throw new Error('No active academic year found');
     }
 
+    // School-local (Africa/Douala) wall clock; the server itself runs in Europe/Berlin.
     const now = new Date();
-    const currentTime = now.toLocaleTimeString('en-GB', { hour12: false }); // HH:MM:SS format
-    const dayNames = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
-    const currentDay = dayNames[now.getDay()];
+    const currentTime = now.toLocaleTimeString('en-GB', { hour12: false, timeZone: SCHOOL_TZ }); // HH:MM:SS format
+    const currentDay = schoolNow(now).dayOfWeek;
 
     // Get all teacher periods for current academic year
     const teacherPeriods = await prisma.teacherPeriod.findMany({
@@ -1388,8 +1522,7 @@ export async function getTeacherCurrentAndNextSubjects(teacherId: number, academ
 }
 
 export async function getTeacherTimetable(teacherId: number, academicYearId?: number) {
-    const year = await getCurrentAcademicYear();
-    const yearId = year?.id;
+    const yearId = academicYearId || (await getCurrentAcademicYear())?.id;
 
     const teacherPeriods = await prisma.teacherPeriod.findMany({
         where: {
@@ -1411,38 +1544,40 @@ export async function getTeacherTimetable(teacherId: number, academicYearId?: nu
         ],
     });
 
-    if (!teacherPeriods) {
-        return {
-            summary: {
-                totalClasses: 0,
-                totalSubjects: 0,
-                weeklyPeriods: 0,
-                todayClasses: 0,
-            },
-            schedule: [],
-        };
-    }
-
     const totalClasses = new Set(teacherPeriods.map(tp => tp.sub_class_id)).size;
     const totalSubjects = new Set(teacherPeriods.map(tp => tp.subject_id)).size;
 
-    // Count of periods, not summed clock-hours: periods here aren't a fixed
-    // length (TEACHING slots run 50/55/110 min depending on the timetable), so
-    // "how many periods does this teacher have this week" and "how many hours"
-    // are genuinely different numbers -- and it's the period count the roster
-    // view actually needs.
-    const weeklyPeriods = teacherPeriods.length;
+    // Periods vs hours: periods aren't a fixed length (55 min lessons, 110 min
+    // preps), so both are returned. A combined lesson (one slot, two
+    // sub-classes) counts once; break periods never count.
+    const workload = computeWorkload(teacherPeriods);
 
-    const today = new Date().toLocaleString('en-US', { weekday: 'long' }).toUpperCase();
+    const today = schoolNow().dayOfWeek;
     const todayClasses = teacherPeriods.filter(tp => tp.period.day_of_week === today).length;
+
+    // SubClass.current_students is a cache that is only ever incremented, so it
+    // drifts (QA: "12 students" on a class of 53). Overwrite it with the live
+    // count of active students for the year.
+    const subClassIds = [...new Set(teacherPeriods.map(tp => tp.sub_class_id))];
+    const counts = subClassIds.length === 0 ? [] : await prisma.enrollment.groupBy({
+        by: ['sub_class_id'],
+        where: { AND: [activeEnrollmentWhere(yearId), { sub_class_id: { in: subClassIds } }] },
+        _count: { _all: true },
+    });
+    const countBySubClass = new Map(counts.map(c => [c.sub_class_id, c._count._all]));
 
     return {
         summary: {
             totalClasses,
             totalSubjects,
-            weeklyPeriods,
+            weeklyPeriods: workload.weekly_periods,
+            totalHoursPerWeek: workload.total_hours_per_week,
             todayClasses,
         },
-        schedule: teacherPeriods.map(tp => ({ ...tp, teacher_period_id: tp.id })),
+        schedule: teacherPeriods.map(tp => ({
+            ...tp,
+            teacher_period_id: tp.id,
+            sub_class: { ...tp.sub_class, current_students: countBySubClass.get(tp.sub_class_id) ?? 0 },
+        })),
     };
 }

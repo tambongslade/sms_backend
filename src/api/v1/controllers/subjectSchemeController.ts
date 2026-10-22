@@ -4,6 +4,7 @@ import * as schemeService from '../services/subjectSchemeService';
 import * as importService from '../services/subjectSchemeImportService';
 
 function statusFromError(err: any): number {
+    if (err?.code === 'BAD_REQUEST') return 400;
     if (err?.code === 'CONFLICT') return 409;
     if (err?.code === 'P2002') return 409; // Prisma unique violation
     if (err?.code === 'P2025') return 404; // Prisma record-not-found
@@ -14,7 +15,12 @@ function statusFromError(err: any): number {
 function fail(res: Response, err: any) {
     const code = statusFromError(err);
     if (code === 500) console.error('SubjectScheme error:', err);
-    res.status(code).json({ success: false, error: err.message ?? 'Server error' });
+    // A raw Prisma unique-violation message is unreadable (and the frontend
+    // replaces it with a generic one) -- say what actually clashed.
+    const message = err?.code === 'P2002'
+        ? 'This already exists (a scheme, module, chapter or lesson with the same subject/class/year or position).'
+        : err.message ?? 'Server error';
+    res.status(code).json({ success: false, error: message });
 }
 
 export const listSchemes = async (req: Request, res: Response) => {
@@ -62,6 +68,15 @@ export const getSchemeByTriplet = async (req: Request, res: Response) => {
 export const createScheme = async (req: Request, res: Response) => {
     try {
         if (!req.user?.id) return res.status(401).json({ success: false, error: 'Unauthorized' });
+        const missing = (['subject_id', 'class_id', 'periods_per_week', 'annual_teaching_hours'] as const)
+            .filter((k) => req.body?.[k] === undefined || req.body?.[k] === null || req.body?.[k] === '');
+        if (missing.length) {
+            const labels: Record<string, string> = {
+                subject_id: 'Subject', class_id: 'Class',
+                periods_per_week: 'Periods per week', annual_teaching_hours: 'Annual teaching hours',
+            };
+            return res.status(400).json({ success: false, error: `Missing required field(s): ${missing.map((k) => labels[k]).join(', ')}` });
+        }
         const scheme = await schemeService.createScheme(req.body, req.user.id);
         res.status(201).json({ success: true, data: scheme });
     } catch (err: any) {

@@ -26,8 +26,8 @@ router.put('/:id', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIP
 router.delete('/:id', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL']), subjectController.deleteSubject);
 
 // POST /subjects/:id/teachers - Assign a teacher to a subject
-// Only SUPER_MANAGER, PRINCIPAL can assign teachers
-router.post('/:id/teachers', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL']), subjectController.assignTeacher);
+// Only SUPER_MANAGER, MANAGER, PRINCIPAL, VICE_PRINCIPAL, DEAN_OF_STUDIES can assign teachers
+router.post('/:id/teachers', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_STUDIES']), subjectController.assignTeacher);
 
 // POST /subjects/:id/sub-classes - Link subject to a sub-class (with coefficient)
 // Only SUPER_MANAGER, PRINCIPAL can link subjects to sub-classes

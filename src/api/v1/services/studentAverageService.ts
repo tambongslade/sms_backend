@@ -1,124 +1,81 @@
 import prisma, { AverageStatus } from '../../../config/db';
+import { getSequenceResults } from './resultsService';
 
 /**
- * Calculate and save student averages for a specific exam sequence
+ * Calculate and save student averages for a specific exam sequence.
+ * Uses resultsService (same numbers as the Results screen and report cards):
+ * weighted by coefficient, subjects without a mark excluded, ranked within
+ * the subclass, students without any mark not stored/ranked.
  * @param examSequenceId The ID of the exam sequence
- * @param sub_classId Optional sub_class ID to filter students
+ * @param sub_classId Optional sub_class ID; all subclasses of the year otherwise
  */
 export const calculateAndSaveStudentAverages = async (
     examSequenceId: number,
     sub_classId?: number
 ) => {
     try {
-        // Get the exam sequence to verify it exists
         const examSequence = await prisma.examSequence.findUnique({
             where: { id: examSequenceId },
-            include: {
-                academic_year: true,
-                term: true,
-            },
+            select: { id: true, academic_year_id: true },
         });
-
         if (!examSequence) {
             throw new Error(`Exam sequence with ID ${examSequenceId} not found`);
         }
 
-        // Get all enrollments for the academic year, optionally filtered by sub_class
-        const enrollmentQuery: any = {
-            academic_year_id: examSequence.academic_year_id,
-            student: { status: { not: 'WITHDRAWN' } },
-        };
+        const subClassIds = sub_classId
+            ? [sub_classId]
+            : (await prisma.enrollment.findMany({
+                where: {
+                    academic_year_id: examSequence.academic_year_id,
+                    sub_class_id: { not: null },
+                    student: { status: { not: 'WITHDRAWN' } },
+                },
+                distinct: ['sub_class_id'],
+                select: { sub_class_id: true },
+            })).map(e => e.sub_class_id!) ;
 
-        if (sub_classId) {
-            enrollmentQuery.sub_class_id = sub_classId;
-        }
-
-        const enrollments = await prisma.enrollment.findMany({
-            where: enrollmentQuery,
-            include: {
-                student: true,
-                sub_class: true,
-            },
-        });
-
-        if (enrollments.length === 0) {
+        if (subClassIds.length === 0) {
             throw new Error('No enrollments found for the given criteria');
         }
 
-        // For each enrollment, calculate average and save
-        const averagePromises = enrollments.map(async (enrollment) => {
-            // Get all marks for this enrollment and exam sequence
-            const marks = await prisma.mark.findMany({
-                where: {
-                    enrollment_id: enrollment.id,
-                    exam_sequence_id: examSequenceId,
-                },
-                include: {
-                    sub_class_subject: true,
-                },
-            });
+        const saved: any[] = [];
+        for (const scId of subClassIds) {
+            const results = await getSequenceResults(scId, examSequenceId);
+            const ranked = results.students.filter(st => st.average !== null);
+            const unranked = results.students.filter(st => st.average === null).map(st => st.enrollment_id);
 
-            if (marks.length === 0) {
-                return null; // Skip if no marks
-            }
-
-            // Calculate weighted average
-            let totalWeightedScore = 0;
-            let totalCoefficient = 0;
-
-            marks.forEach((mark) => {
-                totalWeightedScore += mark.score ?? 0 * mark.sub_class_subject.coefficient;
-                totalCoefficient += mark.sub_class_subject.coefficient;
-            });
-
-            // If no coefficients, skip
-            if (totalCoefficient === 0) {
-                return null;
-            }
-
-            const average = parseFloat((totalWeightedScore / totalCoefficient).toFixed(2));
-
-            // Check if an average entry already exists
-            const existingAverage = await prisma.studentSequenceAverage.findUnique({
-                where: {
-                    enrollment_id_exam_sequence_id: {
-                        enrollment_id: enrollment.id,
-                        exam_sequence_id: examSequenceId,
-                    },
-                },
-            });
-
-            if (existingAverage) {
-                // Update existing record
-                return prisma.studentSequenceAverage.update({
-                    where: { id: existingAverage.id },
-                    data: {
-                        average,
-                        status: AverageStatus.CALCULATED,
-                    },
-                });
-            } else {
-                // Create new record
-                return prisma.studentSequenceAverage.create({
-                    data: {
-                        enrollment_id: enrollment.id,
-                        exam_sequence_id: examSequenceId,
-                        average,
-                        status: AverageStatus.CALCULATED,
-                    },
+            // A student whose marks were all removed must not keep a stale average.
+            if (unranked.length) {
+                await prisma.studentSequenceAverage.deleteMany({
+                    where: { exam_sequence_id: examSequenceId, enrollment_id: { in: unranked } },
                 });
             }
-        });
-
-        // Filter out null results (students with no marks)
-        const averageResults = (await Promise.all(averagePromises)).filter(Boolean);
-
-        // Calculate and update rankings
-        if (averageResults.length > 0) {
-            await updateRankings(examSequenceId, sub_classId);
+            for (const st of ranked) {
+                saved.push(await prisma.studentSequenceAverage.upsert({
+                    where: {
+                        enrollment_id_exam_sequence_id: {
+                            enrollment_id: st.enrollment_id,
+                            exam_sequence_id: examSequenceId,
+                        },
+                    },
+                    update: {
+                        average: st.average!,
+                        rank: st.rank,
+                        total_students: ranked.length,
+                        status: AverageStatus.VERIFIED,
+                    },
+                    create: {
+                        enrollment_id: st.enrollment_id,
+                        exam_sequence_id: examSequenceId,
+                        average: st.average!,
+                        rank: st.rank,
+                        total_students: ranked.length,
+                        status: AverageStatus.VERIFIED,
+                    },
+                }));
+            }
         }
-
-        return averageResults;
+        return saved;
     } catch (error) {
         console.error('Error calculating student averages:', error);
         throw error;
@@ -126,55 +83,43 @@ export const calculateAndSaveStudentAverages = async (
 };
 
 /**
- * Update rankings for all students in a sequence (optionally filtered by sub_class)
- * @param examSequenceId The ID of the exam sequence
- * @param sub_classId Optional sub_class ID to filter students
+ * Re-rank stored averages for a sequence. Ranks are always within a subclass
+ * (ties share a rank). Kept for callers of the old API.
  */
 export const updateRankings = async (examSequenceId: number, sub_classId?: number) => {
     try {
-        // Get all enrollments for the sub_class (if specified)
-        let enrollmentFilter: any = {};
-
-        if (sub_classId) {
-            // Get all averages for students in this sub_class
-            const enrollments = await prisma.enrollment.findMany({
-                where: { sub_class_id: sub_classId, student: { status: { not: 'WITHDRAWN' } } },
-                select: { id: true },
-            });
-
-            enrollmentFilter = {
-                enrollment_id: { in: enrollments.map(e => e.id) },
-            };
-        }
-
-        // Get all averages for this exam sequence
         const averages = await prisma.studentSequenceAverage.findMany({
             where: {
                 exam_sequence_id: examSequenceId,
-                ...enrollmentFilter,
-            },
-            orderBy: {
-                average: 'desc',
-            },
-            include: {
-                enrollment: true,
-            },
-        });
-
-        // Update rankings
-        const totalStudents = averages.length;
-        const updatePromises = averages.map((avg, index) => {
-            return prisma.studentSequenceAverage.update({
-                where: { id: avg.id },
-                data: {
-                    rank: index + 1, // Ranking starts from 1
-                    total_students: totalStudents,
-                    status: AverageStatus.VERIFIED,
+                enrollment: {
+                    student: { status: { not: 'WITHDRAWN' } },
+                    ...(sub_classId ? { sub_class_id: sub_classId } : {}),
                 },
-            });
+            },
+            include: { enrollment: { select: { sub_class_id: true } } },
         });
-
-        return Promise.all(updatePromises);
+        const bySubClass = new Map<number | null, typeof averages>();
+        for (const a of averages) {
+            const k = a.enrollment.sub_class_id;
+            if (!bySubClass.has(k)) bySubClass.set(k, []);
+            bySubClass.get(k)!.push(a);
+        }
+        const updates: Promise<any>[] = [];
+        for (const group of bySubClass.values()) {
+            group.sort((x, y) => y.average - x.average);
+            let prevAvg: number | null = null;
+            let prevRank = 0;
+            group.forEach((avg, i) => {
+                const rank = prevAvg !== null && Math.abs(avg.average - prevAvg) < 1e-9 ? prevRank : i + 1;
+                prevAvg = avg.average;
+                prevRank = rank;
+                updates.push(prisma.studentSequenceAverage.update({
+                    where: { id: avg.id },
+                    data: { rank, total_students: group.length, status: AverageStatus.VERIFIED },
+                }));
+            });
+        }
+        return Promise.all(updates);
     } catch (error) {
         console.error('Error updating rankings:', error);
         throw error;

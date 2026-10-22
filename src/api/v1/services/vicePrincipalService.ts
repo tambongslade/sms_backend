@@ -1,6 +1,7 @@
 import prisma from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
 import { SUBCLASS_MAX_STUDENTS } from '../../../utils/capacity';
+import { activeEnrollmentWhere, countActiveStudents } from '../../../utils/schoolCounts';
 
 // Types for Vice Principal operations
 export interface VicePrincipalDashboard {
@@ -62,6 +63,9 @@ export interface InterviewManagement {
     studentName: string;
     studentMatricule: string;
     className: string;
+    classId: number;
+    subClassId: number | null;
+    subclassName: string | null;
     interviewStatus: 'PENDING' | 'COMPLETED' | 'OVERDUE';
     scheduledDate?: string;
     completedDate?: string;
@@ -133,15 +137,13 @@ export async function getVicePrincipalDashboard(academicYearId?: number): Promis
             enrollmentsLastMonth,
             subclassCapacity
         ] = await Promise.all([
-            // Total students in academic year
-            prisma.enrollment.count({
-                where: { academic_year_id: currentYear.id }
-            }),
+            // Total students in academic year (shared definition, utils/schoolCounts.ts)
+            countActiveStudents(currentYear.id),
 
             // Students assigned to subclasses
             prisma.enrollment.count({
                 where: {
-                    academic_year_id: currentYear.id,
+                    ...activeEnrollmentWhere(currentYear.id),
                     sub_class_id: { not: null }
                 }
             }),
@@ -335,14 +337,8 @@ export async function getStudentManagementOverview(academicYearId?: number): Pro
             totalAssigned,
             awaitingAssignment
         ] = await Promise.all([
-            // Total students
-            prisma.student.count({
-                where: {
-                    enrollments: {
-                        some: { academic_year_id: currentYear.id }
-                    }
-                }
-            }),
+            // Total students (shared definition, utils/schoolCounts.ts)
+            countActiveStudents(currentYear.id),
 
             // Students count by assignment status
             Promise.resolve([
@@ -449,7 +445,11 @@ export async function getStudentManagementOverview(academicYearId?: number): Pro
  */
 export async function getInterviewManagement(
     academicYearId?: number,
-    status?: string
+    status?: string,
+    // UNASSIGNED (default, backwards compatible): enrolled in a class but no subclass yet.
+    // ASSIGNED: already placed in a subclass. ALL: both. (QA U10: assigned students
+    // used to vanish from the list because only unassigned rows were returned.)
+    assignment: 'UNASSIGNED' | 'ASSIGNED' | 'ALL' = 'UNASSIGNED'
 ): Promise<InterviewManagement[]> {
     try {
         const yearId = academicYearId || (await getCurrentAcademicYear())?.id;
@@ -460,7 +460,8 @@ export async function getInterviewManagement(
         const enrollments = await prisma.enrollment.findMany({
             where: {
                 academic_year_id: yearId,
-                sub_class_id: null,      // But not to a subclass
+                ...(assignment === 'UNASSIGNED' && { sub_class_id: null }),
+                ...(assignment === 'ASSIGNED' && { sub_class_id: { not: null } }),
                 student: { status: { not: 'WITHDRAWN' } },
             },
             include: {
@@ -473,6 +474,7 @@ export async function getInterviewManagement(
                     },
                 },
                 class: true,
+                sub_class: { select: { id: true, name: true } },
             },
             orderBy: {
                 created_at: 'asc',
@@ -511,6 +513,9 @@ export async function getInterviewManagement(
                     studentName: enr.student.name,
                     studentMatricule: enr.student.matricule,
                     className: enr.class.name,
+                    classId: enr.class_id,
+                    subClassId: enr.sub_class_id,
+                    subclassName: enr.sub_class?.name ?? null,
                     interviewStatus: currentInterviewStatus,
                     scheduledDate: undefined,
                     completedDate: latestInterview?.created_at.toISOString().split('T')[0],

@@ -17,6 +17,9 @@ router.post('/', authenticate, authorize(ALL_AUTHORS), ctrl.createEntry);
 // GET /logbook/coverage/:schemeId — VP/Dean/HOD coverage dashboard for a scheme
 router.get('/coverage/:schemeId', authenticate, authorize(REVIEWERS), ctrl.getSchemeCoverage);
 
+// GET /logbook/filter-options — teacher/class/subject options for the review page (HOD: own department). Before /:id.
+router.get('/filter-options', authenticate, authorize(REVIEWERS), ctrl.getReviewFilterOptions);
+
 // GET /logbook/:id — entry detail
 router.get('/:id', authenticate, authorize(ALL_AUTHORS), ctrl.getEntryById);
 

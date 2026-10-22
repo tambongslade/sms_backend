@@ -2924,7 +2924,7 @@ Suspensions, work duties, dismissals, disciplinary council referrals.
       status: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
       days: number | null;
       startDate: string | null;
-      endDate: string | null;
+      endDate: string | null;   // inclusive last day: startDate + (days - 1)
       reason: string;
       notes: string | null;
       decidedBy: string | null;
@@ -2934,6 +2934,12 @@ Suspensions, work duties, dismissals, disciplinary council referrals.
   };
 }
 ```
+
+#### End-date rule for `POST /api/v1/disciplinary-actions` and `PUT /api/v1/disciplinary-actions/:id`
+When `endDate` is omitted and `days` + `startDate` are known, the server computes an **inclusive** end date:
+`endDate = startDate + (days - 1)`. A 2-day suspension starting 2026-11-23 covers 23 and 24 Nov
+(`endDate = 2026-11-24`). On `PUT`, sending `days` or `startDate` without `endDate` recomputes it; an explicit
+`endDate` is stored as-is. (Before Oct 2026 the server stored `startDate + days`, one day too many.)
 
 ### Discipline — Saturday Punishments
 ```http
@@ -3361,6 +3367,10 @@ Authorization: Bearer <token>
 {
   academicYearId?: number;
   status?: "PENDING" | "COMPLETED" | "OVERDUE";
+  // Which enrolments to return (default UNASSIGNED, the historical behaviour):
+  // UNASSIGNED = enrolled in a class but no subclass yet; ASSIGNED = already in a subclass; ALL = both.
+  // Any other value -> 400.
+  assignment?: "UNASSIGNED" | "ASSIGNED" | "ALL";
 }
 ```
 
@@ -3374,6 +3384,9 @@ Authorization: Bearer <token>
     studentName: string;
     studentMatricule: string;
     className: string;
+    classId: number;
+    subClassId: number | null;     // null = not yet assigned to a subclass
+    subclassName: string | null;   // e.g. "Form 1 A"
     interviewStatus: "PENDING" | "COMPLETED" | "OVERDUE";
     scheduledDate?: string;
     completedDate?: string;
@@ -3604,7 +3617,7 @@ Authorization: Bearer <token>
   data: {
     student: {
       id: number;
-      matricule: string;
+      matricule: string;  // real matricule assigned at creation, format SS{YY}STD{NNN} (never TEMP_...)
       name: string;
       dateOfBirth: string;
       placeOfBirth: string;
@@ -3925,37 +3938,30 @@ GET /api/v1/bursar/dashboard
 Authorization: Bearer <token>
 ```
 
-**Query Parameters:**
-```typescript
-{
-  academicYearId?: number;
-}
-```
+**Query Parameters:** `{ academicYearId?: number }`
+
+All money figures use the shared outstanding rule (see "Outstanding Fees Summary").
 
 **Response (200):**
 ```typescript
 {
   success: true;
   data: {
-    totalFeesExpected: number;
-    totalFeesCollected: number;
-    pendingPayments: number;
-    collectionRate: number;
-    recentTransactions: number;
-    newStudentsThisMonth: number;
-    studentsWithParents: number;
+    studentsOwingCount: number;
+    totalAmountOwed: number;            // = totalOutstanding of /fees/outstanding-summary
+    totalExpected: number;
+    totalCollected: number;
+    totalOverpayments: number;
+    studentCount: number;
+    enrollmentsWithoutFeeRecord: number;
+    reconciliation: { expected: number; collected: number; overpayments: number; outstanding: number; formula: string };
+    recentTransactions: number;         // payment transactions dated this calendar month
+    newStudentsThisMonth: number;       // enrolments of this year with enrollmentDate in this month (not withdrawn)
+    studentsWithParents: number;        // students of this year, not withdrawn
     studentsWithoutParents: number;
-    paymentMethods: Array<{
-      method: string;
-      count: number;
-      totalAmount: number;
-    }>;
-    recentRegistrations: Array<{
-      studentName: string;
-      parentName: string;
-      registrationDate: string;
-      className: string;
-    }>;
+    paymentMethods: Array<{ method: PaymentMethod; label: string; count: number; totalAmount: number }>; // every method, zeros included
+    recentPayments: Array<{ id; receiptNumber; amount; paymentMethod; paymentDate; studentName; className }>;
+    recentRegistrations: Array<{ studentName: string; parentName: string; registrationDate: string; className: string }>;
   };
 }
 ```
@@ -4528,112 +4534,216 @@ Retrieves all payment transactions associated with a specific fee record.
 }
 ```
 
+### Payment methods (shared by every money endpoint)
+
+`paymentMethod` accepts (case-insensitive; aliases `MOMO`/`MTN` -> `MTN_MOMO`, `ORANGE`/`OM` -> `ORANGE_MONEY`, `ESPECES` -> `CASH`):
+
+| value | label |
+|---|---|
+| `CASH` | Cash |
+| `MTN_MOMO` | MTN Mobile Money |
+| `ORANGE_MONEY` | Orange Money |
+| `EXPRESS_UNION` | Express Union |
+| `CCA` | CCA Bank |
+| `F3DC` | F3DC |
+| `AFRILAND_FIRST_BANK` | Afriland First Bank |
+
+```http
+GET /api/v1/fees/payment-methods
+Authorization: Bearer <token>
+```
+**Response (200):** `{ success: true, data: Array<{ value: PaymentMethod; label: string }> }`
+
+Used by: `POST /fees/:feeId/payments`, `PUT /fees/payments/:paymentId`, `POST /payments/primary`, `POST /payments/control`, fee-item payments, `POST/PUT /expenditures` (optional there), `PAYMENT_CLAIM` finance requests. Unknown values return `400`.
+
+### Payment validation rules (all school-fee payment endpoints)
+
+- `amount` must be a number **> 0** -> otherwise `400`.
+- `paymentDate` (YYYY-MM-DD or ISO) defaults to today and must **not be in the future** (Africa/Douala) -> `400`.
+- `receiptNumber` is optional. When omitted the server assigns the next **sequential** number for the academic year: `REC-<yearStart>-<000001>` (prefix configurable per server with env `RECEIPT_PREFIX`). A manual number (pre-printed receipt book) must be **unique** across all payments (case-insensitive) -> otherwise `409 { code: "DUPLICATE_RECEIPT", existingPaymentId }`.
+- **Overpayment:** if `amountPaid + amount > amountExpected`, interactive endpoints (`POST /fees/:feeId/payments`, `POST /payments/primary`) return
+  `409 { success:false, error, code:"OVERPAYMENT_CONFIRMATION_REQUIRED", amountExpected, amountPaid, balance, overpayment }`
+  unless the body contains `confirmOverpayment: true`. Approved `PAYMENT_CLAIM`s and fee-item cascades record it without asking.
+- Same student + amount + method within 60 s -> `409 { code: "DUPLICATE_PAYMENT" }` (unchanged).
+
+### Record Payment (Bursar desk, primary fees) — creates the fee row if missing
+```http
+POST /api/v1/payments/primary
+Authorization: Bearer <token>
+```
+**Authorization:** `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `BURSAR`
+
+**Request Body:**
+```typescript
+{
+  studentId?: number;            // or enrollmentId
+  enrollmentId?: number;
+  academicYearId?: number;       // defaults to current year
+  amount: number;                // > 0
+  paymentDate?: string;          // YYYY-MM-DD, <= today, default today
+  paymentMethod: PaymentMethod;  // see table above
+  receiptNumber?: string;        // optional manual number; omit for sequential
+  notes?: string;
+  confirmOverpayment?: boolean;  // resend with true after the 409 warning
+}
+```
+**Response (201):**
+```typescript
+{
+  success: true;
+  message: string;
+  data: {
+    payment: { id; amount; paymentDate; receiptNumber; paymentMethod; feeId; enrollmentId; academicYearId; recordedById; notes; createdAt; updatedAt };
+    fee: { id; amountExpected; amountPaid; dueDate; isNewStudent; ... };
+    feeCreated: boolean;
+    receiptNumber: string;
+    amountExpected: number;
+    amountPaid: number;     // after this payment
+    balance: number;        // max(expected - paid, 0)
+    overpayment: number;    // max(paid - expected, 0)
+  };
+}
+```
+**Errors:** `400` validation, `401`, `404` student not enrolled, `409` `OVERPAYMENT_CONFIRMATION_REQUIRED` / `DUPLICATE_RECEIPT` / `DUPLICATE_PAYMENT`.
+
 ### Record a Payment for a Specific Fee (direct / legacy)
 ```http
 POST /api/v1/fees/:feeId/payments
 Authorization: Bearer <token>
 ```
 
-**Description:**
-Records a new payment transaction for a specific fee record and updates the fee's paid amount.
+> **Preferred flow — user-driven claim + Bursar validation:** parents submit a `PAYMENT_CLAIM` at
+> `POST /api/v1/finance-requests`; approving it creates the `PaymentTransaction` automatically.
+> This endpoint remains for payments recorded at the desk.
 
-> **Preferred flow — user-driven claim + Bursar validation:**
-> Parents (or Bursar+ on their behalf) submit a `PAYMENT_CLAIM` at
-> `POST /api/v1/finance-requests`. Bursar/Principal/Manager/Super Manager
-> receive a notification, then call `POST /api/v1/finance-requests/:id/approve`.
-> The approval automatically creates the `PaymentTransaction` and updates
-> `SchoolFees.amountPaid` — no separate call to this endpoint is needed.
-> This direct endpoint remains for walk-in cash payments recorded at the desk.
+**Authorization:** `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `BURSAR`
 
-**Authorization:**
-- `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `BURSAR`
-
-**Path Parameters:**
-- `feeId` (number): The ID of the fee record to record a payment for.
+**Path Parameters:** `feeId` (number). The fee row decides the enrollment and academic year; an `enrollmentId` that does not match returns `400`.
 
 **Request Body:**
 ```typescript
 {
-  amount: number;
-  paymentDate: string; // YYYY-MM-DD
-  receiptNumber?: string; // Optional
-  paymentMethod: "EXPRESS_UNION" | "CCA" | "F3DC";
-  enrollmentId?: number; // Optional: Can be derived from feeId, but can be provided for clarity
-  studentId?: number; // Optional: Can be derived from feeId, but can be provided for clarity
-  academicYearId?: number; // Optional: Can be derived from feeId, but can be provided for clarity
+  amount: number;                // > 0
+  paymentDate?: string;          // YYYY-MM-DD, <= today, default today
+  paymentMethod: PaymentMethod;
+  receiptNumber?: string;        // optional; omit for sequential number
+  notes?: string;
+  studentId?: number;            // optional, informational
+  enrollmentId?: number;         // optional, must match the fee
+  confirmOverpayment?: boolean;
 }
 ```
-
-**Response (Success - 201):**
+**Response (201):**
 ```typescript
 {
   success: true;
   data: {
-    id: number;
-    amount: number;
-    paymentDate: string;
-    receiptNumber?: string;
-    paymentMethod: "EXPRESS_UNION" | "CCA" | "F3DC";
-    feeId: number;
-    recordedById?: number;
-    createdAt: string;
-    updatedAt: string;
+    id: number; amount: number; paymentDate: string; receiptNumber: string; paymentMethod: PaymentMethod;
+    feeId: number; enrollmentId: number; academicYearId: number; recordedById: number; notes: string | null;
+    createdAt: string; updatedAt: string;
+    ledger: { amountExpected: number; amountPaid: number; balance: number; overpayment: number; receiptGenerated: boolean };
   };
 }
 ```
+**Errors:** `400`, `401`, `404` fee not found, `409` (`OVERPAYMENT_CONFIRMATION_REQUIRED`, `DUPLICATE_RECEIPT`, `DUPLICATE_PAYMENT`).
 
 ### Edit a Payment Record
 ```http
 PUT /api/v1/fees/payments/:paymentId
+PUT /api/v1/fees/:feeId/payments/:paymentId      # nested form used by the fee-management UI
 Authorization: Bearer <token>
 ```
 
-**Description:**
-Updates an existing payment transaction. When `amount` is changed, the parent fee's `amountPaid` is automatically adjusted by the delta (old vs. new amount) in the same transaction.
+**Description:** Updates a payment. When `amount` changes, the fee's `amountPaid` is adjusted by the delta in the same DB transaction. Every change writes an `AuditLog` row (`action: "UPDATE_PAYMENT"`, `tableName: "PaymentTransaction"`, old/new values of the changed fields, optional `reason`). With the nested form, a payment that does not belong to `:feeId` returns `404`.
 
 **Authorization:**
-- `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`: may edit at any time.
-- `BURSAR`: may only edit within **2 days** of the payment's `createdAt` timestamp. Attempts after the window return `403`.
+- `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`: any time.
+- `BURSAR`: within **2 days** of `createdAt` (else `403`).
 
-**Path Parameters:**
-- `paymentId` (number): The ID of the payment transaction to edit.
-
-**Request Body (all fields optional — send only what you want to change):**
+**Request Body (all optional):**
 ```typescript
 {
-  amount?: number;
-  paymentDate?: string;         // YYYY-MM-DD
-  receiptNumber?: string | null;
-  paymentMethod?: "EXPRESS_UNION" | "CCA" | "F3DC";
+  amount?: number;               // > 0
+  paymentDate?: string;          // YYYY-MM-DD, <= today
+  receiptNumber?: string;        // must stay unique; cannot be blanked
+  paymentMethod?: PaymentMethod;
   notes?: string | null;
+  reason?: string;               // stored in the audit log
 }
 ```
+**Response (200):** `{ success: true, data: PaymentTransaction }`
 
-**Response (Success - 200):**
+**Errors:** `400` validation / invalid method, `403` edit window closed, `404` not found, `409` `DUPLICATE_RECEIPT`.
+
+### Payment Receipt (data / printable PDF, reprints)
+```http
+GET /api/v1/fees/payments/:paymentId/receipt
+GET /api/v1/fees/payments/:paymentId/receipt/pdf?reprint=true
+Authorization: Bearer <token>
+```
+**Authorization:** `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `BURSAR`, `SECRETARY`, `FEE_AUDITOR`
+
+`/receipt` response (200):
 ```typescript
 {
   success: true;
   data: {
-    id: number;
-    amount: number;
-    paymentDate: string;
-    receiptNumber?: string;
-    paymentMethod: "EXPRESS_UNION" | "CCA" | "F3DC";
-    feeId: number;
-    enrollmentId: number;
+    paymentId: number; receiptNumber: string; paymentDate: string; recordedAt: string;
+    amount: number; amountInWords: string;          // "Two hundred and fifteen thousand francs CFA"
+    paymentMethod: PaymentMethod; paymentMethodLabel: string; notes: string | null;
+    student: { id: number; name: string; matricule: string };
+    className: string | null; subClassName: string | null; academicYear: string | null;
+    amountExpected: number;
+    totalPaidToDate: number;        // running total up to and including this payment
+    balanceAfterPayment: number;    // balance at the time of this receipt
+    overpayment: number;
+    cashier: { id: number; name: string } | null;
+  };
+}
+```
+`/receipt/pdf` returns `application/pdf` (A5; school letterhead, amount in words, balance left, cashier and payer signature lines). `reprint=true` stamps "DUPLICATE / REPRINT". `404` if the payment does not exist.
+
+### Outstanding Fees Summary (shared rule for every finance screen)
+```http
+GET /api/v1/fees/outstanding-summary?academicYearId=&classId=&subClassId=
+Authorization: Bearer <token>
+```
+**Authorization:** `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `BURSAR`, `SECRETARY`, `FEE_AUDITOR`
+
+Rule used everywhere (Overview, Fee Defaulters, Fee Statistics via `/fees`, Reports): population = SchoolFees rows of the year whose student is not `WITHDRAWN`; class = the sub-class's class, or the registered class for students not yet placed; balance = `max(expected - paid, 0)`; overpayments never offset other students' debts.
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: {
     academicYearId: number;
-    recordedById: number;
-    notes?: string;
-    createdAt: string;
-    updatedAt: string;
+    studentCount: number; studentsOwing: number; studentsPaidInFull: number;
+    studentsOverpaid: number; studentsNotPaidAnything: number;
+    totalExpected: number; totalCollected: number; totalOutstanding: number; totalOverpayments: number;
+    enrollmentsWithoutFeeRecord: number;
+    reconciliation: { expected; collected; overpayments; outstanding; formula: string }; // expected − collected + overpayments = outstanding
   };
 }
 ```
 
-**Error Responses:**
-- `400`: Invalid `paymentId` or invalid `paymentMethod`.
-- `403`: Bursar attempted to edit outside the 2-day window.
-- `404`: Payment not found.
+> `GET /api/v1/fees` now excludes `WITHDRAWN` students by default (pass `includeWithdrawn=true` to include them), and `classId` also matches students registered to the class but not yet placed in a sub-class.
+
+---
+
+### Fee Audit — per-student primary vs control status
+```http
+GET /api/v1/fee-comparison/students?academicYearId=&status=&studentStatus=&page=&limit=
+Authorization: Bearer <token>
+```
+**Authorization:** `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`
+
+`status` per row (also accepted as filter):
+- `MATCHED` — both ledgers record the same **non-zero** amount.
+- `NOT_PAID` — both ledgers at 0 (nothing paid yet; previously reported as `MATCHED`).
+- `PAYMENT_MISMATCH` — both rows exist, amounts differ.
+- `MISSING_CONTROL` / `MISSING_PRIMARY` — one ledger has money, the other has no row.
+- `NO_RECORDS` — neither row exists.
 
 ---
 
@@ -4649,11 +4759,32 @@ callers do **not** also hit the direct payment/refund endpoints.
 
 | Type | Creator | Approver / Actor | On approve, we auto-create… |
 |---|---|---|---|
-| `PAYMENT_CLAIM` | `PARENT` or Bursar+ | Bursar+ (approve/reject) | `PaymentTransaction` + updates `SchoolFees.amountPaid` |
-| `REFUND` | Bursar+ | `SUPER_MANAGER` only (approve/reject) | `Refund` + decrements `SchoolFees.amountPaid` |
-| `FEE_REDUCTION` | Bursar+ | Principal+ (approve/reject) | — (fee adjustment made manually after approval) |
-| `PERSONNEL_DISBURSEMENT` | Bursar+ | Recipient or Principal+ (complete/reject) | — |
-| `BANK_VERIFICATION` | Bursar+ | Any finance viewer (complete/reject) | — |
+| `PAYMENT_CLAIM` | `PARENT` or Bursar/Principal+ | Bursar+ (approve/reject) | `PaymentTransaction` + updates `SchoolFees.amountPaid` |
+| `REFUND` | Bursar/Principal+ | `SUPER_MANAGER` only (approve/reject) | `Refund` + decrements `SchoolFees.amountPaid` |
+| `FEE_REDUCTION` | Bursar/Principal+ | Principal+ (approve/reject) | — (fee adjustment made manually after approval) |
+| `PERSONNEL_DISBURSEMENT` | Bursar/Principal+ (any recipient); **any other staff role** for themselves only (`payload.recipientUserId` must equal the caller's id — the "Request Money" page) | Recipient or Principal+ (complete/reject) | — |
+| `BANK_VERIFICATION` | Bursar/Principal+ | Finance oversight roles (`VICE_PRINCIPAL`, `BURSAR`, `SECRETARY`, `FEE_AUDITOR`, Principal+) (complete/reject) | — |
+
+"Bursar/Principal+" = `BURSAR`, `PRINCIPAL`, `MANAGER`, `SUPER_MANAGER`.
+
+**Visibility (list + detail):** oversight roles (`SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`,
+`VICE_PRINCIPAL`, `BURSAR`, `SECRETARY`, `FEE_AUDITOR`) see every request. Any other
+authenticated user (teachers, HODs, deans, nurse, parents, ...) only sees requests they
+raised, `PERSONNEL_DISBURSEMENT`s addressed to them, and — for `PARENT` — requests whose
+`payload.studentId` / `payload.enrollmentId` belongs to a linked child. Out-of-scope
+detail lookups return `404`.
+
+**Display fields on every returned request (create, list, detail, approve/reject/complete):**
+```typescript
+{
+  requestedBy: { id: number; name: string; matricule: string | null } | null;
+  actedBy:     { id: number; name: string; matricule: string | null } | null;
+  student:     { id: number; name: string; matricule: string } | null;      // from payload.enrollmentId or payload.studentId
+  enrollment:  { id: number; className: string | null; subClassName: string | null; academicYearName: string | null } | null;
+                                                                             // payload.enrollmentId, else the student's latest enrollment
+  recipient:   { id: number; name: string; matricule: string | null } | null; // PERSONNEL_DISBURSEMENT payload.recipientUserId
+}
+```
 
 **Notifications fired automatically:**
 - On create: recipients relevant to the type are notified with `category = APPROVAL_NEEDED`.
@@ -4665,8 +4796,8 @@ POST /api/v1/finance-requests
 Authorization: Bearer <token>
 ```
 
-**Authorization:** `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `BURSAR`, `PARENT`
-(per-type creator role enforced in service).
+**Authorization:** any authenticated user; the per-type creator rule in the table above is
+enforced in the service (violations → `403` with a plain-language message).
 
 **Request Body:**
 ```typescript
@@ -4733,14 +4864,17 @@ Authorization: Bearer <token>
     requestedById: number;
     actedById: number | null;
     actedAt: string | null;
+    actedNotes: string | null;
     createdAt: string;
     updatedAt: string;
+    // + display fields: requestedBy, actedBy, student, enrollment, recipient (see above)
   };
 }
 ```
 
 **Error Responses:**
-- `400`: Missing/invalid payload fields, creator role not permitted for the type, parent not linked to the student, refund amount exceeds current overpayment, etc.
+- `403`: Caller may not create this type (e.g. a teacher asking money for someone else).
+- `400`: Missing/invalid payload fields, parent not linked to the student, refund amount exceeds current overpayment, etc.
 
 ### List Finance Requests
 ```http
@@ -4748,7 +4882,7 @@ GET /api/v1/finance-requests
 Authorization: Bearer <token>
 ```
 
-**Authorization:** `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `VICE_PRINCIPAL`, `BURSAR`, `SECRETARY`, `FEE_AUDITOR`, `PARENT`.
+**Authorization:** any authenticated user; results are scoped (see **Visibility** above).
 
 **Query Parameters:**
 - `type` — filter by `FinanceRequestType`
@@ -4758,11 +4892,23 @@ Authorization: Bearer <token>
 - `studentId` — matches `payload.studentId`
 - `page`, `limit`
 
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: FinanceRequest[];   // each with requestedBy, actedBy, student, enrollment, recipient
+  meta: { page: number; limit: number; total: number; totalPages: number };
+}
+```
+
 ### Get Finance Request by ID
 ```http
 GET /api/v1/finance-requests/:id
 Authorization: Bearer <token>
 ```
+
+**Authorization:** any authenticated user; scoped (see **Visibility**). Returns the same
+shape as a list item. `404` if not found or outside the caller's scope.
 
 ### Approve a Finance Request
 ```http
@@ -4776,6 +4922,10 @@ Content-Type: application/json
 - `PAYMENT_CLAIM`: **Bursar+** only. On success, a `PaymentTransaction` is created and `SchoolFees.amountPaid` is incremented.
 - `REFUND`: **SUPER_MANAGER** only. On success, a `Refund` is created and `SchoolFees.amountPaid` is decremented.
 - `FEE_REDUCTION`: **Principal+** only.
+
+**Response (200):** `{ success: true, data: FinanceRequest }` — same shape as a list item
+(includes `requestedBy`, `actedBy`, `student`, `enrollment`, `recipient`), so clients can
+replace the row in place.
 
 **Errors:**
 - `403`: role not permitted for this type; request already `APPROVED/REJECTED/COMPLETED`.
@@ -6814,10 +6964,31 @@ Authorization: Bearer <token>
   subClassId?: number;
   subjectId?: number;
   academicYearId?: number;
-  page?: number;
-  limit?: number;
-  sortBy?: string;
-  sortOrder?: "asc" | "desc";
+  search?: string;        // name or matricule, server-side across ALL the teacher's students
+  page?: number;          // default 1
+  limit?: number;         // default 20
+}
+```
+Only active students (status not WITHDRAWN/TRANSFERRED), sorted by name. All figures are real (no placeholders).
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: Array<{
+    id: number;                 // student id
+    name: string;
+    matricule: string;
+    photo: string | null;       // enrolment photo
+    enrollmentId: number;
+    subClass: { id: number; name: string; class: { id: number; name: string } };
+    teacherSubjects: Array<{ subjectId: number; subjectName: string; coefficient: number | null }>;
+    average: number | null;        // mean /20 of marks in this teacher's subjects this year; null = no marks
+    marksCount: number;
+    attendanceRate: number | null; // % of period roll-call entries this year that are PRESENT or LATE; null = never called
+    todayStatus: "PRESENT" | "LATE" | "ABSENT" | null; // this teacher's roll call today (Africa/Douala); null = not taken
+  }>;
+  meta: { total: number; page: number; limit: number; totalPages: number };
 }
 ```
 
@@ -6825,6 +6996,18 @@ Authorization: Bearer <token>
 ```http
 GET /api/v1/teachers/me/subclasses
 Authorization: Bearer <token>
+```
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: Array<{
+    id: number; name: string; class: { id: number; name: string };
+    subjects: Array<{ id: number; name: string; coefficient: number | null; periodsPerWeek: number }>; // periods = distinct timetable slots
+    studentCount: number; // live count of active students (not the SubClass.currentStudents cache)
+  }>;
+}
 ```
 
 ### Get My Dashboard
@@ -6845,14 +7028,17 @@ Authorization: Bearer <token>
 {
   success: true;
   data: {
-    subjectsTeaching: number;
-    totalStudentsTeaching: number;
-    marksToEnter: number;
-    classesTaught: number;
-    upcomingPeriods: number;
-    weeklyHours: number;
-    attendanceRate: number;
-    totalHoursPerWeek: number;
+    assignedSubjects: number;
+    totalStudents: number;      // active students in the teacher's sub-classes
+    totalClasses: number;       // distinct sub-classes taught
+    weeklyPeriods: number;      // distinct timetable slots (combined lessons count once, breaks never)
+    totalHoursPerWeek: number;  // clock hours of those slots, 1 decimal
+    weeklyHours: number;        // alias of totalHoursPerWeek
+    marksToEnter: number;       // marksExpected - marksEntered (never negative)
+    marksExpected: number;      // active students x teacher's subjects, per OPEN sequence whose term has started
+    marksEntered: number;       // marks with a score already entered for those
+    upcomingPeriods: number;    // periods still to start today (Africa/Douala)
+    attendanceRate: number | null; // teacher's own attendance from DM per-period records (PRESENT+LATE / all); null = none recorded
   };
 }
 ```
@@ -6883,6 +7069,57 @@ Authorization: Bearer <token>
 GET /api/v1/teachers/me/subclass-ids
 Authorization: Bearer <token>
 ```
+
+### Get My Timetable
+```http
+GET /api/v1/teachers/me/timetable?academicYearId=2
+Authorization: Bearer <token>   (TEACHER)
+```
+`academicYearId` optional (defaults to current year).
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: {
+    summary: {
+      totalClasses: number;
+      totalSubjects: number;
+      weeklyPeriods: number;      // distinct timetable slots, breaks excluded
+      totalHoursPerWeek: number;  // clock hours of those slots
+      todayClasses: number;       // "today" in Africa/Douala
+    };
+    schedule: Array<TeacherPeriod & {
+      teacherPeriodId: number;
+      period: { id; dayOfWeek; startTime; endTime; name; type; isBreak; sequence };
+      subject: { id; name; category };
+      subClass: { id; name; classId; class: { id; name }; currentStudents: number }; // currentStudents = LIVE active count
+    }>;
+  };
+}
+```
+
+### My Period Roll Calls (history)
+```http
+GET /api/v1/teachers/me/roll-calls?from=2026-10-01&to=2026-10-20&limit=100
+Authorization: Bearer <token>   (TEACHER)
+```
+Each item now carries `entryCount: number` (students in that roll call). Read `entryCount`, not `_count.entries` —
+Prisma's `_count` key is renamed `Count` by the case-conversion middleware. `entries` only lists ABSENT/LATE rows.
+The oversight list (`GET /api/v1/roll-calls/teacher-periods`) returns `entryCount` too.
+"Today", the current day of week and the current period are computed in Africa/Douala time (the server runs in Europe/Berlin).
+
+### Teacher Lists — workload and disambiguation
+```http
+GET /api/v1/users/teachers/search?q=&sortBy=totalHoursPerWeek&sortOrder=desc&minHoursPerWeek=10
+GET /api/v1/users/teachers?subjectId=4
+Authorization: Bearer <token>
+```
+- `/users/teachers/search` items: `totalHoursPerWeek` (clock hours) and new `weeklyPeriods` are **computed from the timetable**
+  (TeacherPeriod rows of the year; `User.totalHoursPerWeek` is no longer read). `sortBy` accepts camelCase or snake_case values,
+  incl. `totalHoursPerWeek` / `weeklyPeriods`; `minHoursPerWeek` / `maxHoursPerWeek` filter on the computed hours.
+- `/users/teachers` items now include `matricule: string | null` and `status` so pickers can label same-name teachers
+  as `"Name (MATRICULE)"` and hide inactive ones.
 
 ### Get Current and Next Subjects from Timetable
 ```http
@@ -8200,17 +8437,24 @@ Authorization: Bearer <token>
 ```typescript
 {
   academicYearId?: number;
-  enrollmentStatus?: "enrolled" | "not_enrolled" | "all";
+  enrollmentStatus?: "enrolled" | "not_enrolled" | "all"; // (legacy alias: status)
+  search?: string;         // Server-side search across ALL students (alias: q). Every whitespace-separated
+                           // token must match name OR matricule (case-insensitive, partial). Combines with
+                           // the other filters; results are then paginated.
   name?: string;           // Search by name
-  matricule?: string;      // Search by matricule
+  matricule?: string;      // Search by matricule (exact)
   gender?: "MALE" | "FEMALE";
   subClassId?: number;
+  includeWithdrawn?: boolean; // default false: WITHDRAWN and TRANSFERRED students are excluded
   page?: number;
   limit?: number;
   sortBy?: "name" | "matricule" | "dateOfBirth" | "createdAt";
   sortOrder?: "asc" | "desc";
 }
 ```
+
+By default the list excludes students who have left (`WITHDRAWN`, `TRANSFERRED`), matching the dashboard
+"active students" count.
 
 **Response (200):**
 ```typescript
@@ -8244,14 +8488,21 @@ Authorization: Bearer <token>
       };
     }>;
     parents: Array<{
-      id: number;
-      parent: {
+      id: number;          // ParentStudent link id (NOT the parent user id)
+      parentId: number;    // parent user id
+      parent: {            // contact fields only (no password / other user columns)
         id: number;
         name: string;
         email: string;
         phone: string;
+        matricule: string | null;
+        whatsappNumber: string | null;
+        gender: string | null;
+        address: string;
       };
     }>;
+    photo: string | null;     // resolved photo: target-year enrollment photo, else latest earlier one
+    photoResolved: true;      // photo already resolved -> do NOT call /students/:id/enrollment-photo per row
   }>;
   meta: {
     total: number;
@@ -8261,6 +8512,8 @@ Authorization: Bearer <token>
   };
 }
 ```
+
+`GET /api/v1/students/search` rows carry the same `photo` / `photoResolved` fields and the same slim `parent` object.
 
 ### Create Student
 ```http
@@ -8379,6 +8632,85 @@ Permanently removes the student and cascades through all related records (enroll
 - `200`: `{ success: true, message: "Student deleted successfully" }`
 - `404`: `{ success: false, error: "Student not found" }`
 - `500`: `{ success: false, error: "Failed to delete student due to an internal error" }`
+
+### Transfer Student Out (leaving the school)
+```http
+POST /api/v1/students/:id/transfer-out
+Authorization: Bearer <token>
+```
+
+**Authorization:** `SUPER_MANAGER`, `PRINCIPAL`, `VICE_PRINCIPAL`, `SECRETARY`
+
+Use when a student leaves for another school. Unlike `POST /students/:id/unenroll` (refused with 409 once
+marks / attendance / payments exist), this keeps every enrollment, mark, fee and discipline record. It writes
+a transfer record and sets `Student.status = TRANSFERRED` (student then drops out of default lists and
+subclass rosters).
+
+**Body:**
+```typescript
+{
+  transferDate?: string;      // YYYY-MM-DD, default = today (Africa/Douala)
+  reason: string;             // required
+  destinationSchool?: string;
+  remarks?: string;           // printed on the certificate (e.g. conduct)
+  academicYearId?: number;    // year being left; default current
+}
+```
+
+**Response (201):**
+```typescript
+{
+  success: true;
+  message: "Student transferred out";
+  data: {
+    id: number; studentId: number; academicYearId: number | null;
+    transferDate: string; reason: string; destinationSchool: string | null; remarks: string | null;
+    lastClassName: string | null;   // e.g. "Form 3 B" snapshot at departure
+    certificateNumber: string;      // e.g. "LC-20261020-SS26SO0011"
+    recordedById: number | null; createdAt: string; updatedAt: string;
+  }
+}
+```
+
+**Errors:** `400` missing reason / bad date; `404` student not found; `409` already transferred, withdrawn, or
+duplicate same-day transfer; `503` migration `20261020400000_add_student_transfer` not applied yet.
+
+The `409` from `POST /students/:id/unenroll` now also carries `code: "USE_TRANSFER_OUT"` and points to this endpoint.
+
+### Get a Student's Transfer Records
+```http
+GET /api/v1/students/:id/transfer-out
+Authorization: Bearer <token>
+```
+**Authorization:** `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `VICE_PRINCIPAL`, `SECRETARY`
+
+**Response (200):** `{ success: true, data: StudentTransfer[] }` (newest first, same shape as above).
+
+### List Transferred-out Students (register)
+```http
+GET /api/v1/students/transfers?academicYearId=&page=1&limit=20
+Authorization: Bearer <token>
+```
+**Authorization:** `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `VICE_PRINCIPAL`, `SECRETARY`
+
+**Response (200):**
+```typescript
+{
+  success: true;
+  data: Array<StudentTransfer & { student: { id: number; name: string; matricule: string; gender: string } }>;
+  meta: { total: number; page: number; limit: number; totalPages: number };
+}
+```
+
+### Download Leaving Certificate (PDF)
+```http
+GET /api/v1/students/:id/leaving-certificate?transferId=
+Authorization: Bearer <token>
+```
+**Authorization:** `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `VICE_PRINCIPAL`, `SECRETARY`
+
+Returns `application/pdf` (A4, bilingual heading, school name/address from `SCHOOL_NAME` / `SCHOOL_ADDRESS` /
+`SCHOOL_PHONE`). Uses the latest transfer unless `transferId` is given. `404` if the student has no transfer record.
 
 ### Get Siblings
 ```http
@@ -8938,6 +9270,13 @@ Used to update any user record — including parents (parents are stored as `Use
 }
 ```
 
+`whatsappNumber` (and other camelCase fields) now save correctly; previously the camelCase duplicate key made Prisma
+reject the update. Send `whatsappNumber: null` to clear it.
+
+> **Passwords are never returned.** The global response middleware strips every `password` key from all API
+> responses (e.g. `parents[].parent` in `GET /students/:id/full-profile`). Only one-off `temporaryPassword` /
+> `tempPassword` fields on account-creation/reset responses are sent.
+
 ### Delete User
 ```http
 DELETE /api/v1/users/:id
@@ -9055,6 +9394,36 @@ Authorization: Bearer <token>
   }>;
 }
 ```
+
+---
+
+### Download Mark Sheet (PDF)
+```http
+GET /api/v1/exams/marksheet/pdf?subClassId=1&subjectId=1
+Authorization: Bearer <token>
+```
+
+Printable mark sheet for one subject in one subclass, with the school letterhead. It has Subject / Class / Teacher at the top, then one row per enrolled student (withdrawn students excluded, sorted by name) with columns **N° | Name of Student | Sex (M/F) | 1st Seq … 6th Seq**. Recorded marks are filled in unless `blank=true`. A few spare rows are added at the bottom for late arrivals. With no students enrolled, it returns a 30-row empty grid.
+
+**Authorization:** SUPER_MANAGER, MANAGER, PRINCIPAL, VICE_PRINCIPAL, DEAN_OF_STUDIES, HOD, SECRETARY, BURSAR (any subclass/subject); TEACHER (only a subject they teach in that subclass, otherwise 403).
+
+**Query Parameters:**
+```typescript
+{
+  subClassId: number;       // required
+  subjectId: number;        // required
+  academicYearId?: number;  // defaults to the current academic year
+  blank?: boolean;          // true = leave sequence columns empty (default false)
+}
+```
+
+**Response (200):** `application/pdf` file download (`Content-Disposition: attachment; filename="marksheet_<Subject>_<Class>.pdf"`).
+
+**Errors:**
+- `400` – `subClassId` / `subjectId` missing or not numbers
+- `403` – teacher not assigned to this subject in this subclass
+- `404` – subject is not assigned to the subclass
+- `500` – PDF generation failed
 
 ---
 
@@ -10628,23 +10997,24 @@ Authorization: Bearer <token>
   success: true;
   data: {
     schoolAnalytics: {
-      totalStudents: number;
-      totalTeachers: number;
-      totalClasses: number;
+      totalStudents: number;        // active students: enrolled this year, status not WITHDRAWN/TRANSFERRED
+      totalTeachers: number;        // TEACHER role for the year (or global), or a timetable slot this year
+      totalClasses: number;         // number of STREAMS (sub-classes, e.g. "Form 1 A")
+      totalClassLevels: number;     // number of class levels (Form 1, Form 2, ...)
       totalSubjects: number;
       activeExamSequences: number;
       averageAttendanceRate: number;
-      overallAcademicPerformance: number;
+      overallAcademicPerformance: number | null; // mean mark on the /20 scale; null = no marks yet
       financialCollectionRate: number;
       disciplineIssuesThisMonth: number;
       newEnrollmentsThisMonth: number;
-      teacherUtilizationRate: number;
-      classCapacityUtilization: number;
+      classCapacityUtilization: number; // % of stream seats filled
     };
     performanceMetrics: {
       academicPerformance: {
-        overallPassRate: number;
-        averageGrade: number;
+        overallPassRate: number | null; // % of marks >= 10/20; null = no marks yet
+        averageGrade: number | null;    // /20 scale; null = no marks yet
+        // averageScore values below are /20. Only subjects / streams that have marks are listed.
         subjectPerformance: Array<{
           subjectName: string;
           averageScore: number;
@@ -10671,9 +11041,8 @@ Authorization: Bearer <token>
         teacherEfficiency: Array<{
           teacherName: string;
           subjectsTeaching: number;
-          averageStudentPerformance: number;
-          classesManaged: number;
-          attendanceRate: number;
+          averageStudentPerformance: number; // /20
+          classesManaged: number;            // distinct streams taught this year
         }>;
       };
     };
@@ -10695,31 +11064,34 @@ Authorization: Bearer <token>
         daysOverdue: number;
       }>;
     };
-    disciplineOverview: {
+    disciplineOverview: {           // all figures share one year filter
       totalIssues: number;
-      resolvedIssues: number;
+      issuesThisMonth: number;      // equals schoolAnalytics.disciplineIssuesThisMonth
+      resolvedIssues: number;       // issues with action_taken or a disciplinary action
       pendingIssues: number;
-      averageResolutionTime: number;
       issuesByType: Array<{
         issueType: string;
         count: number;
-        trend: "INCREASING" | "DECREASING" | "STABLE";
       }>;
     };
     staffOverview: {
-      totalStaff: number;
+      totalStaff: number;           // users with a non-PARENT role this year (parents excluded)
       teacherCount: number;
-      administrativeStaff: number;
-      staffUtilization: Array<{
+      administrativeStaff: number;  // totalStaff - teacherCount
+      staffByRole: Array<{          // distinct staff per role (replaces placeholder staffUtilization)
         role: string;
         count: number;
-        utilizationRate: number;
       }>;
     };
     quickActions: Array<string>;
   };
 }
 ```
+
+> Changed 2026-10-20: `teacherUtilizationRate`, `staffUtilization[].utilizationRate`,
+> `averageResolutionTime`, `issuesByType[].trend` and `teacherEfficiency[].attendanceRate`
+> were hard-coded placeholders and are removed. Student/teacher/staff counts use the shared
+> definitions in `src/utils/schoolCounts.ts` (same numbers as the Super Manager overview).
 
 ### Get School Analytics
 ```http
@@ -11694,6 +12066,10 @@ A student is treated as a defaulter when their aggregate outstanding balance acr
   data: {
     totalDefaulters: number;
     totalOutstanding: number;
+    // Whole-year totals, shared rule (withdrawn excluded; overpayments never offset debts)
+    summary: { studentCount; studentsOwing; studentsPaidInFull; studentsOverpaid; studentsNotPaidAnything;
+               totalExpected; totalCollected; totalOutstanding; totalOverpayments;
+               reconciliation: { expected; collected; overpayments; outstanding; formula: string } };
     byClass: Array<{
       classId: number | null;      // null if the enrollment has no class link (should not happen in normal data)
       className: string;
@@ -12034,14 +12410,18 @@ One profile per user per academic year.
   notes?: string
 }
 ```
+`salaryType` is matched case-insensitively and also accepts the aliases `HOURLY`/`TEACHER` (→ `TEACHER_HOURLY`) and `FIXED`/`ADMIN`/`MONTHLY` (→ `ADMIN_FIXED`). For backward compatibility the field may also be sent as `profileType` or `type`, but `salaryType` is canonical. Numeric fields may be numbers or numeric strings.
 
-**Response 201:** the created profile.
+**Response 201:** the created profile (`{ id, userId, academicYearId, salaryType, hourlyRate, baseSalary, status, notes, user, ... }`).
+**400** `salaryType is required ...` / `Invalid salaryType "X" ...` / missing rate or salary for the chosen type.
 **409** if a profile already exists for this user + year.
 
 #### `GET /api/v1/salary/profiles`
 **Authorization:** `MANAGER`, `PRINCIPAL`, `SUPER_MANAGER`
 
-**Query:** `status?` (`PENDING_APPROVAL` | `ACTIVE` | `INACTIVE` | `REJECTED`), `salaryType?`, `academicYearId?`, `userId?`, `page?`, `limit?`
+**Query:** `status?` (`PENDING_APPROVAL` | `ACTIVE` | `INACTIVE` | `REJECTED`), `salaryType?` (same aliases as above), `academicYearId?`, `userId?`, `page?`, `limit?` (default 20, max 100)
+
+**Response 200:** `{ success: true, data: { items: SalaryProfile[], page, limit, total, totalPages } }` — note the list is under `data.items`. Profiles with any status are returned; a `PENDING_APPROVAL` profile should be shown as "pending approval", not as "no salary".
 
 #### `GET /api/v1/salary/profiles/:id`
 **Authorization:** `MANAGER`, `PRINCIPAL`, `SUPER_MANAGER`
@@ -12093,7 +12473,7 @@ Two types: `ALLOWANCE` (recurring compensation add-on) and `BONUS`. Both need ap
 ```typescript
 {
   salaryProfileId: number,
-  type: 'ALLOWANCE' | 'BONUS',
+  type?: 'ALLOWANCE' | 'BONUS',   // case-insensitive, defaults to ALLOWANCE
   amount: number,
   reason: string,
   payPeriodId?: number   // if omitted, applies to the next generated pay period
@@ -12463,7 +12843,7 @@ One-shot roll-up of every module's `summary` block. Ideal for the top-of-page KP
     "attendance":    { "studentAttendanceRate": 96.4, "teacherAttendanceRateThisMonth": 92.1, "rollCallsThisMonth": 348, "teacherEvaluationsThisMonth": 210, "teacherAbsencesLast30Days": 14 },
     "academic":      { "totalExamSequences": 6, "openSequences": 1, "marksRecorded": 12894, "pendingReportCards": 32, "subjectSchemes": 55, "logbookEntriesLast7Days": 128 },
     "financial":     { "totalExpected": 82000000, "totalCollected": 61500000, "outstanding": 20500000, "collectionRate": 75.0, "paymentsLast7Days": 41, "totalExpendituresYTD": 14200000, "totalRefunds": 250000, "refundCount": 3, "pendingFinanceRequests": 2, "activeFeeItems": 18, "controlPaymentsRecorded": 512 },
-    "staff":         { "totalUsers": 187, "totalTeachers": 62, "averageTeachingHours": 22.4, "newStaffThisMonth": 3, "teachersWithFullSchedule": 9 },
+    "staff":         { "totalUsers": 187, "totalTeachers": 62, "averageTeachingHours": 22.4, "averageWeeklyPeriods": 18.5, "newStaffThisMonth": 3, "teachersWithTimetable": 58 },
     "communication": { "totalAnnouncements": 24, "announcementsThisMonth": 4, "unreadNotifications": 88, "messagesLast7Days": 154, "chatMessagesLast7Days": 1240 },
     "health":        { "totalVisitsInYear": 322, "visitsThisMonth": 41, "visitsLast7Days": 12, "sentHomeThisMonth": 3, "studentsWithHealthConditions": 27 },
     "reamStock":     { "currentStock": 148, "totalReceived": 500, "totalIssued": 352, "receiptsLast30Days": 2, "reamsReceivedLast30Days": 60, "issuancesLast30Days": 18, "reamsIssuedLast30Days": 47 },
@@ -12471,7 +12851,7 @@ One-shot roll-up of every module's `summary` block. Ideal for the top-of-page KP
     "tasks":         { "totalTasks": 96, "overdueTasks": 7, "completionRate": 63.5, "tasksCreatedLast30Days": 21, "tasksCompletedLast30Days": 17 },
     "inventory":     { "totalItems": 42, "activeItems": 38, "totalHoldings": 812, "distinctHoldings": 210, "pendingTransfers": 3, "ledgerEntriesLast30Days": 55 },
     "audit":         { "totalModificationsLast30Days": 2140, "distinctActiveUsersLast30Days": 34 },
-    "enrollment":    { "totalEnrollments": 1120, "unassignedEnrollments": 4, "newEnrollmentsThisMonth": 12, "averageClassUtilization": 88.2, "assignmentRate": 99.64 },
+    "enrollment":    { "totalEnrollments": 1120, "unassignedEnrollments": 4, "newEnrollmentsThisMonth": 12, "totalStreams": 20, "averageClassUtilization": 88.2, "assignmentRate": 99.64 },
     "lastUpdated": "2026-08-01T09:15:22.000Z"
   }
 }
@@ -12543,12 +12923,16 @@ School-fees roll-up + expenditure/refund/finance-request/control-payment metrics
 
 ### `GET /api/v1/super-manager/overview/staff`
 Users grouped by role and status, teacher hours summary, sub-class role assignments.
+`totalUsers` = staff only (non-PARENT role for the year); `usersByRole` excludes PARENT.
+`averageTeachingHours` / `averageWeeklyPeriods` come from the timetable (TeacherPeriod), not
+the never-written `User.total_hours_per_week`. `teachersWithFullSchedule` was replaced by
+`teachersWithTimetable` (teachers with at least one timetable slot this year).
 ```json
 {
   "success": true,
   "data": {
-    "summary": { "totalUsers": 187, "totalTeachers": 62, "averageTeachingHours": 22.4, "newStaffThisMonth": 3, "teachersWithFullSchedule": 9 },
-    "usersByRole":                 [{ "role": "TEACHER", "count": 62 }, { "role": "PARENT", "count": 84 }],
+    "summary": { "totalUsers": 187, "totalTeachers": 62, "averageTeachingHours": 22.4, "averageWeeklyPeriods": 18.5, "newStaffThisMonth": 3, "teachersWithTimetable": 58 },
+    "usersByRole":                 [{ "role": "TEACHER", "count": 62 }, { "role": "HOD", "count": 9 }],
     "usersByStatus":               [{ "status": "ACTIVE", "count": 180 }, { "status": "INACTIVE", "count": 7 }],
     "subclassAssignmentsByRole":   [{ "role": "DISCIPLINE_MASTER", "count": 18 }, { "role": "HOD", "count": 9 }],
     "lastUpdated": "2026-08-01T09:15:22.000Z"
@@ -12667,7 +13051,7 @@ Enrollment counts, class utilization, gender split, students by status.
 {
   "success": true,
   "data": {
-    "summary": { "totalEnrollments": 1120, "unassignedEnrollments": 4, "newEnrollmentsThisMonth": 12, "averageClassUtilization": 88.2, "assignmentRate": 99.64 },
+    "summary": { "totalEnrollments": 1120, "unassignedEnrollments": 4, "newEnrollmentsThisMonth": 12, "totalStreams": 20, "averageClassUtilization": 88.2, "assignmentRate": 99.64 },
     "classUtilization":  [{ "classId": 1, "className": "Form 1", "maxStudents": 200, "currentStudents": 184, "utilizationRate": 92.0 }],
     "genderSplit":       [{ "gender": "Male", "count": 580 }, { "gender": "Female", "count": 540 }],
     "studentsByStatus":  [{ "status": "ENROLLED", "count": 1120 }, { "status": "NOT_ENROLLED", "count": 6 }],
@@ -12683,24 +13067,211 @@ Enrollment counts, class utilization, gender split, students by status.
 - SUPER_MANAGER retains full write access to the underlying modules; these endpoints are additive.
 
 
+## QA fixes — broken pages (B1–B12), 2026-10-20
 
-## File Management (`/file-management`)
+New and changed endpoints from the broken-pages QA pass. All bodies/params are camelCase; errors use `{ "success": false, "error": "..." }`.
 
-Opens the school's LAN file-sharing app (send files to colleagues, shared ARCHIVES) inside the SMS. The backend checks the SMS login, turns the person's role into a file profile, and proxies the file app with a signed identity. Mounted before the JSON body parser and the case conversion, so uploads/downloads stream through untouched (the file app caps uploads at 32 MB).
+### `GET /api/v1/report-requests/recipients` (new)
+People the caller may request a report from: holders of the given roles for the current academic year (or globally), excluding the caller and anyone the caller does not outrank (the same rule `POST /report-requests` enforces).
+- **Auth:** SUPER_MANAGER, MANAGER, PRINCIPAL, VICE_PRINCIPAL, BURSAR, SECRETARY, DEAN_OF_STUDIES, DEAN_OF_DISCIPLINE, DISCIPLINE_COORDINATOR, SENIOR_DISCIPLINE_MASTER, HOD
+- **Query:** `roles` (optional, comma-separated; default `SENIOR_DISCIPLINE_MASTER,DISCIPLINE_MASTER`). 400 on an unknown role.
+```json
+{ "success": true, "data": [ { "id": 23, "name": "Evilia Lum", "matricule": "SS26SO0008", "role": "DISCIPLINE_MASTER" } ] }
+```
 
-**Profiles from roles:** SUPER_MANAGER, MANAGER → `management` (all folders). PRINCIPAL, VICE_PRINCIPAL, DEAN_OF_STUDIES, HOD, FEE_AUDITOR, GUIDANCE_COUNSELOR, SECRETARY, CONTROLLER, BURSAR, NURSE → `administration` (everything except MANAGEMENT DOCUMENTS). DISCIPLINE_MASTER, SENIOR_DISCIPLINE_MASTER, DEAN_OF_DISCIPLINE, DISCIPLINE_COORDINATOR → `discipline` (open files + DISCIPLINE). TEACHER → `default` (open files only). PARENT / STUDENT only → no access (403). A person with several roles gets the best profile; an unlisted role gets `default`.
+### `GET /api/v1/hod/department-status` (new)
+Teacher load + logbook activity, scheme-of-work coverage and marks-entry status for the HOD's department (subjects whose HOD is the caller). Backs the HOD Period Tracking / Curriculum / Performance pages.
+- **Auth:** HOD, SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL, DEAN_OF_STUDIES
+- **Query:** `academicYearId` (optional, defaults to current), `hodId` (optional; honoured for SUPER_MANAGER / PRINCIPAL / VICE_PRINCIPAL / DEAN_OF_STUDIES)
+```json
+{
+  "success": true,
+  "data": {
+    "academicYear": { "id": 2, "name": "2026-2027" },
+    "subjects": [ { "id": 1, "name": "Mathematics" } ],
+    "teachers": [ {
+      "id": 40, "name": "Enah Marcel", "matricule": "SS26ST0040", "subjects": ["Mathematics"], "subClassCount": 3,
+      "departmentPeriodsPerWeek": 12, "totalPeriodsPerWeek": 18, "totalHoursPerWeek": 15,
+      "logbookEntriesLast7Days": 9, "logbookEntriesThisYear": 64, "lastLogbookDate": "2026-10-17T00:00:00.000Z",
+      "logbookRateLast7Days": 75
+    } ],
+    "schemeCoverage": [ {
+      "subjectId": 1, "subjectName": "Mathematics", "classId": 3, "className": "FORM 1", "schemeId": 3,
+      "totalLessons": 40, "completedLessons": 12, "coveragePercent": 30, "teachers": ["Enah Marcel"]
+    } ],
+    "marksStatus": {
+      "sequence": { "id": 12, "sequenceNumber": 6, "status": "OPEN", "submissionDeadline": null, "term": { "id": 6, "name": "Third Term" } },
+      "rows": [ {
+        "subClassSubjectId": 246, "subjectId": 9, "subjectName": "Additional Mathematics", "subClassId": 4,
+        "subClassName": "LOWER SIXTH S1", "className": "LOWER SIXTH SCIENCE", "teachers": [],
+        "students": 61, "marksEntered": 0, "percentEntered": 0
+      } ]
+    }
+  }
+}
+```
+`schemeId: null` = the subject/class is timetabled but has no scheme of work. `marksStatus.sequence` is the latest OPEN sequence (else the latest one); `null` when the year has none.
 
-**Environment:** `FILE_APP_SECRET` (shared with the file app's `sms-secret.txt`), `FILE_APP_URL` (default `http://127.0.0.1:8080`; on the VPS, the far end of the reverse tunnel to the school server).
+### `GET /api/v1/hod/dashboard` (changed)
+`totalTeachers`, `totalStudents` and `totalClasses` are now distinct counts (a stream taking two department subjects, or a teacher of two department subjects, is counted once).
 
-### POST `/file-management/session`
-- **Auth:** Bearer token (any role except parent/student).
-- **Response 200:** `{ "success": true, "data": { "url": "/api/v1/file-management/open?t=<one-minute signed ticket>" } }`
-- **Errors:** 401 (no/invalid token), 403 `{ "success": false, "error": "Your account does not have access to File Management." }`, 503 when `FILE_APP_SECRET` is not configured.
+### `GET /api/v1/logbook` (changed)
+- Each entry's `teacherPeriod` now includes `teacher: { id, name, matricule }` and `subClass.class: { id, name }`.
+- New query params: `classId`, `department=mine` (restrict to the caller's HOD subjects).
+- An HOD who holds none of SUPER_MANAGER / PRINCIPAL / VICE_PRINCIPAL / DEAN_OF_STUDIES is always restricted to their department, and `POST /logbook/:id/review` returns 403 `"This entry is outside your department"` for other entries.
 
-### GET `/file-management/open?t=<ticket>`
-- **Auth:** the ticket from `/session` (an iframe cannot send an Authorization header).
-- Sets an HttpOnly, SameSite=Lax session cookie (`fm_session`, 8 hours, `Path=/api/v1/file-management`) and redirects (302) to `/api/v1/file-management/app/?embed=1`. An expired/invalid ticket returns 401.
+### `GET /api/v1/logbook/filter-options` (new)
+Options for the Logbook Review filters, from the year's timetable (department-scoped by the same rule as `GET /logbook`).
+- **Auth:** SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL, DEAN_OF_STUDIES, HOD
+- **Query:** `department=mine` (optional), `academicYearId` (optional)
+```json
+{ "success": true, "data": {
+  "teachers":   [ { "id": 40, "name": "Enah Marcel", "matricule": "SS26ST0040" } ],
+  "subjects":   [ { "id": 1, "name": "Mathematics" } ],
+  "classes":    [ { "id": 3, "name": "FORM 1" } ],
+  "subClasses": [ { "id": 7, "name": "FORM 1A", "classId": 3, "className": "FORM 1" } ],
+  "departmentScoped": true
+} }
+```
 
-### ANY `/file-management/app/*`
-- **Auth:** the `fm_session` cookie. Without a valid cookie: 401 (HTML message).
-- Proxied to the file app; the request carries `X-SMS-Identity` / `X-SMS-Signature` (HMAC-SHA256 with `FILE_APP_SECRET`), and any such headers sent by the browser are discarded. File app down: 502 (HTML message).
+### `GET /api/v1/discipline` (changed)
+- `startDate` / `endDate` may be sent on their own (a lone bound used to 500); `endDate` includes the whole day.
+- Results are scoped to the selected/current academic year (`academicYearId`), matching the overview tiles.
+- `includeAssignedBy` / `includeReviewedBy` now return `{ id, name, matricule }` only; any `include*` value other than `true` is ignored instead of causing a 500.
+
+### `GET /api/v1/chat/channels/:id` (changed)
+Response now includes `myRole` (`"ADMIN"` | `"MEMBER"`) and `memberCount`, so the channel creator gets the "Add members" controls.
+
+### `GET /api/v1/students/subclass/:id/export?format=docx` and `GET /api/v1/students/class/:classId/export?format=docx` (changed)
+`format=docx` now returns a real Word document (`application/vnd.openxmlformats-officedocument.wordprocessingml.document`, one landscape section per stream). Without `format=docx` the endpoints still return Excel (`.xlsx`).
+
+### `POST /api/v1/subject-schemes` (changed)
+- 400 `"Missing required field(s): Subject, Periods per week"` (only the missing ones).
+- 409 `"A scheme of work already exists for Mathematics — FORM 1 (2026-2027). Open the existing scheme to edit it instead."` on a duplicate subject/class/year.
+
+### `PUT /api/v1/subject-schemes/:id` (fixed)
+Body `{ periodsPerWeek?, annualTeachingHours?, notes? }`. It used to 500 on every save; 400 on a non-integer / negative number.
+`PUT /subject-schemes/modules/:moduleId` and `PUT /subject-schemes/chapters/:chapterId` accept only `{ order?, code?, title? }`.
+
+### `POST /api/v1/users/create-with-role` (changed) — used by Personnel → Add New Personnel
+- **Auth:** SUPER_MANAGER, MANAGER, PRINCIPAL, VICE_PRINCIPAL, BURSAR, SECRETARY, DISCIPLINE_COORDINATOR (coordinator: DM / SDM / DoD roles only; secretary: TEACHER / PARENT only; only a SUPER_MANAGER can create a SUPER_MANAGER).
+- **Body:** `{ name, email, password, gender: "Male"|"Female", dateOfBirth, phone, address, role, roles?: Role[], status?: "ACTIVE"|"INACTIVE", academicYearId? }` — `role` may be omitted if `roles` is sent.
+- Roles are created for the current (or given) academic year. The matricule is generated from the staff role(s) (e.g. TEACHER → `..ST..`), not PARENT.
+- 400 `"Missing required field(s): Phone, Address"` lists only the missing fields; 400 on an unknown role; 409 on a duplicate email.
+
+### `POST /api/v1/bursar/create-parent-with-student` (changed) — Secretary/Bursar registration
+- New optional body field `subClassId`: the student is enrolled into that stream in the same request. 400 if the stream does not exist or is not in `classId`.
+- If creation succeeds but the stream assignment fails, the response is still 201 and `data.subClassWarning` explains it; on success `data.enrollment.subClassId` is set.
+- 400 `"Missing required field(s): Place of Birth, Residence"` now lists only the missing fields, with readable labels.
+
+## QA fixes — marks, results & report cards (K1–K11), 2026-10-20
+
+All averages, ranks and class statistics (Results screen, CSV export, sequence/term/annual report cards, stored sequence averages, promotion preview) now come from one calculation (`resultsService`):
+- A subject with no mark is **NC** and is left out of the student's average (never counted as 0). Average = Σ(score × coef) / Σ(coef) over marked subjects.
+- Term subject score = mean of that term's sequence scores that exist. Annual average = mean of the term averages that exist.
+- Only students with at least one mark are ranked; ties share a rank (1, 2, 2, 4). Withdrawn students are excluded.
+
+### `GET /api/v1/marks/entry-sheet` (new) — teacher Submit Marks screen
+- **Auth:** SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL, TEACHER (teacher must teach the subject in that subclass in the sequence's academic year).
+- **Query:** `examSequenceId`, `subClassId`, `subjectId` (all required).
+- **200:**
+```json
+{ "success": true, "data": {
+  "examSequence": { "id": 7, "sequenceNumber": 1, "termName": "First Term", "academicYearId": 2, "status": "OPEN",
+                    "submissionDeadline": null, "isOpen": true, "closedReason": null },
+  "subClass": { "id": 29, "name": "FORM 3 M", "className": "FORM 3" },
+  "subject": { "id": 18, "name": "Geography" }, "coefficient": 2,
+  "minScore": 0, "maxScore": 20, "totalStudents": 61, "markedCount": 13,
+  "students": [ { "studentId": 812, "enrollmentId": 901, "name": "ABOUANG …", "matricule": "SS25CL0393",
+                  "markId": 5512, "score": 14.5, "updatedAt": "2026-10-20T08:00:00.000Z" } ]
+} }
+```
+  Whole class (no paging), sorted by name, withdrawn students excluded. `score: null` / `markId: null` = no mark yet.
+- **Errors:** 400 missing/invalid ids · 403 not assigned to this subject/class · 404 sequence not found / subject not taught in the class.
+
+### `POST /api/v1/marks/bulk` (new) — save the whole class in one request
+- **Auth:** as above. Sequence must be `OPEN` and before its deadline.
+- **Body:** `{ "examSequenceId": 7, "subClassId": 29, "subjectId": 18, "marks": [ { "studentId": 812, "score": 14.5 }, { "studentId": 813, "score": null } ] }`
+  `score: null` clears (deletes) a saved mark. Send only changed rows.
+- **200:** `{ "success": true, "data": { "savedCount": 1, "clearedCount": 1, "sheet": { …same shape as entry-sheet… } } }`
+- **Errors:** 400 `"N mark(s) are invalid. Marks must be between 0 and 20."` with `details: [{ studentId, score, reason }]` — nothing is saved if any row is invalid · 400 student not enrolled in this class · 403 `"Mark submission is closed for this exam sequence."` / deadline passed / not assigned · 404 as above.
+- Saving also refreshes the stored sequence averages/ranks for that class.
+
+### `POST /api/v1/marks`, `PUT /api/v1/marks/:id` (changed)
+- Out-of-range marks now return **400** `"Mark must be between 0 and 20"` (was 500); closed sequence / passed deadline return **403**.
+- Teacher subject/class access checks on `GET/POST/PUT/DELETE /marks` are now actually applied (they were skipped because of a wrong role field).
+
+### `GET /api/v1/exams` (changed)
+- Sorted by `sequenceNumber` ascending (1…6). Each item now includes `name` (`"Sequence 3"`), `term: { id, name, startDate }` and `academicYear: { id, name }`. Filter with `academicYearId`.
+
+### `GET /api/v1/academic-years`, `GET /api/v1/academic-years/:id`, `GET /api/v1/academic-years/:id/terms` (changed)
+- `terms` are ordered by `startDate` then `id` (First, Second, Third); `examSequences` by `sequenceNumber`.
+
+### `GET /api/v1/exams/:id/submission-tracking` (changed)
+- Teachers are now taken from the timetable (who teaches that subject in that subclass this year), not the global subject list.
+- Each subject: `{ subjectId, subjectName, totalStudents, marksSubmitted, marksMissing, percentage, status: "complete"|"partial"|"missing", assignedTeachers: [{ id, name, email, phone }], assignedTeacherNames: "A, B", submittedBy: [{ id, name, count }], submittedByNames: "A" }`.
+- `summary` now also has `totalClasses, totalSubjectPairs, completePairs, partialPairs, missingPairs` (plus `totalMarksExpected, totalMarksSubmitted, totalMarksMissing, overallPercentage`). `examSequence.name` added. Withdrawn students excluded.
+
+### `GET /api/v1/exams/:id/pending-teachers` (changed)
+- `data.teachers[]`: `{ teacher: { id, name, email, phone }, pendingSubjects: [{ subjectId, subjectName, subClassId, subClassName, className, totalStudents, marksSubmitted, marksMissing }], totalMissing, totalSubmitted }`.
+- A teacher is pending for each subclass/subject they teach (timetable) where fewer marks exist than active students, whoever typed the marks.
+
+### `PATCH /api/v1/exams/:id/status` (changed)
+- Setting `FINALIZED` / `REPORTS_GENERATING` on a sequence with no marks now returns **409** `"No marks have been entered for Sequence N. Report cards cannot be generated yet."` (it used to report "reports available").
+
+### `POST /api/v1/report-cards/student/:studentId/generate`, `POST /api/v1/report-cards/subclass/:subClassId/generate` and the background generation (changed)
+- Sequence report cards use the new template: subjects without a mark print **NC** and are not averaged; rank only among students with marks; the student's own photo (or a neutral silhouette, never a stock photo); class master from the subclass (blank if none set); each subject's teacher = full name of the teacher timetabled for that subject in that subclass.
+- **409** when the class (or the student) has no marks for the sequence. The combined subclass PDF has one page per student **with marks**, alphabetical.
+
+### `GET /api/v1/report-cards/term/subclass/:subClassId?termId=` · `GET /api/v1/report-cards/term/student/:studentId?termId=` (new)
+### `GET /api/v1/report-cards/annual/subclass/:subClassId?academicYearId=` · `GET /api/v1/report-cards/annual/student/:studentId?academicYearId=` (new)
+- **Auth:** SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL, DEAN_OF_STUDIES.
+- Returns `application/pdf` (download). Term cards show each sequence and the term score per subject; annual cards show each term per subject, the three term averages, the annual average, rank and the council decision (Promoted to <next class> / Repeat / Graduated / Passed).
+- Student variants apply the school-fees gate (403 with `feeStatus`; Principal+ may add `bypassFeeCheck=true`).
+- **Errors:** 400 missing ids · 404 term/year/student not found or not enrolled · 409 no marks / student not yet in a subclass.
+
+### `GET /api/v1/results/class` (new) — Results screen
+- **Auth:** SUPER_MANAGER, MANAGER, PRINCIPAL, VICE_PRINCIPAL, DEAN_OF_STUDIES.
+- **Query:** `subClassId` (required) and one of: `examSequenceId` | `termId` | `academicYearId` (+ `scope=annual`, default).
+- **200:**
+```json
+{ "success": true, "data": {
+  "scope": { "kind": "SEQUENCE"|"TERM"|"ANNUAL", "label": "Sequence 3", "academicYearId": 2, "academicYearName": "2026-2027",
+             "termId": 5, "termName": "Second Term", "examSequenceId": 9, "sequenceNumber": 3, "examSequenceIds": [9] },
+  "subClass": { "id": 29, "name": "FORM 3 M", "classId": 7, "className": "FORM 3", "classMasterName": null, "passMark": 10, "nextClassId": 4 },
+  "subjects": [ { "subClassSubjectId": 138, "subjectId": 18, "name": "Geography", "category": "HUMAN_AND_SOCIAL_SCIENCE", "coefficient": 2, "teacherName": "Nyuykongi Jude S" } ],
+  "students": [ { "enrollmentId": 901, "studentId": 812, "name": "…", "matricule": "…", "gender": "Male", "repeater": false,
+                  "subjects": [ { "subClassSubjectId": 138, "score": 14.5, "weighted": 29, "rank": 2, "parts": [ { "label": "Seq 3", "score": 14.5 } ] } ],
+                  "totalCoefficient": 24, "totalWeighted": 260.5, "average": 10.85, "subjectsWithMarks": 11, "subjectsPassed": 7, "rank": 1,
+                  "termAverages": [ { "termId": 4, "termName": "First Term", "average": 11.2, "rank": 3 } ] } ],
+  "subjectStats": [ { "subClassSubjectId": 138, "markedCount": 58, "min": 3, "max": 18, "average": 11.4, "successRate": 62.07 } ],
+  "classStats": { "enrolled": 61, "ranked": 58, "classAverage": 10.2, "highest": 16.4, "lowest": 4.1, "successRate": 51.72, "standardDeviation": 2.9, "passed": 30 },
+  "totalMarks": 640
+} }
+```
+  `students` are in rank order; unranked (no marks) last. `score/average/rank: null` = NC. `termAverages` only for annual. `totalMarks: 0` = nothing entered.
+- **Errors:** 400 missing `subClassId` / scope · 404 subclass, sequence, term or year not found.
+
+### `GET /api/v1/results/class/export` (new)
+- Same auth and query as `/results/class`. Returns `text/csv` (UTF-8 with BOM, opens in Excel): rank, matricule, name, one column per subject, term averages (annual), total coef, average, remark, then subject average / highest / lowest / success-rate rows and class totals.
+
+### `GET /api/v1/results/promotion-preview` (new) — end-of-year promotion screen
+- **Auth:** SUPER_MANAGER, PRINCIPAL, SECRETARY, DEAN_OF_STUDIES.
+- **Query:** `subClassId`, `academicYearId` (the year being closed), optional `toAcademicYearId` (to flag students already enrolled there).
+- **200:** `{ "success": true, "data": { "subClass": {…}, "nextClass": { "id": 4, "name": "FORM 4" } | null, "passMark": 10, "classStats": {…},
+  "students": [ { "studentId", "enrollmentId", "name", "matricule", "annualAverage", "rank", "rankLabel": "3rd", "appreciation",
+  "termAverages": [ … ], "suggestedDecision": "PROMOTE"|"REPEAT"|"GRADUATE"|"NEEDS_DECISION"|"NO_AVERAGE",
+  "suggestedTargetClassId", "suggestedTargetClassName", "alreadyEnrolledNextYear", "nextYearClassId" } ] } }`
+- Decision rule: annual average < class pass mark → REPEAT; otherwise PROMOTE to the class's `nextClassId`; Upper Sixth → GRADUATE; terminal class without a next class (Form 5) → NEEDS_DECISION.
+- **Errors:** 400 missing ids / same year · 404 not found.
+
+### `POST /api/v1/students/promote` (changed)
+- `action` may now also be `"DISMISS"`: no enrolment is created for the target year and the student's status is unchanged. Unknown actions are reported per row.
+- Body unchanged: `{ fromAcademicYearId, toAcademicYearId, promotions: [ { studentId, action: "PROMOTE"|"REPEAT"|"GRADUATE"|"TRANSFER"|"DISMISS", targetClassId? } ] }`.
+
+### `GET /api/v1/exams/papers` (changed)
+- Every paper now includes `_count: { questions: n }`.
+
+### `POST /api/v1/exams/papers`, `DELETE /api/v1/exams/papers/:id` (changed)
+- **Auth:** SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL, TEACHER. A TEACHER may only create/delete papers for a subject they teach this year (403 `"You can only create exam papers for subjects you teach"` / `"You can only delete exam papers for subjects you teach"`).
+- Deleting a paper that has questions now works (question links are removed; the questions stay in the bank). 404 when the paper does not exist.

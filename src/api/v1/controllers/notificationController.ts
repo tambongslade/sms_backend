@@ -7,6 +7,7 @@ import { pingOneSignal, isOneSignalConfigured } from '../../../config/onesignal'
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { extractPaginationAndFilters } from '../../../utils/pagination';
 import { NotificationPriority } from '../../../config/db';
+import prisma from '../../../config/db';
 
 const VALID_PRIORITIES: NotificationPriority[] = ['LOW', 'NORMAL', 'HIGH', 'URGENT'];
 
@@ -357,6 +358,134 @@ export const deleteNotification = async (req: Request, res: Response): Promise<v
         res.status(500).json({
             success: false,
             error: 'An internal error occurred while deleting the notification.',
+        });
+    }
+};
+
+/**
+ * GET /notifications/me/pending-tasks
+ * Aggregates actionable items awaiting the current user's decision:
+ *   - disciplinary approvals routed to this user
+ *   - custody transfers where this user is the recipient (status = PENDING)
+ *   - finance requests where this user must act (PERSONNEL_DISBURSEMENT to them,
+ *     or PENDING items in categories they can approve based on their role)
+ *
+ * Response shape (camelCase after middleware):
+ *   {
+ *     total: number,
+ *     disciplinaryApprovals: { count, items: [{ id, actionType, studentName }] },
+ *     custodyTransfers:     { count, items: [{ id, seizedItemId, itemDescription, fromUserName }] },
+ *     financeRequests:      { count, items: [{ id, type, amount, reason }] }
+ *   }
+ */
+export const getPendingTasksSummary = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    try {
+        if (!req.user?.id) {
+            res.status(401).json({ success: false, error: 'Unauthorized' });
+            return;
+        }
+        const userId = req.user.id;
+        const roles = req.user.roles ?? [];
+
+        // Disciplinary approvals routed to this user (pending only)
+        const disciplinaryApprovalsPromise = prisma.disciplinaryAction.findMany({
+            where: {
+                approval_status: 'PENDING_APPROVAL',
+                approver_id: userId,
+            },
+            select: {
+                id: true,
+                action_type: true,
+                enrollment: { select: { student: { select: { name: true } } } },
+            },
+            orderBy: { created_at: 'desc' },
+            take: 10,
+        });
+
+        // Custody transfers where user is the recipient (pending)
+        const custodyTransfersPromise = prisma.seizedItemTransfer.findMany({
+            where: {
+                status: 'PENDING',
+                to_user_id: userId,
+            },
+            select: {
+                id: true,
+                seized_item_id: true,
+                seized_item: { select: { item_description: true } },
+                from_user: { select: { id: true, name: true } },
+            },
+            orderBy: { initiated_at: 'desc' },
+            take: 10,
+        });
+
+        // Finance requests: personnel disbursements addressed to this user +
+        // pending requests requiring their approval based on role.
+        const canApproveFinance = roles.some((r) => ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR'].includes(r));
+        const financeRequestsPromise = prisma.financeRequest.findMany({
+            where: {
+                status: 'PENDING',
+                OR: [
+                    // PERSONNEL_DISBURSEMENT: recipient user_id lives in the JSON payload as recipient_user_id
+                    { type: 'PERSONNEL_DISBURSEMENT', payload: { path: ['recipient_user_id'], equals: userId } },
+                    // Approver-role user sees all pending requests that need action
+                    ...(canApproveFinance
+                        ? [{ type: { in: ['FEE_REDUCTION', 'REFUND', 'PAYMENT_CLAIM', 'BANK_VERIFICATION'] as any } }]
+                        : []),
+                ],
+            },
+            select: {
+                id: true,
+                type: true,
+                amount: true,
+                reason: true,
+            },
+            orderBy: { created_at: 'desc' },
+            take: 10,
+        });
+
+        const [disciplinaryApprovals, custodyTransfers, financeRequests] = await Promise.all([
+            disciplinaryApprovalsPromise,
+            custodyTransfersPromise,
+            financeRequestsPromise,
+        ]);
+
+        const disciplinaryItems = disciplinaryApprovals.map((a) => ({
+            id: a.id,
+            action_type: a.action_type,
+            student_name: a.enrollment?.student?.name ?? null,
+            action_url: `/dashboard/disciplinary-actions/${a.id}?approve=1`,
+        }));
+        const custodyItems = custodyTransfers.map((t) => ({
+            id: t.id,
+            seized_item_id: t.seized_item_id,
+            item_description: t.seized_item?.item_description ?? null,
+            from_user_name: t.from_user?.name ?? null,
+            action_url: `/dashboard/seized-items/${t.seized_item_id}?transfer=${t.id}`,
+        }));
+        const financeItems = financeRequests.map((f) => ({
+            id: f.id,
+            type: f.type,
+            amount: f.amount,
+            reason: f.reason,
+            action_url: `/dashboard/finance-requests/${f.id}?act=1`,
+        }));
+
+        const total = disciplinaryItems.length + custodyItems.length + financeItems.length;
+
+        res.status(200).json({
+            success: true,
+            data: {
+                total,
+                disciplinary_approvals: { count: disciplinaryItems.length, items: disciplinaryItems },
+                custody_transfers: { count: custodyItems.length, items: custodyItems },
+                finance_requests: { count: financeItems.length, items: financeItems },
+            },
+        });
+    } catch (error: any) {
+        console.error(`Error in getPendingTasksSummary: ${error.message}`);
+        res.status(500).json({
+            success: false,
+            error: 'An internal error occurred while fetching pending tasks.',
         });
     }
 };

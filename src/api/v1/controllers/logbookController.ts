@@ -126,6 +126,26 @@ export const getEntryById = async (req: Request, res: Response) => {
     }
 };
 
+// Reviewers who see the whole school. An HOD who holds none of these is
+// scoped to their department (subjects where Subject.hod_id = them).
+const SCHOOL_WIDE_REVIEWERS = ['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_STUDIES'];
+
+/**
+ * Department scope for the caller, or undefined for "no restriction".
+ * - HOD without a school-wide reviewer role: always their department.
+ * - Anyone passing ?department=mine (the HOD menu's page does): their
+ *   department, so a principal who is also HOD can review as HOD.
+ */
+async function departmentSubjectIds(req: Request, q: any): Promise<number[] | undefined> {
+    const roles = userRoles(req);
+    const wantsDept = String(q.department ?? '').toLowerCase() === 'mine';
+    const forced = roles.includes('HOD') && !hasAny(roles, SCHOOL_WIDE_REVIEWERS);
+    if (!wantsDept && !forced) return undefined;
+    if (!req.user?.id) return [];
+    const subjects = await prisma.subject.findMany({ where: { hod_id: req.user.id }, select: { id: true } });
+    return subjects.map((s) => s.id);
+}
+
 export const listEntries = async (req: Request, res: Response) => {
     try {
         const q = (req as any).finalQuery ?? req.query;
@@ -136,10 +156,13 @@ export const listEntries = async (req: Request, res: Response) => {
         if (!hasAny(roles, REVIEWERS)) {
             teacher_id = req.user?.id;
         }
+        const subject_ids = hasAny(roles, REVIEWERS) ? await departmentSubjectIds(req, q) : undefined;
 
         const data = await logbookService.listEntries({
             teacher_id,
+            subject_ids,
             sub_class_id: q.sub_class_id ? Number(q.sub_class_id) : undefined,
+            class_id: q.class_id ? Number(q.class_id) : undefined,
             subject_id: q.subject_id ? Number(q.subject_id) : undefined,
             teacher_period_id: q.teacher_period_id ? Number(q.teacher_period_id) : undefined,
             lesson_id: q.lesson_id ? Number(q.lesson_id) : undefined,
@@ -155,10 +178,41 @@ export const listEntries = async (req: Request, res: Response) => {
     }
 };
 
+/**
+ * GET /logbook/filter-options[?department=mine&academicYearId=]
+ * Teachers / classes / sub-classes / subjects for the Logbook Review filters,
+ * department-scoped for HODs (same rule as GET /logbook).
+ */
+export const getReviewFilterOptions = async (req: Request, res: Response) => {
+    try {
+        const q = (req as any).finalQuery ?? req.query;
+        const subject_ids = await departmentSubjectIds(req, q);
+        const data = await logbookService.getReviewFilterOptions({
+            academic_year_id: q.academic_year_id ? Number(q.academic_year_id) : undefined,
+            subject_ids,
+        });
+        res.json({ success: true, data: { ...data, department_scoped: subject_ids !== undefined } });
+    } catch (err: any) {
+        fail(res, err);
+    }
+};
+
 export const reviewEntry = async (req: Request, res: Response) => {
     try {
         if (!req.user?.id) return res.status(401).json({ success: false, error: 'Unauthorized' });
         const id = Number(req.params.id);
+        // An HOD (without a school-wide reviewer role) may only review their own department.
+        const deptSubjects = await departmentSubjectIds(req, {});
+        if (deptSubjects) {
+            const target = await prisma.logbookEntry.findUnique({
+                where: { id },
+                select: { teacher_period: { select: { subject_id: true } } },
+            });
+            if (!target) return res.status(404).json({ success: false, error: 'Logbook entry not found' });
+            if (!deptSubjects.includes(target.teacher_period.subject_id)) {
+                return res.status(403).json({ success: false, error: 'This entry is outside your department' });
+            }
+        }
         const entry = await logbookService.reviewEntry(id, req.user.id, req.body?.reviewer_notes);
         res.json({ success: true, data: entry });
     } catch (err: any) {

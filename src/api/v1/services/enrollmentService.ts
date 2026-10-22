@@ -2,6 +2,16 @@ import prisma from '../../../config/db';
 import { getAcademicYearId } from '../../../utils/academicYear';
 import { StudentStatus, Gender } from '@prisma/client';
 import { updateNewStudentStatus } from '../../../utils/studentStatus';
+import { ensureSchoolFeeForEnrollment } from './feeService';
+import { generateStudentMatricule } from '../../../utils/matriculeGenerator';
+
+/** SS26STD007 -> SS26STD008 (keeps the zero-padded width). */
+function bumpMatricule(matricule: string): string {
+    const m = matricule.match(/^(.*?)(\d+)$/);
+    if (!m) return `${matricule}1`;
+    const next = (parseInt(m[2], 10) + 1).toString().padStart(m[2].length, '0');
+    return `${m[1]}${next}`;
+}
 
 // Types for the enrollment workflow
 export interface BursarRegistrationData {
@@ -63,7 +73,10 @@ export async function registerStudentToClass(data: BursarRegistrationData) {
     const isNewStudent = data.is_new_student ?? true;
     const reamCollected = isNewStudent ? !!data.ream_of_paper_collected : false;
 
-    // Generate matricule (will be done automatically by the student creation hook)
+    // Assign the real matricule now. This used to store `TEMP_<timestamp>` with
+    // a comment promising a "student creation hook" would replace it -- no such
+    // hook exists, so those students kept TEMP_ matricules forever
+    // (see scripts/fix-temp-matricules.ts for the existing ones).
     const studentData = {
         name: fullName,
         nom: nom || null,
@@ -76,11 +89,13 @@ export async function registerStudentToClass(data: BursarRegistrationData) {
         is_new_student: isNewStudent,
         status: StudentStatus.ASSIGNED_TO_CLASS,
         first_enrollment_year_id: yearId,
-        matricule: `TEMP_${Date.now()}` // Will be updated by matricule generator
+        matricule: await generateStudentMatricule()
     };
 
-    // Create student and enrollment in a transaction
-    const result = await prisma.$transaction(async (prisma) => {
+    // Create student and enrollment in a transaction. If a concurrent
+    // registration took the same matricule (unique constraint), the whole
+    // transaction is rolled back; bump the sequence and retry it.
+    const createInTransaction = () => prisma.$transaction(async (prisma) => {
         // Create student
         const student = await prisma.student.create({
             data: studentData
@@ -105,7 +120,24 @@ export async function registerStudentToClass(data: BursarRegistrationData) {
         return { student, enrollment };
     });
 
-    return result;
+    for (let attempt = 0; ; attempt++) {
+        try {
+            const created = await createInTransaction();
+            // Every enrolled student must have a SchoolFees row from day one (M9):
+            // defaulters, outstanding totals and Record Payment all start from it.
+            // Done after commit because the new/old fee rule reads the committed student.
+            try {
+                await ensureSchoolFeeForEnrollment(created.enrollment.id);
+            } catch (feeErr) {
+                console.error(`Failed to create SchoolFees for enrollment ${created.enrollment.id}:`, feeErr);
+            }
+            return created;
+        } catch (err: any) {
+            const isMatriculeClash = err?.code === 'P2002' && String(err?.meta?.target ?? '').includes('matricule');
+            if (!isMatriculeClash || attempt >= 4) throw err;
+            studentData.matricule = bumpMatricule(studentData.matricule);
+        }
+    }
 }
 
 /**

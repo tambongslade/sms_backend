@@ -53,7 +53,7 @@ export const getMyStudents = async (req: AuthenticatedRequest, res: Response): P
         }
 
         // Extract pagination and filters
-        const allowedFilters = ['subClassId', 'subjectId', 'academicYearId', 'sub_class_id', 'subject_id', 'academic_year_id'];
+        const allowedFilters = ['subClassId', 'subjectId', 'academicYearId', 'sub_class_id', 'subject_id', 'academic_year_id', 'search', 'q'];
         const { paginationOptions, filterOptions } = extractPaginationAndFilters(req.query, allowedFilters);
 
         // Normalize filter keys (handle both camelCase and snake_case)
@@ -67,7 +67,8 @@ export const getMyStudents = async (req: AuthenticatedRequest, res: Response): P
         const parsedFilters = {
             subClassId: filters.subClassId ? parseInt(filters.subClassId as string) : undefined,
             subjectId: filters.subjectId ? parseInt(filters.subjectId as string) : undefined,
-            academicYearId: filters.academicYearId ? parseInt(filters.academicYearId as string) : undefined
+            academicYearId: filters.academicYearId ? parseInt(filters.academicYearId as string) : undefined,
+            search: ((filterOptions.search || filterOptions.q) as string | undefined) || undefined
         };
 
         const result = await teacherService.getTeacherStudents(teacherId, parsedFilters, paginationOptions);
@@ -485,7 +486,8 @@ export const getMyTimetable = async (req: AuthenticatedRequest, res: Response): 
             res.status(401).json({ success: false, error: 'User not authenticated' });
             return;
         }
-        const timetable = await teacherService.getTeacherTimetable(teacherId);
+        const academicYearId = req.query.academicYearId ? parseInt(req.query.academicYearId as string) : undefined;
+        const timetable = await teacherService.getTeacherTimetable(teacherId, academicYearId);
         res.json({ success: true, data: timetable });
     } catch (error: any) {
         res.status(500).json({ success: false, error: error.message });

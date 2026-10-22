@@ -5,14 +5,30 @@
  *     LoginRequest:
  *       type: object
  *       required:
- *         - email
  *         - password
+ *       description: >
+ *         Supply exactly one of `identifier`, `email`, `phone`, or `matricule`.
+ *         `identifier` is a single-input convenience — the backend auto-detects
+ *         email (contains `@`), phone (digits, optional `+`), or matricule.
+ *         Phone login is available to staff only; parents must use matricule.
  *       properties:
+ *         identifier:
+ *           type: string
+ *           description: Email, phone number, or matricule — auto-detected.
+ *           example: nyingwilfredo@gmail.com
  *         email:
  *           type: string
  *           format: email
- *           description: User's email address
+ *           description: User's email address (staff and students).
  *           example: john.doe@example.com
+ *         phone:
+ *           type: string
+ *           description: Staff phone number. Accepts `+237XXXXXXXXX` or `XXXXXXXXX`.
+ *           example: "+237674816735"
+ *         matricule:
+ *           type: string
+ *           description: Matricule (parents only).
+ *           example: SO2026001
  *         password:
  *           type: string
  *           format: password

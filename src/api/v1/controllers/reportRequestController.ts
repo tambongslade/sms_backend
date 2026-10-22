@@ -154,3 +154,33 @@ export const cancelReportRequest = async (req: any, res: Response): Promise<any>
         return res.status(status).json({ success: false, error: err.message });
     }
 };
+
+/**
+ * GET /report-requests/recipients[?roles=SENIOR_DISCIPLINE_MASTER,DISCIPLINE_MASTER]
+ * People the caller may request a report from (default: SDM + DM for the
+ * current academic year, filtered to those the caller outranks).
+ */
+const RECIPIENT_ROLE_WHITELIST = new Set([
+    'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY', 'DEAN_OF_STUDIES', 'DEAN_OF_DISCIPLINE',
+    'DISCIPLINE_COORDINATOR', 'SENIOR_DISCIPLINE_MASTER', 'HOD', 'TEACHER', 'DISCIPLINE_MASTER',
+    'NURSE', 'FEE_AUDITOR', 'CONTROLLER', 'GUIDANCE_COUNSELOR',
+]);
+export const listReportRecipients = async (req: any, res: Response): Promise<any> => {
+    try {
+        if (!req.user?.id) return res.status(401).json({ success: false, error: 'Unauthorized' });
+        const raw = (req.finalQuery?.roles ?? req.query.roles) as string | string[] | undefined;
+        let roles: any[] | undefined;
+        if (raw) {
+            roles = (Array.isArray(raw) ? raw : String(raw).split(','))
+                .map(r => String(r).trim().toUpperCase())
+                .filter(Boolean);
+            const bad = roles.filter(r => !RECIPIENT_ROLE_WHITELIST.has(r));
+            if (bad.length) return res.status(400).json({ success: false, error: `Invalid recipient role(s): ${bad.join(', ')}` });
+        }
+        const data = await svc.listReportRecipients(req.user.id, roles);
+        return res.json({ success: true, data });
+    } catch (err: any) {
+        console.error('Error listing report recipients:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+};

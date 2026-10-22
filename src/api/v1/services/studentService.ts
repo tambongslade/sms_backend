@@ -22,6 +22,52 @@ export async function getAllStudents(
     );
 }
 
+// Parent fields safe/useful for student list rows. `parent: true` shipped the whole User
+// row (incl. password hash) for every parent on every list/search request.
+const LIST_PARENT_SELECT = {
+    id: true,
+    name: true,
+    phone: true,
+    email: true,
+    matricule: true,
+    whatsapp_number: true,
+    gender: true,
+    address: true, // read by the bursar student-registration list
+} as const;
+
+/**
+ * Resolve each student's photo in ONE query: the target-year enrollment photo, else the most
+ * recent other enrollment photo (same rule as getStudentEnrollmentPhoto). Previously list
+ * pages called GET /students/:id/enrollment-photo once per row per rendered view (~300
+ * requests for a 100-row desktop page, 35-90 s of server time). Adds `photo` (null = none)
+ * and `photo_resolved: true` so the client knows it need not fetch the photo itself.
+ */
+async function attachResolvedPhotos<T extends { id: number }>(
+    students: T[],
+    targetAcademicYearId?: number | null
+): Promise<Array<T & { photo: string | null; photo_resolved: true }>> {
+    const studentIds = students.map(s => s.id);
+    const photoRows = studentIds.length > 0
+        ? await prisma.enrollment.findMany({
+            where: { student_id: { in: studentIds }, photo: { not: null } },
+            select: { student_id: true, academic_year_id: true, photo: true },
+            orderBy: { academic_year_id: 'desc' },
+        })
+        : [];
+    const photoByStudent = new Map<number, string>();
+    for (const row of photoRows) {
+        if (!row.photo) continue;
+        if (row.academic_year_id === targetAcademicYearId || !photoByStudent.has(row.student_id)) {
+            photoByStudent.set(row.student_id, row.photo);
+        }
+    }
+    return students.map(s => ({
+        ...s,
+        photo: photoByStudent.get(s.id) ?? null,
+        photo_resolved: true as const,
+    }));
+}
+
 // Get all students with their current enrollment info with pagination and filtering
 export async function getAllStudentsWithCurrentEnrollment(
     academicYearIdInput?: number, // Explicitly name the input
@@ -29,11 +75,12 @@ export async function getAllStudentsWithCurrentEnrollment(
     filterOptions?: FilterOptions,
     enrollmentStatus?: 'enrolled' | 'not_enrolled' | 'all', // Add enrollmentStatus parameter
     teacherSubClassIds?: number[], // Add teacher subclass restriction
-    includeWithdrawn: boolean = false // Named apart from `enrollmentStatus` on purpose: that
+    includeWithdrawn: boolean = false, // Named apart from `enrollmentStatus` on purpose: that
     // param means "enrolled this year or not" and already has its own 'all'; this one is
     // about Student.status itself (WITHDRAWN = soft-deleted). Off by default so a plain
     // student list doesn't silently include withdrawn students -- opt in explicitly for
     // an admin "view withdrawn" report.
+    search?: string // Free text: every whitespace-separated token must match name OR matricule (case-insensitive)
 ): Promise<PaginatedResult<any>> {
 
     // 1. Determine Target Academic Year
@@ -43,9 +90,12 @@ export async function getAllStudentsWithCurrentEnrollment(
     }
 
     // 2. Build Base Where Clause for Student Filters
+    // Default excludes students who have left (WITHDRAWN soft-delete and TRANSFERRED
+    // transfer-out, U13) -- the same "active" definition as utils/schoolCounts, so the
+    // list total matches the dashboard student count. includeWithdrawn=true shows them.
     const studentWhere: Prisma.StudentWhereInput = includeWithdrawn
         ? {}
-        : { status: { not: StudentStatus.WITHDRAWN } };
+        : { status: { notIn: [StudentStatus.WITHDRAWN, StudentStatus.TRANSFERRED] } };
     let sub_classIdFilter: number | undefined = undefined; // Store sub_class filter separately
 
     if (filterOptions) {
@@ -145,6 +195,17 @@ export async function getAllStudentsWithCurrentEnrollment(
         }
     }
 
+    // Server-side search across all students (not just the current page).
+    const searchTokens = (search || '').split(/\s+/).map(t => t.trim()).filter(Boolean);
+    if (searchTokens.length > 0) {
+        studentWhere.AND = searchTokens.map(token => ({
+            OR: [
+                { name: { contains: token, mode: 'insensitive' as const } },
+                { matricule: { contains: token, mode: 'insensitive' as const } },
+            ],
+        }));
+    }
+
     console.log("Final Student Where:", JSON.stringify(studentWhere));
     console.log("Enrollment Criteria for Include:", JSON.stringify(enrollmentCriteria));
 
@@ -193,16 +254,21 @@ export async function getAllStudentsWithCurrentEnrollment(
             },
             parents: {
                 include: {
-                    parent: true // Include parent details
+                    // Only the contact fields the list needs. `parent: true` shipped the whole
+                    // User row (incl. password hash) for every parent on every page load.
+                    parent: { select: LIST_PARENT_SELECT }
                 }
             }
         }
     });
 
+    // Resolve photos in one batched query (see attachResolvedPhotos).
+    const data = await attachResolvedPhotos(students, targetAcademicYearId);
+
     console.log(`Returning ${students.length} students for page ${page}`);
 
     return {
-        data: students,
+        data,
         meta: {
             total,
             page,
@@ -878,8 +944,8 @@ export async function getStudentsBySubclass(
             academic_year_id: yearId,
             // deleteStudent soft-deletes (WITHDRAWN) without touching the enrollment row,
             // so a roster query has to exclude it explicitly or a withdrawn student keeps
-            // showing up in their old class.
-            student: { status: { not: StudentStatus.WITHDRAWN } }
+            // showing up in their old class. Same for a TRANSFERRED (transfer-out) student.
+            student: { status: { notIn: [StudentStatus.WITHDRAWN, StudentStatus.TRANSFERRED] } }
         },
         include: {
             student: true,
@@ -1074,14 +1140,14 @@ export async function searchStudents(
                 } : undefined,
                 parents: {
                     include: {
-                        parent: true
+                        parent: { select: LIST_PARENT_SELECT }
                     }
                 }
             }
         });
 
         return {
-            data: students,
+            data: await attachResolvedPhotos(students, targetAcademicYearId),
             meta: {
                 total,
                 page,
@@ -1805,7 +1871,8 @@ export interface PromotionInput {
     student_id: number;
     target_class_id?: number | null; // required unless action = GRADUATE
     repeater?: boolean;
-    action: 'PROMOTE' | 'REPEAT' | 'GRADUATE' | 'TRANSFER';
+    // DISMISS: not re-enrolled for the target year (no enrollment created, status unchanged)
+    action: 'PROMOTE' | 'REPEAT' | 'GRADUATE' | 'TRANSFER' | 'DISMISS';
 }
 
 export interface PromotionResult {
@@ -1833,6 +1900,13 @@ export async function promoteStudents(
 
     for (const p of promotions) {
         try {
+            if (!['PROMOTE', 'REPEAT', 'GRADUATE', 'TRANSFER', 'DISMISS'].includes(p.action)) {
+                throw new Error(`Unknown action ${p.action}`);
+            }
+            if (p.action === 'DISMISS') {
+                results.push({ student_id: p.student_id, success: true });
+                continue;
+            }
             if (p.action === 'GRADUATE' || p.action === 'TRANSFER') {
                 await prisma.student.update({
                     where: { id: p.student_id },

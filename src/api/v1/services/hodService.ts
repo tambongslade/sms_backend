@@ -1,5 +1,6 @@
 import prisma from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
+import { getTeacherWorkloads } from '../../../utils/teacherWorkload';
 import { paginate, PaginationOptions, PaginatedResult } from '../../../utils/pagination';
 
 // Types for HOD operations
@@ -464,7 +465,8 @@ export async function getTeachersInDepartment(
             email: teacher.email,
             matricule: teacher.matricule || '',
             phone: teacher.phone,
-            totalHoursPerWeek: teacher.total_hours_per_week || 0,
+            // Derived from the timetable (User.total_hours_per_week is never populated).
+            totalHoursPerWeek: (await getTeacherWorkloads([teacher.id], currentYear)).get(teacher.id)?.total_hours_per_week ?? 0,
             subjectsTeaching,
             classesTeaching,
             performanceMetrics: {
@@ -1092,8 +1094,14 @@ export async function getHODDashboard(hodId: number, academicYearId?: number): P
         }
     });
 
-    const totalStudents = subClassSubjects.reduce((total, scs) =>
-        total + scs.sub_class.enrollments.length, 0);
+    // Distinct students / sub-classes / teachers: a sub-class taking two of
+    // the department's subjects (e.g. Maths + Add. Maths) used to be counted
+    // twice, as did a teacher assigned to two department subjects.
+    const totalStudents = new Set(
+        subClassSubjects.flatMap(scs => scs.sub_class.enrollments.map(e => e.id))
+    ).size;
+    const distinctSubClasses = new Set(subClassSubjects.map(scs => scs.sub_class_id)).size;
+    const distinctTeachers = new Set(subjectTeachers.map(st => st.teacher_id)).size;
 
     // Get all marks for department
     const allMarks = await prisma.mark.findMany({
@@ -1117,9 +1125,9 @@ export async function getHODDashboard(hodId: number, academicYearId?: number): P
 
     return {
         totalSubjects: subjects.length,
-        totalTeachers: subjectTeachers.length,
+        totalTeachers: distinctTeachers,
         totalStudents,
-        totalClasses: subClassSubjects.length,
+        totalClasses: distinctSubClasses,
         departmentAverage: Math.round(departmentAverage * 100) / 100,
         overallPassRate: Math.round(overallPassRate * 100) / 100,
         subjectsManaged: subjects.map(subject => ({

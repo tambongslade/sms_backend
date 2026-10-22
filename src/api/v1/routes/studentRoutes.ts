@@ -1,6 +1,7 @@
 // Swagger documentation can be found in src/config/swagger/docs/studentDocs.ts
 import { Router } from 'express';
 import * as studentController from '../controllers/studentController';
+import * as studentTransferController from '../controllers/studentTransferController';
 import { validateTeacherStudentAccess } from '../middleware/teacherAuth.middleware';
 // Performance controller functions will be uncommented after implementation
 // import {
@@ -42,6 +43,13 @@ router.get('/summary',
         next();
     },
     studentController.getStudentsWithStatusInfo
+);
+
+// GET /students/transfers - Transfer-out register (U13). Must stay above GET /:id.
+router.get('/transfers',
+    authenticate,
+    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'SECRETARY']),
+    studentTransferController.listTransfers
 );
 
 // GET /students/search - Search students by name or matricule
@@ -182,6 +190,12 @@ router.delete('/:id', authenticate, authorize(['SUPER_MANAGER', 'BURSAR', 'SECRE
 
 // POST /students/:id/unenroll - Unenroll (dismiss) a student from an academic year
 router.post('/:id/unenroll', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'SECRETARY']), studentController.unenrollStudent);
+
+// U13 transfer-out: keeps marks/fees/enrollments, sets status TRANSFERRED, records date/reason/destination.
+router.post('/:id/transfer-out', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'SECRETARY']), studentTransferController.transferOut);
+router.get('/:id/transfer-out', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'SECRETARY']), studentTransferController.getStudentTransfers);
+// Leaving certificate PDF (latest transfer, or ?transferId=)
+router.get('/:id/leaving-certificate', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'SECRETARY']), studentTransferController.downloadLeavingCertificate);
 
 // POST /students/:id/parents - Link parent to student (alternative endpoint)
 router.post('/:id/parents', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY']), studentController.linkParent);

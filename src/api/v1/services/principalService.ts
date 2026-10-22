@@ -1,26 +1,42 @@
 import prisma from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
+import { SUBCLASS_MAX_STUDENTS } from '../../../utils/capacity';
+import {
+    activeEnrollmentWhere,
+    countActiveStudents,
+    countStaff,
+    countStreams,
+    countTeachers,
+    teacherUserWhere,
+} from '../../../utils/schoolCounts';
 
 // Types for Principal operations
 export interface SchoolAnalytics {
     totalStudents: number;
     totalTeachers: number;
+    /** Number of streams (SubClasses), e.g. Form 1 A, Form 1 B ... */
     totalClasses: number;
+    /** Number of class levels (Class rows), e.g. Form 1, Form 2 ... */
+    totalClassLevels: number;
     totalSubjects: number;
     activeExamSequences: number;
     averageAttendanceRate: number;
-    overallAcademicPerformance: number;
+    /** Mean of all recorded marks for the year, on the /20 scale (null when no marks yet). */
+    overallAcademicPerformance: number | null;
     financialCollectionRate: number;
     disciplineIssuesThisMonth: number;
     newEnrollmentsThisMonth: number;
-    teacherUtilizationRate: number;
+    /** Percentage of stream seats filled (students / (streams x seat cap)). */
     classCapacityUtilization: number;
 }
 
 export interface PerformanceMetrics {
     academicPerformance: {
-        overallPassRate: number;
-        averageGrade: number;
+        /** Percentage (0-100); null when no marks recorded yet. */
+        overallPassRate: number | null;
+        /** Mean of subject averages on the /20 scale; null when no marks recorded yet. */
+        averageGrade: number | null;
+        /** averageScore values below are on the /20 scale. Only subjects / streams with marks are listed. */
         subjectPerformance: Array<{
             subjectName: string;
             averageScore: number;
@@ -58,7 +74,6 @@ export interface PerformanceMetrics {
             subjectsTeaching: number;
             averageStudentPerformance: number;
             classesManaged: number;
-            attendanceRate: number;
         }>;
     };
 }
@@ -90,13 +105,12 @@ export interface FinancialOverview {
 
 export interface DisciplineOverview {
     totalIssues: number;
+    issuesThisMonth: number;
     resolvedIssues: number;
     pendingIssues: number;
-    averageResolutionTime: number;
     issuesByType: Array<{
         issueType: string;
         count: number;
-        trend: 'INCREASING' | 'DECREASING' | 'STABLE';
     }>;
     studentsByIssueCount: Array<{
         studentName: string;
@@ -115,10 +129,10 @@ export interface StaffOverview {
     totalStaff: number;
     teacherCount: number;
     administrativeStaff: number;
-    staffUtilization: Array<{
+    /** Distinct staff users per role (parents excluded). A user with two roles appears under both. */
+    staffByRole: Array<{
         role: string;
         count: number;
-        utilizationRate: number;
     }>;
     recentHires: Array<{
         name: string;
@@ -176,28 +190,14 @@ export async function getSchoolAnalytics(academicYearId?: number): Promise<Schoo
             totalFees,
             totalPayments
         ] = await Promise.all([
-            // Total students enrolled in current academic year
-            prisma.enrollment.count({
-                where: { academic_year_id: currentYear.id }
-            }),
+            // Active students (shared definition, see utils/schoolCounts.ts)
+            countActiveStudents(currentYear.id),
 
-            // Total teachers with roles in current academic year
-            prisma.user.count({
-                where: {
-                    user_roles: {
-                        some: {
-                            role: 'TEACHER',
-                            OR: [
-                                { academic_year_id: currentYear.id },
-                                { academic_year_id: null }
-                            ]
-                        }
-                    }
-                }
-            }),
+            // Teachers (TEACHER role for the year, or a timetable slot)
+            countTeachers(currentYear.id),
 
-            // Total classes
-            prisma.class.count(),
+            // "Classes" = streams (SubClasses), not class levels
+            countStreams(),
 
             // Total subjects
             prisma.subject.count(),
@@ -213,7 +213,7 @@ export async function getSchoolAnalytics(academicYearId?: number): Promise<Schoo
             // New enrollments this month
             prisma.enrollment.count({
                 where: {
-                    academic_year_id: currentYear.id,
+                    ...activeEnrollmentWhere(currentYear.id),
                     created_at: {
                         gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
                     }
@@ -273,9 +273,11 @@ export async function getSchoolAnalytics(academicYearId?: number): Promise<Schoo
             })
         ]);
 
-        // Calculate derived metrics with null safety
+        const totalClassLevels = await prisma.class.count();
+
+        // Calculate derived metrics with null safety. Marks are on /20.
         const overallAcademicPerformance = totalMarks > 0 ?
-            ((markSum?._sum?.score || 0) / totalMarks) : 0;
+            ((markSum?._sum?.score || 0) / totalMarks) : null;
 
         const averageAttendanceRate = totalStudents > 0 ?
             Math.max(0, 100 - ((attendanceRecords / totalStudents) * 10)) : 100;
@@ -283,24 +285,21 @@ export async function getSchoolAnalytics(academicYearId?: number): Promise<Schoo
         const financialCollectionRate = (totalFees?._sum?.amount_expected || 0) > 0 ?
             ((totalPayments?._sum?.amount || 0) / (totalFees?._sum?.amount_expected || 1)) * 100 : 0;
 
-        const teacherUtilizationRate = totalTeachers > 0 ?
-            Math.min(100, (totalClasses / totalTeachers) * 20) : 0;
-
         const classCapacityUtilization = totalClasses > 0 ?
-            (totalStudents / (totalClasses * 30)) * 100 : 0; // Assuming 30 students per class capacity
+            (totalStudents / (totalClasses * SUBCLASS_MAX_STUDENTS)) * 100 : 0;
 
         return {
             totalStudents,
             totalTeachers,
             totalClasses,
+            totalClassLevels,
             totalSubjects,
             activeExamSequences: activeSequences,
             averageAttendanceRate: Math.round(averageAttendanceRate * 100) / 100,
-            overallAcademicPerformance: Math.round(overallAcademicPerformance * 100) / 100,
+            overallAcademicPerformance: overallAcademicPerformance === null ? null : Math.round(overallAcademicPerformance * 100) / 100,
             financialCollectionRate: Math.round(financialCollectionRate * 100) / 100,
             disciplineIssuesThisMonth,
             newEnrollmentsThisMonth: enrollmentsThisMonth,
-            teacherUtilizationRate: Math.round(teacherUtilizationRate * 100) / 100,
             classCapacityUtilization: Math.round(Math.min(100, classCapacityUtilization) * 100) / 100
         };
     } catch (error) {
@@ -351,16 +350,17 @@ export async function getPerformanceMetrics(academicYearId?: number): Promise<Pe
             );
 
             const averageScore = allMarks.length > 0 ?
-                allMarks.reduce((sum, mark) => sum + mark.score || 0, 0) / allMarks.length : 0;
+                allMarks.reduce((sum, mark) => sum + (mark.score ?? 0), 0) / allMarks.length : 0;
 
             const passRate = allMarks.length > 0 ?
-                (allMarks.filter(mark => mark.score || 0 >= 10).length / allMarks.length) * 100 : 0;
+                (allMarks.filter(mark => (mark.score ?? 0) >= 10).length / allMarks.length) * 100 : 0;
 
             return {
                 subjectName: subject.name,
                 averageScore: Math.round(averageScore * 100) / 100,
                 passRate: Math.round(passRate * 100) / 100,
-                totalStudents
+                totalStudents,
+                markCount: allMarks.length
             };
         });
 
@@ -391,14 +391,15 @@ export async function getPerformanceMetrics(academicYearId?: number): Promise<Pe
         const processedClassPerformance = classPerformance.map(subClass => {
             const allMarks = subClass.enrollments.flatMap(enrollment => enrollment.marks);
             const averageScore = allMarks.length > 0 ?
-                allMarks.reduce((sum, mark) => sum + mark.score || 0, 0) / allMarks.length : 0;
+                allMarks.reduce((sum, mark) => sum + (mark.score ?? 0), 0) / allMarks.length : 0;
 
             const passRate = allMarks.length > 0 ?
-                (allMarks.filter(mark => mark.score || 0 >= 10).length / allMarks.length) * 100 : 0;
+                (allMarks.filter(mark => (mark.score ?? 0) >= 10).length / allMarks.length) * 100 : 0;
 
             const teacherName = subClass.teacher_periods[0]?.teacher?.name || 'No Teacher Assigned';
 
             return {
+                markCount: allMarks.length,
                 className: subClass.class.name,
                 subClassName: subClass.name,
                 averageScore: Math.round(averageScore * 100) / 100,
@@ -426,19 +427,10 @@ export async function getPerformanceMetrics(academicYearId?: number): Promise<Pe
 
         // Get teacher performance metrics
         const teachers = await prisma.user.findMany({
-            where: {
-                user_roles: {
-                    some: {
-                        role: 'TEACHER',
-                        OR: [
-                            { academic_year_id: currentYear.id },
-                            { academic_year_id: null }
-                        ]
-                    }
-                }
-            },
+            where: teacherUserWhere(currentYear.id),
             include: {
                 teacher_periods: {
+                    where: { academic_year_id: currentYear.id },
                     include: {
                         sub_class: {
                             include: {
@@ -456,30 +448,38 @@ export async function getPerformanceMetrics(academicYearId?: number): Promise<Pe
 
         const teacherPerformanceMetrics = teachers.map(teacher => {
             const uniqueSubjects = new Set(teacher.teacher_periods.map(tp => tp.subject.id));
+            const uniqueSubClasses = new Set(teacher.teacher_periods.map(tp => tp.sub_class_id));
             const allMarks = teacher.teacher_periods.flatMap(tp =>
                 tp.sub_class.enrollments.flatMap(enrollment => enrollment.marks)
             );
 
             const averageStudentPerformance = allMarks.length > 0 ?
-                allMarks.reduce((sum, mark) => sum + mark.score || 0, 0) / allMarks.length : 0;
+                allMarks.reduce((sum, mark) => sum + (mark.score ?? 0), 0) / allMarks.length : 0;
 
             return {
                 teacherName: teacher.name,
                 subjectsTeaching: uniqueSubjects.size,
                 averageStudentPerformance: Math.round(averageStudentPerformance * 100) / 100,
-                classesManaged: teacher.teacher_periods.length,
-                attendanceRate: 95 // Placeholder - would need teacher attendance tracking
+                classesManaged: uniqueSubClasses.size
             };
         });
 
+        // Only subjects that actually have marks feed the school-wide figures;
+        // averaging in 0 for unmarked subjects dragged the numbers down.
+        const markedSubjects = processedSubjectPerformance.filter(sp => sp.markCount > 0);
+        const round2 = (n: number) => Math.round(n * 100) / 100;
+
         return {
             academicPerformance: {
-                overallPassRate: processedSubjectPerformance.length > 0 ?
-                    processedSubjectPerformance.reduce((sum, sp) => sum + sp.passRate, 0) / processedSubjectPerformance.length : 0,
-                averageGrade: processedSubjectPerformance.length > 0 ?
-                    processedSubjectPerformance.reduce((sum, sp) => sum + sp.averageScore, 0) / processedSubjectPerformance.length : 0,
-                subjectPerformance: processedSubjectPerformance,
+                overallPassRate: markedSubjects.length > 0 ?
+                    round2(markedSubjects.reduce((sum, sp) => sum + sp.passRate, 0) / markedSubjects.length) : null,
+                // Mean of subject averages, on the /20 scale (null when no marks yet)
+                averageGrade: markedSubjects.length > 0 ?
+                    round2(markedSubjects.reduce((sum, sp) => sum + sp.averageScore, 0) / markedSubjects.length) : null,
+                subjectPerformance: markedSubjects.map(({ markCount, ...rest }) => rest),
                 classPerformance: processedClassPerformance
+                    .filter(cp => cp.markCount > 0)
+                    .map(({ markCount, ...rest }) => rest)
             },
             attendanceMetrics: {
                 overallAttendanceRate: Math.round(overallAttendanceRate * 100) / 100,
@@ -488,8 +488,8 @@ export async function getPerformanceMetrics(academicYearId?: number): Promise<Pe
             },
             teacherPerformance: {
                 totalTeachers: teachers.length,
-                averageClassesPerTeacher: teachers.length > 0 ?
-                    teachers.reduce((sum, t) => sum + t.teacher_periods.length, 0) / teachers.length : 0,
+                averageClassesPerTeacher: teacherPerformanceMetrics.length > 0 ?
+                    round2(teacherPerformanceMetrics.reduce((sum, t) => sum + t.classesManaged, 0) / teacherPerformanceMetrics.length) : 0,
                 teacherEfficiency: teacherPerformanceMetrics
             }
         };
@@ -630,61 +630,57 @@ export async function getDisciplineOverview(academicYearId?: number): Promise<Di
             throw new Error('No academic year found');
         }
 
-        // Get discipline statistics
+        // One base filter for every discipline figure on the dashboard, so the
+        // "Discipline Issues" card and the "Total Issues" panel agree.
+        //
+        // The previous "resolved" query filtered `NOT: { reviewed_by_id: null }`
+        // on a NON-nullable column; Prisma rejects that, so this whole function
+        // threw, getPrincipalDashboard swallowed it (allSettled) and the panel
+        // rendered 0 while the card (a separate query) showed the real count.
+        const baseWhere = { enrollment: { academic_year_id: currentYear.id } };
+        const now = new Date();
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
         const [
             totalIssues,
+            issuesThisMonth,
             resolvedIssues,
             issuesByType
         ] = await Promise.all([
+            prisma.disciplineIssue.count({ where: baseWhere }),
+            prisma.disciplineIssue.count({ where: { ...baseWhere, created_at: { gte: monthStart } } }),
+            // Resolved = an action was recorded on the issue (free-text
+            // action_taken, or at least one DisciplinaryAction row).
             prisma.disciplineIssue.count({
                 where: {
-                    enrollment: {
-                        academic_year_id: currentYear.id
-                    }
+                    ...baseWhere,
+                    OR: [
+                        { action_taken: { not: null } },
+                        { disciplinary_actions: { some: {} } }
+                    ]
                 }
             }),
-
-            // Count resolved issues (where reviewed_by_id is not null)
-            prisma.disciplineIssue.count({
-                where: {
-                    enrollment: {
-                        academic_year_id: currentYear.id
-                    },
-                    NOT: {
-                        reviewed_by_id: null
-                    }
-                }
-            }),
-
-            // Get issues by type - simplified approach to avoid circular reference
             prisma.disciplineIssue.groupBy({
                 by: ['issue_type'],
-                where: {
-                    enrollment: {
-                        academic_year_id: currentYear.id
-                    }
-                },
-                _count: {
-                    id: true
-                }
+                where: baseWhere,
+                _count: { id: true }
             })
         ]);
 
         const pendingIssues = totalIssues - resolvedIssues;
-        const averageResolutionTime = 3.5; // Placeholder - would need actual resolution time tracking
 
-        // Process issues by type
-        const processedIssuesByType = issuesByType.map(issue => ({
-            issueType: issue.issue_type,
-            count: issue._count.id,
-            trend: 'STABLE' as 'INCREASING' | 'DECREASING' | 'STABLE' // Simplified
-        }));
+        const processedIssuesByType = issuesByType
+            .map(issue => ({
+                issueType: issue.issue_type,
+                count: issue._count.id,
+            }))
+            .sort((a, b) => b.count - a.count);
 
         return {
             totalIssues,
+            issuesThisMonth,
             resolvedIssues,
             pendingIssues,
-            averageResolutionTime,
             issuesByType: processedIssuesByType,
             studentsByIssueCount: [], // Simplified for now
             monthlyTrends: [] // Simplified for now
@@ -707,61 +703,46 @@ export async function getStaffOverview(academicYearId?: number): Promise<StaffOv
             throw new Error('No academic year found');
         }
 
+        // Staff excludes parent-only accounts (the old query counted every user
+        // with any role, so ~950 parents were reported as "staff").
+        const yearScope = {
+            OR: [
+                { academic_year_id: currentYear.id },
+                { academic_year_id: null }
+            ]
+        };
+
         const [
-            allStaff,
+            totalStaff,
+            teacherCount,
             roleDistribution
         ] = await Promise.all([
-            // All staff members
-            prisma.user.findMany({
-                where: {
-                    user_roles: {
-                        some: {
-                            OR: [
-                                { academic_year_id: currentYear.id },
-                                { academic_year_id: null }
-                            ]
-                        }
-                    }
-                },
-                include: {
-                    user_roles: {
-                        where: {
-                            OR: [
-                                { academic_year_id: currentYear.id },
-                                { academic_year_id: null }
-                            ]
-                        }
-                    }
-                }
-            }),
-
-            // Role distribution
-            prisma.userRole.groupBy({
-                by: ['role'],
-                where: {
-                    OR: [
-                        { academic_year_id: currentYear.id },
-                        { academic_year_id: null }
-                    ]
-                },
-                _count: { id: true }
+            countStaff(currentYear.id),
+            countTeachers(currentYear.id),
+            prisma.userRole.findMany({
+                where: { ...yearScope, role: { not: 'PARENT' } },
+                select: { role: true, user_id: true },
+                distinct: ['role', 'user_id']
             })
         ]);
 
-        const teacherCount = roleDistribution.find(r => r.role === 'TEACHER')?._count.id || 0;
-        const administrativeStaff = allStaff.length - teacherCount;
+        const roleCounts = new Map<string, number>();
+        for (const r of roleDistribution) {
+            roleCounts.set(r.role, (roleCounts.get(r.role) || 0) + 1);
+        }
+        const staffByRole = Array.from(roleCounts.entries())
+            .map(([role, count]) => ({ role, count }))
+            .sort((a, b) => b.count - a.count);
 
-        const staffUtilization = roleDistribution.map(role => ({
-            role: role.role,
-            count: role._count.id,
-            utilizationRate: 85 // Placeholder - would need actual utilization tracking
-        }));
+        // Staff who are not teachers (a teacher who also holds an admin role
+        // is counted as a teacher).
+        const administrativeStaff = Math.max(0, totalStaff - teacherCount);
 
         return {
-            totalStaff: allStaff.length,
+            totalStaff,
             teacherCount,
             administrativeStaff,
-            staffUtilization,
+            staffByRole,
             recentHires: [], // Simplified for now
             staffPerformanceMetrics: [] // Simplified for now
         };

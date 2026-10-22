@@ -1,6 +1,7 @@
 import prisma, {
     Expenditure, ExpenditureCategory, PaymentMethod, Prisma, Role,
 } from '../../../config/db';
+import { normalizePaymentMethod } from '../../../utils/paymentMethod';
 import { RoleTier, userHasMinTier } from '../../../utils/roleHierarchy';
 import * as XLSX from 'xlsx';
 
@@ -10,12 +11,6 @@ function isPrincipalPlus(roles: Role[]): boolean {
     return userHasMinTier(roles, RoleTier.HEAD_OF_SCHOOL);
 }
 
-function normalizePaymentMethod(method?: string | null): PaymentMethod | null {
-    if (!method) return null;
-    const m = method.toUpperCase();
-    if (m === 'EXPRESS_UNION' || m === 'CCA' || m === 'F3DC' || m === 'AFRILAND_FIRST_BANK') return m as PaymentMethod;
-    throw new Error(`Unsupported payment method: ${method}`);
-}
 
 export interface CreateExpenditureInput {
     date: string;
@@ -35,7 +30,7 @@ export async function createExpenditure(input: CreateExpenditureInput): Promise<
     if (input.amount <= 0) throw new Error('amount must be > 0');
     if (!input.category) throw new Error('category is required');
 
-    const paymentMethod = normalizePaymentMethod(input.payment_method);
+    const paymentMethod = normalizePaymentMethod(input.payment_method, true);
 
     if (input.recipient_user_id) {
         const u = await prisma.user.findUnique({ where: { id: input.recipient_user_id } });
@@ -168,7 +163,7 @@ export async function updateExpenditure(id: number, data: UpdateExpenditureInput
             updateData.recipient_user = { connect: { id: data.recipient_user_id } };
         }
     }
-    if (data.payment_method !== undefined) updateData.payment_method = normalizePaymentMethod(data.payment_method);
+    if (data.payment_method !== undefined) updateData.payment_method = normalizePaymentMethod(data.payment_method, true);
     if (data.receipt_file !== undefined) updateData.receipt_file = data.receipt_file;
     if (data.notes !== undefined) updateData.notes = data.notes?.trim() || null;
 

@@ -23,6 +23,10 @@ router.post('/', authenticate, authorize(REQUESTERS), ctrl.createReportRequest);
 
 // Convenience listings — service uses req.user.id, so just authenticate
 router.get('/sent', authenticate, authorize(REQUESTERS), ctrl.listMyReportRequests);
+
+// "Request from" picker: people the caller may request a report from.
+// Must stay above /:id.
+router.get('/recipients', authenticate, authorize(REQUESTERS), ctrl.listReportRecipients);
 router.get('/assigned', authenticate, authorize(RECIPIENTS), ctrl.listAssignedReportRequests);
 
 // Generic list (filterable)

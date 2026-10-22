@@ -69,6 +69,14 @@ router.get('/defaulters-report',
     bursarController.getDefaultersReport
 );
 
+// GET /bursar/defaulters-report/pdf - Export the defaulters report as a printable PDF
+// (one subclass per page). Same query params as /defaulters-report.
+router.get('/defaulters-report/pdf',
+    authenticate,
+    authorize(['BURSAR', 'SUPER_MANAGER', 'PRINCIPAL', 'MANAGER']),
+    bursarController.exportDefaultersReportPdf
+);
+
 // POST /bursar/parents/:parentId/reset-password - Reset a parent's password back to the default
 // Used when a parent forgets the password they set after first login.
 // BURSAR, PRINCIPAL, VICE_PRINCIPAL, SUPER_MANAGER, MANAGER can perform the reset.

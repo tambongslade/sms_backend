@@ -134,6 +134,60 @@ export interface ReportCard {
     download_url: string;
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Shared helpers — compute real (non-placeholder) parent-side numbers.
+// Kept in this file so it stays a single source of truth for the parent surface.
+// ────────────────────────────────────────────────────────────────────────────
+
+const MARK_SCALE = 20;
+const FALLBACK_WORKING_DAYS = 180;
+const workingDaysCache = new Map<number, number>();
+
+export async function getYearWorkingDays(academicYearId?: number): Promise<number> {
+    if (!academicYearId) return FALLBACK_WORKING_DAYS;
+    const cached = workingDaysCache.get(academicYearId);
+    if (cached) return cached;
+
+    const terms = await prisma.term.findMany({
+        where: { academic_year_id: academicYearId, is_holiday: false }
+    });
+
+    let days = 0;
+    for (const t of terms) {
+        if (!t.start_date || !t.end_date) continue;
+        const ms = new Date(t.end_date).getTime() - new Date(t.start_date).getTime();
+        if (ms > 0) days += Math.round((ms / (24 * 60 * 60 * 1000)) * (5 / 7));
+    }
+    const total = days > 0 ? days : FALLBACK_WORKING_DAYS;
+    workingDaysCache.set(academicYearId, total);
+    return total;
+}
+
+export function computeAttendance(
+    absences: Array<{ absence_type: string; is_excused?: boolean | null }>,
+    totalSchoolDays: number
+): { presentDays: number; absentDays: number; lateDays: number; attendanceRate: number } {
+    const lateDays = absences.filter(a => a.absence_type === 'MORNING_LATENESS').length;
+    const absentDays = absences.filter(a => a.absence_type === 'CLASS_ABSENCE').length;
+    const presentDays = Math.max(0, totalSchoolDays - absentDays);
+    const attendanceRate = totalSchoolDays > 0 ? (presentDays / totalSchoolDays) * 100 : 0;
+    return { presentDays, absentDays, lateDays, attendanceRate };
+}
+
+export function formatSequenceLabel(seq: { sequence_number?: number | null; term?: { name?: string | null } | null } | null | undefined): string {
+    if (!seq) return 'N/A';
+    const termName = seq.term?.name?.trim();
+    const num = seq.sequence_number ?? null;
+    if (termName && num != null) return `${termName} · Seq ${num}`;
+    if (termName) return termName;
+    if (num != null) return `Sequence ${num}`;
+    return 'N/A';
+}
+
+export function deriveDisciplineStatus(issue: { action_taken?: string | null }): 'PENDING' | 'RESOLVED' {
+    return issue.action_taken && issue.action_taken.trim().length > 0 ? 'RESOLVED' : 'PENDING';
+}
+
 /**
  * Get comprehensive parent dashboard data
  */
@@ -155,24 +209,16 @@ export async function getParentDashboard(parentId: number, academicYearId?: numb
                                 },
                                 marks: {
                                     include: {
-                                        sub_class_subject: {
-                                            include: {
-                                                subject: true
-                                            }
-                                        }
+                                        sub_class_subject: { include: { subject: true } },
+                                        exam_sequence: { include: { term: true } },
+                                        teacher: { select: { name: true } }
                                     },
                                     orderBy: { created_at: 'desc' },
                                     take: 5
                                 },
                                 discipline_issues: true,
                                 school_fees: true,
-                                absences: {
-                                    where: {
-                                        created_at: {
-                                            gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // Last 30 days
-                                        }
-                                    }
-                                }
+                                absences: true
                             }
                         }
                     }
@@ -185,31 +231,30 @@ export async function getParentDashboard(parentId: number, academicYearId?: numb
         let totalDisciplineIssues = 0;
         let totalLatestGrades = 0;
 
+        const totalSchoolDays = await getYearWorkingDays(yearId);
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
         for (const link of parentStudentLinks) {
             const student = link.student;
             const currentEnrollment = student.enrollments[0]; // Current year enrollment
 
-            // Calculate attendance rate (placeholder - implement actual logic)
-            const attendanceRate = 85; // percentage
+            const { attendanceRate } = computeAttendance(currentEnrollment?.absences ?? [], totalSchoolDays);
 
-            // Get latest marks
             const latestMarks: MarkSummary[] = currentEnrollment?.marks?.slice(0, 3).map(mark => ({
                 subject_name: mark.sub_class_subject.subject.name,
                 latest_mark: (mark.score ?? 0) || 0,
-                sequence: 'Recent', // TODO: Get sequence from exam_sequence
+                sequence: formatSequenceLabel(mark.exam_sequence as any),
                 date: mark.created_at
             })) || [];
 
-            // Calculate pending fees
             const pendingFees = currentEnrollment?.school_fees?.reduce((total, fee) =>
                 total + (fee.amount_expected - fee.amount_paid), 0
             ) || 0;
 
-            // Count discipline issues
             const disciplineIssues = currentEnrollment?.discipline_issues?.length || 0;
 
-            // Count recent absences
-            const recentAbsences = currentEnrollment?.absences?.length || 0;
+            const recentAbsences = (currentEnrollment?.absences ?? [])
+                .filter(a => a.created_at >= thirtyDaysAgo).length;
 
             const childOverview: ChildOverview = {
                 id: student.id,
@@ -232,11 +277,11 @@ export async function getParentDashboard(parentId: number, academicYearId?: numb
             totalLatestGrades += latestMarks.length;
         }
 
-        // Get unread messages for parent
         const unreadMessages = await notificationService.getUnreadNotificationCount(parentId);
 
-        // Get upcoming events (placeholder)
-        const upcomingEvents = 3;
+        // Upcoming events feature is not implemented on the backend yet; return 0
+        // rather than a fake count so the UI can hide the section when empty.
+        const upcomingEvents = 0;
 
         return {
             totalChildren: children.length,
@@ -255,257 +300,6 @@ export async function getParentDashboard(parentId: number, academicYearId?: numb
     }
 }
 
-/**
- * Get detailed information about a specific child
- */
-export async function getChildDetails(parentId: number, studentId: number, academicYearId?: number): Promise<ChildDetails> {
-    try {
-        const yearId = academicYearId || (await getCurrentAcademicYear())?.id;
-
-        // Verify parent-student relationship
-        console.log(`DEBUG: Looking for parent-student relationship: parentId=${parentId}, studentId=${studentId}`);
-
-        const parentStudentLink = await prisma.parentStudent.findFirst({
-            where: {
-                parent_id: parentId,
-                student_id: studentId
-            }
-        });
-
-        if (!parentStudentLink) {
-            // Debug: Log all relationships for this parent
-            const allParentRelationships = await prisma.parentStudent.findMany({
-                where: { parent_id: parentId },
-                include: { student: { select: { id: true, name: true, matricule: true } } }
-            });
-            console.log(`DEBUG: All relationships for parent ${parentId}:`, allParentRelationships);
-
-            throw new Error('Parent-student relationship not found');
-        }
-
-        // Get basic student data first
-        const student = await prisma.student.findUnique({
-            where: { id: studentId }
-        });
-
-        if (!student) {
-            throw new Error('Student not found');
-        }
-
-        // Get enrollments separately to avoid complex conditional includes
-        const enrollments = await prisma.enrollment.findMany({
-            where: {
-                student_id: studentId,
-                ...(yearId ? { academic_year_id: yearId } : {})
-            },
-            include: {
-                sub_class: {
-                    include: {
-                        class: true,
-                        class_master: { select: { name: true } }
-                    }
-                },
-                marks: {
-                    include: {
-                        sub_class_subject: {
-                            include: {
-                                subject: true
-                            }
-                        }
-                    },
-                    orderBy: { created_at: 'desc' }
-                },
-                school_fees: {
-                    include: {
-                        payment_transactions: {
-                            include: {
-                                recorded_by: { select: { name: true } }
-                            },
-                            orderBy: { created_at: 'desc' }
-                        }
-                    }
-                },
-                discipline_issues: {
-                    orderBy: { created_at: 'desc' }
-                },
-                absences: {
-                    orderBy: { created_at: 'desc' },
-                    take: 30
-                }
-            }
-        });
-
-        // Get reports separately (handle potential missing table gracefully)
-        let reports = [];
-        try {
-            reports = await prisma.generatedReport.findMany({
-                where: {
-                    student_id: studentId,
-                    ...(yearId ? { academic_year_id: yearId } : {})
-                },
-                include: {
-                    exam_sequence: {
-                        select: {
-                            sequence_number: true,
-                            term: {
-                                select: {
-                                    name: true,
-                                },
-                            },
-                        },
-                    },
-                    academic_year: {
-                        select: { name: true }
-                    }
-                },
-                orderBy: { created_at: 'desc' }
-            });
-        } catch (error) {
-            console.log('Note: GeneratedReport query failed, continuing without reports:', error);
-            reports = [];
-        }
-
-        const currentEnrollment = enrollments[0];
-
-        // Calculate attendance data
-        const totalSchoolDays = 180; // Academic year days
-        const allAbsences = currentEnrollment?.absences ?? [];
-        const lateDays = allAbsences.filter(a => a.absence_type === 'MORNING_LATENESS').length;
-        const absentDays = allAbsences.filter(a => a.absence_type === 'CLASS_ABSENCE').length;
-        const presentDays = Math.max(0, totalSchoolDays - absentDays);
-        const attendanceRate = (presentDays / totalSchoolDays) * 100;
-
-        // Process academic performance
-        const subjectPerformanceMap = new Map<number, SubjectPerformance>();
-
-        currentEnrollment?.marks?.forEach(mark => {
-            try {
-                // Safe access to nested relations
-                const subjectId = mark.sub_class_subject?.subject?.id;
-                const subjectName = mark.sub_class_subject?.subject?.name;
-
-                if (!subjectId || !subjectName) {
-                    console.log('Warning: Missing subject data for mark:', mark.id);
-                    return;
-                }
-
-                if (!subjectPerformanceMap.has(subjectId)) {
-                    subjectPerformanceMap.set(subjectId, {
-                        subject_name: subjectName,
-                        teacher_name: 'Teacher Name', // TODO: Get from teacher assignment
-                        marks: [],
-                        average: 0
-                    });
-                }
-
-                const performance = subjectPerformanceMap.get(subjectId)!;
-                performance.marks.push({
-                    sequence: 'Sequence', // TODO: Get from exam_sequence
-                    mark: (mark.score ?? 0) || 0,
-                    total: 20, // TODO: Get from exam configuration
-                    date: mark.created_at
-                });
-            } catch (error) {
-                console.log('Warning: Error processing mark:', mark.id, error);
-            }
-        });
-
-        // Calculate averages
-        const subjects = Array.from(subjectPerformanceMap.values()).map(subject => {
-            const totalMarks = subject.marks.reduce((sum, mark) => sum + mark.mark, 0);
-            subject.average = subject.marks.length > 0 ? totalMarks / subject.marks.length : 0;
-            return subject;
-        });
-
-        const overallAverage = subjects.length > 0
-            ? subjects.reduce((sum, subject) => sum + subject.average, 0) / subjects.length
-            : 0;
-
-        // Process fees data (with error handling)
-        let fees, totalExpected = 0, totalPaid = 0, outstandingBalance = 0;
-        let paymentHistory: PaymentRecord[] = [];
-        let lastPaymentDate: Date | undefined;
-
-        try {
-            fees = currentEnrollment?.school_fees?.[0];
-            totalExpected = fees?.amount_expected || 0;
-            totalPaid = fees?.amount_paid || 0;
-            outstandingBalance = totalExpected - totalPaid;
-
-            paymentHistory = fees?.payment_transactions?.map(transaction => ({
-                id: transaction.id,
-                amount: transaction.amount,
-                payment_date: transaction.payment_date,
-                payment_method: transaction.payment_method,
-                receipt_number: transaction.receipt_number || undefined,
-                recorded_by: transaction.recorded_by?.name || 'Unknown'
-            })) || [];
-
-            lastPaymentDate = paymentHistory.length > 0 ? paymentHistory[0].payment_date : undefined;
-        } catch (error) {
-            console.log('Warning: Error processing fees data:', error);
-        }
-
-        // Process discipline data - Fix the property names to match schema
-        const disciplineRecords: DisciplineRecord[] = currentEnrollment?.discipline_issues?.map(issue => ({
-            id: issue.id,
-            type: issue.issue_type, // Fixed: use issue_type instead of type
-            description: issue.description,
-            date_occurred: issue.created_at, // Fixed: use created_at as date_occurred since schema doesn't have date_occurred
-            status: 'PENDING', // Fixed: hardcode status since schema doesn't have this field
-            resolved_at: undefined // Fixed: schema doesn't have resolved_at field
-        })) || [];
-
-        // Process report cards
-        const reportCards: ReportCard[] = reports?.map(report => ({
-            id: report.id,
-            sequence_name: `${report.exam_sequence?.term?.name || 'Term'} - Sequence ${report.exam_sequence?.sequence_number || 'N/A'}`,
-            academic_year: report.academic_year?.name || 'Unknown Year',
-            generated_at: report.created_at,
-            download_url: `/api/v1/report-cards/${report.id}/download`
-        })) || [];
-
-        return {
-            id: student.id,
-            name: student.name,
-            matricule: student.matricule,
-            date_of_birth: student.date_of_birth,
-            class_info: currentEnrollment?.sub_class ? {
-                class_name: currentEnrollment.sub_class.class.name,
-                subclass_name: currentEnrollment.sub_class.name,
-                class_master: currentEnrollment.sub_class.class_master?.name
-            } : undefined,
-            attendance: {
-                present_days: presentDays,
-                absent_days: absentDays,
-                late_days: lateDays,
-                attendance_rate: attendanceRate
-            },
-            academic_performance: {
-                subjects,
-                overall_average: overallAverage,
-                position_in_class: undefined // TODO: Calculate position
-            },
-            fees: {
-                total_expected: totalExpected,
-                total_paid: totalPaid,
-                outstanding_balance: outstandingBalance,
-                last_payment_date: lastPaymentDate,
-                payment_history: paymentHistory
-            },
-            discipline: {
-                total_issues: disciplineRecords.length,
-                recent_issues: disciplineRecords.slice(0, 5)
-            },
-            reports: {
-                available_reports: reportCards
-            }
-        };
-    } catch (error) {
-        console.error('Error fetching child details:', error);
-        throw new Error('Failed to fetch child details');
-    }
-}
 
 /**
  * Send a message from a parent to a school staff member.
@@ -880,16 +674,17 @@ async function calculatePerformanceAnalytics(marks: any[]): Promise<any> {
     const totalMarks = marks.reduce((sum, mark) => sum + ((mark.score ?? 0) || 0), 0);
     const overallAverage = totalMarks / marks.length;
 
-    // Calculate improvement trend (compare first half vs second half of marks)
+    // Calculate improvement trend (compare first half vs second half of marks).
+    // Need at least 2 marks to have a meaningful trend, otherwise report stable.
     const midpoint = Math.floor(marks.length / 2);
-    const firstHalfAvg = marks.slice(0, midpoint).reduce((sum, mark) => sum + ((mark.score ?? 0) || 0), 0) / midpoint;
-    const secondHalfAvg = marks.slice(midpoint).reduce((sum, mark) => sum + ((mark.score ?? 0) || 0), 0) / (marks.length - midpoint);
-
     let improvementTrend = 'Stable';
-    if (secondHalfAvg > firstHalfAvg + 2) {
-        improvementTrend = 'Improving';
-    } else if (secondHalfAvg < firstHalfAvg - 2) {
-        improvementTrend = 'Declining';
+    if (marks.length >= 2 && midpoint > 0 && (marks.length - midpoint) > 0) {
+        const firstHalfAvg = marks.slice(0, midpoint).reduce((sum, mark) => sum + ((mark.score ?? 0) || 0), 0) / midpoint;
+        const secondHalfAvg = marks.slice(midpoint).reduce((sum, mark) => sum + ((mark.score ?? 0) || 0), 0) / (marks.length - midpoint);
+        if (secondHalfAvg > firstHalfAvg + 2) improvementTrend = 'Improving';
+        else if (secondHalfAvg < firstHalfAvg - 2) improvementTrend = 'Declining';
+    } else if (marks.length < 2) {
+        improvementTrend = 'Insufficient data';
     }
 
     // Calculate subject averages for strengths/weaknesses
@@ -935,15 +730,19 @@ async function calculateAttendanceAnalytics(enrollmentId: number, academicYearId
         orderBy: { created_at: 'asc' }
     });
 
-    const totalSchoolDays = 180; // Estimate for academic year
+    const totalSchoolDays = await getYearWorkingDays(academicYearId);
     const classAbsences = absences.filter(a => a.absence_type === 'CLASS_ABSENCE');
     const lateArrivals = absences.filter(a => a.absence_type === 'MORNING_LATENESS');
     const excused = absences.filter(a => a.is_excused);
     const unexcused = absences.filter(a => !a.is_excused);
     const totalAbsences = absences.length;
-    const attendanceRate = ((totalSchoolDays - classAbsences.length) / totalSchoolDays) * 100;
+    const attendanceRate = totalSchoolDays > 0
+        ? ((totalSchoolDays - classAbsences.length) / totalSchoolDays) * 100
+        : 0;
 
-    // Calculate trends
+    // Monthly trend: divide the year's working days across ~10 school months.
+    // Better than the old 20-days-flat assumption because it scales with the year.
+    const daysPerMonth = Math.max(1, Math.round(totalSchoolDays / 10));
     const currentMonth = new Date().getMonth();
     const monthlyAttendance = [];
 
@@ -951,8 +750,7 @@ async function calculateAttendanceAnalytics(enrollmentId: number, academicYearId
         const monthAbsences = absences.filter(absence =>
             new Date(absence.created_at).getMonth() === month
         ).length;
-
-        const monthAttendanceRate = ((20 - monthAbsences) / 20) * 100; // ~20 school days per month
+        const monthAttendanceRate = Math.max(0, ((daysPerMonth - monthAbsences) / daysPerMonth) * 100);
         monthlyAttendance.push({
             month: getMonthName(month),
             attendance_rate: monthAttendanceRate.toFixed(1),
@@ -1016,16 +814,16 @@ async function calculateQuizAnalytics(studentId: number, academicYearId: number)
     const totalQuizzes = quizSubmissions.length;
     const averageScore = quizSubmissions.reduce((sum, sub) => sum + (sub.percentage || 0), 0) / totalQuizzes;
 
-    // Calculate improvement trend
+    // Calculate improvement trend — needs at least 2 quizzes for a meaningful comparison.
     const midpoint = Math.floor(totalQuizzes / 2);
-    const firstHalfAvg = quizSubmissions.slice(0, midpoint).reduce((sum, sub) => sum + (sub.percentage || 0), 0) / midpoint;
-    const secondHalfAvg = quizSubmissions.slice(midpoint).reduce((sum, sub) => sum + (sub.percentage || 0), 0) / (totalQuizzes - midpoint);
-
     let improvementTrend = 'Stable';
-    if (secondHalfAvg > firstHalfAvg + 5) {
-        improvementTrend = 'Improving';
-    } else if (secondHalfAvg < firstHalfAvg - 5) {
-        improvementTrend = 'Declining';
+    if (totalQuizzes >= 2 && midpoint > 0 && (totalQuizzes - midpoint) > 0) {
+        const firstHalfAvg = quizSubmissions.slice(0, midpoint).reduce((sum, sub) => sum + (sub.percentage || 0), 0) / midpoint;
+        const secondHalfAvg = quizSubmissions.slice(midpoint).reduce((sum, sub) => sum + (sub.percentage || 0), 0) / (totalQuizzes - midpoint);
+        if (secondHalfAvg > firstHalfAvg + 5) improvementTrend = 'Improving';
+        else if (secondHalfAvg < firstHalfAvg - 5) improvementTrend = 'Declining';
+    } else if (totalQuizzes < 2) {
+        improvementTrend = 'Insufficient data';
     }
 
     // Subject-wise quiz performance
@@ -1226,6 +1024,39 @@ export async function resolveStudentByMatricule(matricule: string): Promise<Stud
         throw err;
     }
     return student;
+}
+
+/**
+ * Update the current-year Enrollment.photo for a child looked up by matricule.
+ * Parent-portal endpoint — no auth; the matricule + photo file are trusted.
+ * Returns the enrollment id and stored filename so the client can render the
+ * new photo URL immediately.
+ */
+export async function updateChildEnrollmentPhotoByMatricule(
+    matricule: string,
+    filename: string,
+    academicYearId?: number
+): Promise<{ enrollmentId: number; filename: string }> {
+    const student = await resolveStudentByMatricule(matricule);
+    const yearId = academicYearId ?? (await getCurrentAcademicYear())?.id;
+
+    const enrollment = await prisma.enrollment.findFirst({
+        where: { student_id: student.id, ...(yearId ? { academic_year_id: yearId } : {}) },
+        orderBy: { created_at: 'desc' }
+    });
+
+    if (!enrollment) {
+        const err: any = new Error('No enrollment found for this student in the current academic year');
+        err.statusCode = 404;
+        throw err;
+    }
+
+    await prisma.enrollment.update({
+        where: { id: enrollment.id },
+        data: { photo: filename }
+    });
+
+    return { enrollmentId: enrollment.id, filename };
 }
 
 /**
@@ -1586,22 +1417,29 @@ export async function getChildDashboardByMatricule(
         include: {
             sub_class: { include: { class: true } },
             marks: {
-                include: { sub_class_subject: { include: { subject: true } } },
+                include: {
+                    sub_class_subject: { include: { subject: true } },
+                    exam_sequence: { include: { term: true } },
+                    teacher: { select: { name: true } }
+                },
                 orderBy: { created_at: 'desc' },
                 take: 5
             },
             discipline_issues: true,
             school_fees: true,
-            absences: {
-                where: { created_at: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }
-            }
+            absences: true
         }
     });
+
+    const totalSchoolDays = await getYearWorkingDays(yearId);
+    const { attendanceRate } = computeAttendance(enrollment?.absences ?? [], totalSchoolDays);
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const recentAbsences = (enrollment?.absences ?? []).filter(a => a.created_at >= thirtyDaysAgo).length;
 
     const latestMarks: MarkSummary[] = enrollment?.marks?.slice(0, 3).map(m => ({
         subject_name: m.sub_class_subject.subject.name,
         latest_mark: (m.score ?? 0) || 0,
-        sequence: 'Recent',
+        sequence: formatSequenceLabel(m.exam_sequence as any),
         date: m.created_at
     })) || [];
 
@@ -1617,11 +1455,11 @@ export async function getChildDashboardByMatricule(
         subclass_name: enrollment?.sub_class?.name,
         enrollment_status: student.status,
         photo: enrollment?.photo || undefined,
-        attendance_rate: 85,
+        attendance_rate: Number(attendanceRate.toFixed(1)),
         latest_marks: latestMarks,
         pending_fees: outstanding,
         discipline_issues: enrollment?.discipline_issues?.length || 0,
-        recent_absences: enrollment?.absences?.length || 0,
+        recent_absences: recentAbsences,
         fees: { totalExpected, totalPaid, outstanding }
     };
 }
@@ -1650,7 +1488,11 @@ export async function getChildDetailsByMatricule(
                 }
             },
             marks: {
-                include: { sub_class_subject: { include: { subject: true } } },
+                include: {
+                    sub_class_subject: { include: { subject: true } },
+                    exam_sequence: { include: { term: true } },
+                    teacher: { select: { name: true } }
+                },
                 orderBy: { created_at: 'desc' }
             },
             school_fees: {
@@ -1662,7 +1504,7 @@ export async function getChildDetailsByMatricule(
                 }
             },
             discipline_issues: { orderBy: { created_at: 'desc' } },
-            absences: { orderBy: { created_at: 'desc' }, take: 30 }
+            absences: { orderBy: { created_at: 'desc' } }
         }
     });
 
@@ -1690,12 +1532,9 @@ export async function getChildDetailsByMatricule(
 
     const currentEnrollment = enrollments[0];
 
-    const totalSchoolDays = 180;
+    const totalSchoolDays = await getYearWorkingDays(yearId);
     const allAbsences = currentEnrollment?.absences ?? [];
-    const lateDays = allAbsences.filter(a => a.absence_type === 'MORNING_LATENESS').length;
-    const absentDays = allAbsences.filter(a => a.absence_type === 'CLASS_ABSENCE').length;
-    const presentDays = Math.max(0, totalSchoolDays - absentDays);
-    const attendanceRate = (presentDays / totalSchoolDays) * 100;
+    const { presentDays, absentDays, lateDays, attendanceRate } = computeAttendance(allAbsences, totalSchoolDays);
 
     const subjectPerformanceMap = new Map<number, SubjectPerformance>();
     currentEnrollment?.marks?.forEach(mark => {
@@ -1705,15 +1544,15 @@ export async function getChildDetailsByMatricule(
         if (!subjectPerformanceMap.has(subjectId)) {
             subjectPerformanceMap.set(subjectId, {
                 subject_name: subjectName,
-                teacher_name: 'Teacher Name',
+                teacher_name: (mark as any).teacher?.name || 'Unassigned',
                 marks: [],
                 average: 0
             });
         }
         subjectPerformanceMap.get(subjectId)!.marks.push({
-            sequence: 'Sequence',
+            sequence: formatSequenceLabel((mark as any).exam_sequence),
             mark: (mark.score ?? 0) || 0,
-            total: 20,
+            total: MARK_SCALE,
             date: mark.created_at
         });
     });
@@ -1728,11 +1567,15 @@ export async function getChildDetailsByMatricule(
         ? subjects.reduce((s, sub) => s + sub.average, 0) / subjects.length
         : 0;
 
-    const fees = currentEnrollment?.school_fees?.[0];
-    const totalExpected = fees?.amount_expected || 0;
-    const totalPaid = fees?.amount_paid || 0;
+    const allFees = currentEnrollment?.school_fees ?? [];
+    const totalExpected = allFees.reduce((s, f) => s + (f.amount_expected || 0), 0);
+    const totalPaid = allFees.reduce((s, f) => s + (f.amount_paid || 0), 0);
     const outstandingBalance = totalExpected - totalPaid;
-    const dueDate = fees?.due_date ?? null;
+    // Earliest still-outstanding due date across all fee rows drives urgency.
+    const dueDate = allFees
+        .filter(f => (f.amount_expected || 0) - (f.amount_paid || 0) > 0 && f.due_date)
+        .map(f => f.due_date as Date)
+        .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
     const now = new Date();
     const daysOverdue = dueDate && outstandingBalance > 0
         ? Math.max(0, Math.floor((now.getTime() - new Date(dueDate).getTime()) / (24 * 60 * 60 * 1000)))
@@ -1745,14 +1588,17 @@ export async function getChildDetailsByMatricule(
                 ? 'DUE_SOON'
                 : 'OK';
 
-    const paymentHistory: PaymentRecord[] = fees?.payment_transactions?.map(t => ({
-        id: t.id,
-        amount: t.amount,
-        payment_date: t.payment_date,
-        payment_method: t.payment_method,
-        receipt_number: t.receipt_number || undefined,
-        recorded_by: t.recorded_by?.name || 'Unknown'
-    })) || [];
+    const paymentHistory: PaymentRecord[] = allFees
+        .flatMap(f => f.payment_transactions ?? [])
+        .sort((a, b) => new Date(b.payment_date).getTime() - new Date(a.payment_date).getTime())
+        .map(t => ({
+            id: t.id,
+            amount: t.amount,
+            payment_date: t.payment_date,
+            payment_method: t.payment_method,
+            receipt_number: t.receipt_number || undefined,
+            recorded_by: t.recorded_by?.name || 'Unknown'
+        }));
 
     // Itemized fee breakdown (tuition vs transport vs PTA etc.)
     // Fee items match the student's academic year via ALL / CLASS / SUBCLASS / STUDENT scope.
@@ -1765,9 +1611,25 @@ export async function getChildDetailsByMatricule(
         type: i.issue_type,
         description: i.description,
         date_occurred: i.created_at,
-        status: 'PENDING',
-        resolved_at: undefined
+        status: deriveDisciplineStatus(i),
+        // Schema has no dedicated resolved_at; the last update stamps closure.
+        resolved_at: deriveDisciplineStatus(i) === 'RESOLVED' ? i.updated_at : undefined
     })) || [];
+
+    // Class ranking + comparative analytics (position_in_class).
+    let positionInClass: number | undefined;
+    if (currentEnrollment?.sub_class_id && currentEnrollment.academic_year_id) {
+        try {
+            const comparative = await calculateComparativeAnalytics(
+                student.id,
+                currentEnrollment.sub_class_id,
+                currentEnrollment.academic_year_id
+            );
+            positionInClass = comparative?.ranking?.position || undefined;
+        } catch {
+            positionInClass = undefined;
+        }
+    }
 
     const reportCards: ReportCard[] = reports.map(r => ({
         id: r.id,
@@ -1796,7 +1658,7 @@ export async function getChildDetailsByMatricule(
         academic_performance: {
             subjects,
             overall_average: overallAverage,
-            position_in_class: undefined
+            position_in_class: positionInClass
         },
         fees: {
             total_expected: totalExpected,
@@ -1858,19 +1720,14 @@ export async function getChildAnalyticsByMatricule(
     const student = await resolveStudentByMatricule(matricule);
     const yearId = academicYearId ?? (await getCurrentAcademicYear())?.id;
 
-    let studentWithEnrollments = await prisma.student.findUnique({
+    // Do NOT silently fall back to another academic year — parents asking for
+    // year X should get X's data or an explicit empty result, never last year's.
+    const studentWithEnrollments = await prisma.student.findUnique({
         where: { id: student.id },
         include: {
             enrollments: yearId ? { where: { academic_year_id: yearId } } : true
         }
     });
-
-    if (studentWithEnrollments && studentWithEnrollments.enrollments.length === 0 && yearId) {
-        studentWithEnrollments = await prisma.student.findUnique({
-            where: { id: student.id },
-            include: { enrollments: { orderBy: { created_at: 'desc' } } }
-        });
-    }
 
     if (!studentWithEnrollments || studentWithEnrollments.enrollments.length === 0) {
         return {
@@ -2417,12 +2274,17 @@ export async function getChildNurseVisitsByMatricule(
     const limit = Math.min(100, Math.max(1, Number(opts.limit) || 20));
     const skip = (page - 1) * limit;
 
+    // Default to the current academic year when unspecified — otherwise we'd
+    // return visits from every year the child was enrolled, which mixes stale
+    // records into the current health view.
+    const yearId = opts.academicYearId ?? (await getCurrentAcademicYear())?.id;
+
     // NurseVisitLog is linked via enrollment (not student directly), so we
     // resolve the child's enrollment ids first and query by them.
     const enrollments = await prisma.enrollment.findMany({
         where: {
             student_id: student.id,
-            ...(opts.academicYearId ? { academic_year_id: opts.academicYearId } : {}),
+            ...(yearId ? { academic_year_id: yearId } : {}),
         },
         select: { id: true },
     });

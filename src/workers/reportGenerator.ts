@@ -4,6 +4,8 @@ import fs from 'fs';
 import prisma from '../config/db';
 import { getWorker, reportGenerationQueueName } from '../config/queue';
 import * as reportService from '../api/v1/services/reportService';
+import { getSequenceResults } from '../api/v1/services/resultsService';
+import { cardOrder } from '../api/v1/services/reportCardService';
 import { ReportStatus, ReportType, Enrollment, ExamSequenceStatus } from '@prisma/client';
 
 /**
@@ -83,18 +85,11 @@ const processReportJob = async (job: Job) => {
 
         // 4. Update corresponding SINGLE_STUDENT records
         console.log(`[Job ${job.id}] Updating individual student report records...`);
-        // Find students who were actually included (assuming 1 page per student)
-        // Need to fetch enrollments again to know the order they were processed in generateAndSaveSubclassPdf
-        const processedEnrollments = await prisma.enrollment.findMany({
-            where: {
-                sub_class_id: subClassId,
-                academic_year_id: academicYearId,
-                // Ensure we only consider students who actually have marks for this sequence
-                marks: { some: { exam_sequence_id: examSequenceId } }
-            },
-            select: { student_id: true },
-            orderBy: { student: { name: 'asc' } } // MUST match the order used in PDF generation
-        });
+        // Page order MUST match the PDF: reportCardService.cardOrder() is what
+        // generateAndSaveSubclassPdf used. Marks are locked once the sequence is
+        // finalized, so recomputing gives the same order.
+        const sequenceResults = await getSequenceResults(subClassId, examSequenceId);
+        const processedEnrollments = cardOrder(sequenceResults).map(s => ({ student_id: s.student_id }));
 
         const studentUpdatePromises = processedEnrollments.map((enrollment, index) => {
             const studentPageNumber = index + 1; // Assign page number based on sorted order
@@ -130,10 +125,7 @@ const processReportJob = async (job: Job) => {
 
         // Also find any students in the subclass *without* marks for this sequence
         // and mark their SINGLE_STUDENT report record as FAILED or N/A.
-        const allSubclassEnrollments = await prisma.enrollment.findMany({
-            where: { sub_class_id: subClassId, academic_year_id: academicYearId },
-            select: { student_id: true }
-        });
+        const allSubclassEnrollments = sequenceResults.students.map(s => ({ student_id: s.student_id }));
         const studentsWithoutMarks = allSubclassEnrollments.filter(e => !processedStudentIds.includes(e.student_id));
 
         const failedUpdatePromises = studentsWithoutMarks.map(enrollment => {

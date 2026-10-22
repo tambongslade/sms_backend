@@ -1,4 +1,6 @@
 import prisma, { FeeItem, FeeItemPayment, FeeItemScope, PaymentMethod, Prisma } from '../../../config/db';
+import { normalizePaymentMethod } from '../../../utils/paymentMethod';
+import { insertSchoolFeePayment } from './paymentLedgerService';
 import { getAcademicYearId } from '../../../utils/academicYear';
 
 export interface CreateFeeItemInput {
@@ -152,11 +154,6 @@ export async function getFeeItemsForEnrollment(enrollmentId: number): Promise<Ar
     });
 }
 
-function normalizePaymentMethod(method: string): PaymentMethod {
-    const m = (method ?? '').toUpperCase();
-    if (m === 'EXPRESS_UNION' || m === 'CCA' || m === 'F3DC' || m === 'AFRILAND_FIRST_BANK') return m as PaymentMethod;
-    throw new Error(`Unsupported payment method: ${method}`);
-}
 
 export interface RecordFeeItemPaymentInput {
     fee_item_id: number;
@@ -229,25 +226,20 @@ export async function recordFeeItemPayment(input: RecordFeeItemPaymentInput): Pr
             if (outstanding > 0) {
                 // STRICT CASCADE: the entire incoming amount goes to school fees, item gets 0.
                 cascaded = true;
-                const sfPayment = await tx.paymentTransaction.create({
-                    data: {
-                        fee_id: schoolFees.id,
-                        enrollment_id: enrollment.id,
-                        academic_year_id: enrollment.academic_year_id,
-                        amount: input.amount,
-                        payment_date: new Date(input.payment_date),
-                        receipt_number: input.receipt_number ?? null,
-                        payment_method: method,
-                        recorded_by_id: input.recorded_by_id,
-                        notes: `Cascaded from FeeItem #${feeItem.id} (${feeItem.name}): school fees were unpaid (${outstanding} outstanding). ${input.notes ?? ''}`.trim(),
-                    },
-                });
-                schoolFeesPaymentId = sfPayment.id;
-
-                await tx.schoolFees.update({
-                    where: { id: schoolFees.id },
-                    data: { amount_paid: { increment: input.amount } },
-                });
+                // Shared ledger path: validation, sequential receipt number, atomic amount_paid update.
+                const sfResult = await insertSchoolFeePayment({
+                    fee_id: schoolFees.id,
+                    enrollment_id: enrollment.id,
+                    academic_year_id: enrollment.academic_year_id,
+                    amount: input.amount,
+                    payment_date: input.payment_date,
+                    payment_method: method,
+                    receipt_number: input.receipt_number ?? null,
+                    recorded_by_id: input.recorded_by_id,
+                    notes: `Cascaded from FeeItem #${feeItem.id} (${feeItem.name}): school fees were unpaid (${outstanding} outstanding). ${input.notes ?? ''}`.trim(),
+                    overpayment_policy: 'allow',
+                }, tx);
+                schoolFeesPaymentId = sfResult.payment.id;
 
                 message = `Payment of ${input.amount} was redirected to school fees (outstanding: ${outstanding}). FeeItem balance unchanged.`;
             }

@@ -1,6 +1,7 @@
 import prisma, { ReportRequest, ReportRequestStatus, Prisma } from '../../../config/db';
 import { Role } from '@prisma/client';
 import { highestRole, outranks } from '../../../utils/roleHierarchy';
+import { getCurrentAcademicYear } from '../../../utils/academicYear';
 
 export interface CreateReportRequestInput {
     requested_by_id: number;
@@ -220,4 +221,61 @@ export async function cancelReportRequest(id: number, requester_id: number): Pro
         where: { id },
         data: { status: 'CANCELLED' },
     });
+}
+
+// ---------------------------------------------------------------------------
+// Recipient lookup for the "Request from" picker.
+//
+// The Request Report form used to build this list client-side from
+// GET /users?role=..., which 403s for some requester roles (e.g. MANAGER)
+// and, being swallowed, left the picker on "Loading…" forever. This returns
+// exactly the people createReportRequest() would accept: holders of the
+// requested role(s) in the current academic year (or globally), excluding
+// the caller and anyone the caller does not outrank.
+// ---------------------------------------------------------------------------
+export const DEFAULT_RECIPIENT_ROLES: Role[] = ['SENIOR_DISCIPLINE_MASTER', 'DISCIPLINE_MASTER'] as Role[];
+
+export async function listReportRecipients(requesterId: number, roles: Role[] = DEFAULT_RECIPIENT_ROLES) {
+    const year = await getCurrentAcademicYear();
+
+    const requester = await prisma.user.findUnique({
+        where: { id: requesterId },
+        select: { user_roles: { select: { role: true } } },
+    });
+    const requesterTop = highestRole([...new Set((requester?.user_roles ?? []).map(r => r.role as Role))]);
+
+    const users = await prisma.user.findMany({
+        where: {
+            id: { not: requesterId },
+            status: 'ACTIVE',
+            user_roles: {
+                some: {
+                    role: { in: roles },
+                    OR: [{ academic_year_id: null }, ...(year ? [{ academic_year_id: year.id }] : [])],
+                },
+            },
+        },
+        select: {
+            id: true,
+            name: true,
+            matricule: true,
+            user_roles: { select: { role: true, academic_year_id: true } },
+        },
+        orderBy: { name: 'asc' },
+    });
+
+    return users
+        .map(u => {
+            const all = [...new Set(u.user_roles.map(r => r.role as Role))];
+            const top = highestRole(all);
+            // The role shown in the picker: the most senior of the requested
+            // roles this user holds for the current year (or globally).
+            const held = u.user_roles
+                .filter(r => roles.includes(r.role as Role) && (r.academic_year_id === null || !year || r.academic_year_id === year.id))
+                .map(r => r.role as Role);
+            const role = highestRole([...new Set(held)]);
+            return { id: u.id, name: u.name, matricule: u.matricule, role, top };
+        })
+        .filter(u => u.role && u.top && (!requesterTop || outranks(requesterTop, u.top)))
+        .map(({ top, ...rest }) => rest);
 }

@@ -5,9 +5,14 @@ export const createBrokenProperty = async (req: any, res: Response): Promise<any
     try {
         if (!req.user?.id) return res.status(401).json({ success: false, error: 'Unauthorized' });
         const rawCost = req.body.estimated_cost;
-        const estimated_cost = rawCost === undefined || rawCost === null || rawCost === '' ? 0 : Number(rawCost);
-        if (Number.isNaN(estimated_cost)) {
-            return res.status(400).json({ success: false, error: 'estimated_cost must be a number' });
+        // Cost is now optional. Omit / null / '' -> no charge recorded.
+        let estimated_cost: number | null = null;
+        if (rawCost !== undefined && rawCost !== null && rawCost !== '') {
+            const parsed = Number(rawCost);
+            if (Number.isNaN(parsed)) {
+                return res.status(400).json({ success: false, error: 'estimated_cost must be a number' });
+            }
+            estimated_cost = parsed;
         }
         const created = await svc.createBrokenProperty({
             student_id: Number(req.body.student_id),
@@ -15,6 +20,7 @@ export const createBrokenProperty = async (req: any, res: Response): Promise<any
             item_name: req.body.item_name,
             description: req.body.description,
             estimated_cost,
+            photo_url: req.body.photo_url,
             action_taken: req.body.action_taken,
             reported_by_id: req.user.id,
         });
@@ -60,18 +66,24 @@ export const updateBrokenProperty = async (req: Request, res: Response): Promise
     try {
         const id = parseInt(req.params.id);
         if (isNaN(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
-        let estimated_cost: number | undefined;
+        let estimated_cost: number | null | undefined = undefined;
         if (req.body.estimated_cost !== undefined) {
             const rawCost = req.body.estimated_cost;
-            estimated_cost = rawCost === null || rawCost === '' ? 0 : Number(rawCost);
-            if (Number.isNaN(estimated_cost)) {
-                return res.status(400).json({ success: false, error: 'estimated_cost must be a number' });
+            if (rawCost === null || rawCost === '') {
+                estimated_cost = null;
+            } else {
+                const parsed = Number(rawCost);
+                if (Number.isNaN(parsed)) {
+                    return res.status(400).json({ success: false, error: 'estimated_cost must be a number' });
+                }
+                estimated_cost = parsed;
             }
         }
         const updated = await svc.updateBrokenProperty(id, {
             item_name: req.body.item_name,
             description: req.body.description,
             estimated_cost,
+            photo_url: req.body.photo_url,
             action_taken: req.body.action_taken,
         });
         return res.json({ success: true, data: updated });

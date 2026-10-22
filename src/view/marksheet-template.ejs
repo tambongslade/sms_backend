@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title><%= documentTitle %></title>
+<style>
+    @page {
+        size: A4 portrait;
+        margin: 10mm;
+    }
+    * { box-sizing: border-box; }
+    body {
+        font-family: 'Helvetica', 'Arial', sans-serif;
+        color: #111827;
+        margin: 0;
+        padding: 0;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    .letterhead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid #000;
+        padding-bottom: 3px;
+        margin-bottom: 3px;
+        font-size: 6.5pt;
+    }
+    .letterhead .col { width: 34%; text-align: center; line-height: 1.15; }
+    .letterhead .col p { margin: 0; }
+    .letterhead .col p.bold { font-weight: 700; }
+    .letterhead .logo { width: 32%; text-align: center; }
+    .letterhead .logo img { max-height: 42px; max-width: 100%; }
+    .school-info { text-align: center; margin: 2px 0 6px 0; }
+    .school-info h2 { margin: 0; font-size: 11pt; font-weight: 800; letter-spacing: 0.3px; }
+    .school-info .tagline { font-style: italic; font-size: 7.5pt; color: #374151; }
+    .school-info .contact { font-size: 7pt; color: #4b5563; }
+
+    h1.title {
+        text-align: center;
+        margin: 4px 0 8px 0;
+        font-size: 13pt;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+    }
+    .fields {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10pt;
+        margin-bottom: 8px;
+        gap: 16px;
+    }
+    .fields .field { flex: 1; white-space: nowrap; }
+    .fields .label { font-weight: 700; }
+    .fields .value {
+        display: inline-block;
+        min-width: 55%;
+        border-bottom: 1px dotted #000;
+        padding: 0 4px;
+    }
+
+    table.marksheet {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-size: 9pt;
+    }
+    table.marksheet th, table.marksheet td {
+        border: 1px solid #000;
+        padding: 4px 4px;
+        text-align: center;
+        vertical-align: middle;
+    }
+    table.marksheet thead { display: table-header-group; }
+    table.marksheet tr { page-break-inside: avoid; }
+    table.marksheet thead th {
+        background: #e5e7eb;
+        font-weight: 700;
+        font-size: 8.5pt;
+    }
+    table.marksheet td.name { text-align: left; padding-left: 6px; }
+    table.marksheet td.num { color: #4b5563; }
+    table.marksheet tbody tr { height: 20px; }
+
+    .footer {
+        margin-top: 10px;
+        display: flex;
+        justify-content: space-between;
+        font-size: 8.5pt;
+    }
+    .footer .sign { width: 45%; }
+    .footer .sign .line { border-bottom: 1px dotted #000; height: 22px; }
+    .generated { margin-top: 6px; font-size: 7pt; color: #6b7280; text-align: right; }
+</style>
+</head>
+<body>
+    <div class="letterhead">
+        <div class="col">
+            <p class="bold">REPUBLIC OF CAMEROON</p>
+            <p>MINISTRY OF SECONDARY EDUCATION</p>
+            <p>REGIONAL DELEGATION FOR CENTRE</p>
+            <p>DIVISIONAL DELEGATION OF MFOUNDI</p>
+        </div>
+        <div class="logo">
+            <% if (schoolLogo) { %><img src="<%= schoolLogo %>" alt="School Logo" /><% } %>
+        </div>
+        <div class="col">
+            <p class="bold">REPUBLIQUE DU CAMEROUN</p>
+            <p>MINISTERE DES ENSEIGNEMENTS SECONDAIRES</p>
+            <p>DELEGATION REGIONALE DU CENTRE</p>
+            <p>DELEGATION DEPARTEMENTALE DU MFOUNDI</p>
+        </div>
+    </div>
+    <div class="school-info">
+        <h2><%= schoolName %></h2>
+        <% if (schoolTagline) { %><div class="tagline"><%= schoolTagline %></div><% } %>
+        <div class="contact"><%= schoolAddress %> &middot; Tel: <%= schoolPhone %></div>
+    </div>
+
+    <h1 class="title">Mark Sheet &mdash; <%= academicYearName %></h1>
+
+    <div class="fields">
+        <div class="field"><span class="label">Subject:</span> <span class="value"><%= subjectName %></span></div>
+        <div class="field"><span class="label">Class:</span> <span class="value"><%= className %></span></div>
+        <div class="field"><span class="label">Teacher:</span> <span class="value"><%= teacherName %></span></div>
+    </div>
+
+    <table class="marksheet">
+        <colgroup>
+            <col style="width: 5%" />
+            <col style="width: 37%" />
+            <col style="width: 6%" />
+            <% for (let i = 0; i < 6; i++) { %><col style="width: 8.67%" /><% } %>
+        </colgroup>
+        <thead>
+            <tr>
+                <th>N°</th>
+                <th>Name of Student</th>
+                <th>Sex</th>
+                <th>1st Seq</th>
+                <th>2nd Seq</th>
+                <th>3rd Seq</th>
+                <th>4th Seq</th>
+                <th>5th Seq</th>
+                <th>6th Seq</th>
+            </tr>
+        </thead>
+        <tbody>
+            <% rows.forEach(function(row, idx) { %>
+            <tr>
+                <td class="num"><%= idx + 1 %></td>
+                <td class="name"><%= row.name %></td>
+                <td><%= row.sex %></td>
+                <% row.scores.forEach(function(score) { %>
+                <td><%= score === null ? '' : score %></td>
+                <% }) %>
+            </tr>
+            <% }) %>
+            <% for (let i = 0; i < extraBlankRows; i++) { %>
+            <tr>
+                <td class="num"><%= rows.length + i + 1 %></td>
+                <td class="name"></td><td></td>
+                <td></td><td></td><td></td><td></td><td></td><td></td>
+            </tr>
+            <% } %>
+        </tbody>
+    </table>
+
+    <div class="footer">
+        <div class="sign">Teacher's signature:<div class="line"></div></div>
+        <div class="sign">HOD's signature:<div class="line"></div></div>
+    </div>
+    <div class="generated">Boys: <%= boys %> &middot; Girls: <%= girls %> &middot; Total: <%= rows.length %> &middot; Generated <%= generatedAt %></div>
+</body>
+</html>

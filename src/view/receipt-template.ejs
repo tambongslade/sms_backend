@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Receipt <%= r.receipt_number %></title>
+<style>
+    @page { size: A5 portrait; margin: 8mm; }
+    * { box-sizing: border-box; }
+    body {
+        font-family: 'Helvetica', 'Arial', sans-serif;
+        color: #111827;
+        margin: 0;
+        font-size: 9pt;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    .letterhead { display: flex; align-items: center; justify-content: space-between;
+        border-bottom: 1px solid #000; padding-bottom: 3px; margin-bottom: 3px; font-size: 5.5pt; }
+    .letterhead .col { width: 36%; text-align: center; line-height: 1.15; }
+    .letterhead .col p { margin: 0; }
+    .letterhead .col p.bold { font-weight: 700; }
+    .letterhead .logo { width: 28%; text-align: center; }
+    .letterhead .logo img { max-height: 38px; max-width: 100%; }
+    .school { text-align: center; margin: 2px 0 6px; }
+    .school h2 { margin: 0; font-size: 10.5pt; font-weight: 800; }
+    .school .tagline { font-style: italic; font-size: 7pt; color: #374151; }
+    .school .contact { font-size: 6.5pt; color: #4b5563; }
+    .title { display: flex; justify-content: space-between; align-items: baseline;
+        border: 1.5px solid #1e3a8a; border-radius: 4px; padding: 5px 8px; margin: 6px 0 8px; }
+    .title h1 { margin: 0; font-size: 12pt; color: #1e3a8a; letter-spacing: 0.5px; }
+    .title .no { font-size: 10pt; font-weight: 700; }
+    .reprint { color: #b91c1c; font-weight: 700; font-size: 8pt; text-align: right; margin-top: -4px; margin-bottom: 4px; }
+    table.kv { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+    table.kv td { padding: 3px 4px; border-bottom: 1px dotted #9ca3af; vertical-align: top; }
+    table.kv td.k { width: 36%; color: #4b5563; }
+    table.kv td.v { font-weight: 600; }
+    .amount { border: 1px solid #111827; border-radius: 4px; padding: 6px 8px; margin: 6px 0; }
+    .amount .fig { font-size: 15pt; font-weight: 800; }
+    .amount .words { font-style: italic; margin-top: 2px; }
+    table.sum { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    table.sum td { padding: 3px 6px; border: 1px solid #d1d5db; }
+    table.sum td.n { text-align: right; font-weight: 700; }
+    .balance td { background: #fef3c7; }
+    .over td { background: #dcfce7; }
+    .sign { display: flex; justify-content: space-between; margin-top: 22px; font-size: 8pt; }
+    .sign div { width: 45%; text-align: center; border-top: 1px solid #111827; padding-top: 3px; }
+    .foot { margin-top: 10px; font-size: 6.5pt; color: #6b7280; text-align: center; }
+</style>
+</head>
+<body>
+    <div class="letterhead">
+        <div class="col">
+            <p class="bold">REPUBLIC OF CAMEROON</p>
+            <p>MINISTRY OF SECONDARY EDUCATION</p>
+            <p>REGIONAL DELEGATION FOR CENTRE</p>
+        </div>
+        <div class="logo"><% if (schoolLogo) { %><img src="<%= schoolLogo %>" alt="Logo" /><% } %></div>
+        <div class="col">
+            <p class="bold">REPUBLIQUE DU CAMEROUN</p>
+            <p>MINISTERE DES ENSEIGNEMENTS SECONDAIRES</p>
+            <p>DELEGATION REGIONALE DU CENTRE</p>
+        </div>
+    </div>
+    <div class="school">
+        <h2><%= schoolName %></h2>
+        <div class="tagline"><%= schoolTagline %></div>
+        <div class="contact"><%= schoolAddress %> &middot; Tel: <%= schoolPhone %></div>
+    </div>
+
+    <div class="title">
+        <h1>SCHOOL FEES RECEIPT</h1>
+        <span class="no">N&deg; <%= r.receipt_number %></span>
+    </div>
+    <% if (reprint) { %><div class="reprint">DUPLICATE / REPRINT</div><% } %>
+
+    <table class="kv">
+        <tr><td class="k">Date of payment</td><td class="v"><%= fmtDate(r.payment_date) %></td></tr>
+        <tr><td class="k">Received from (student)</td><td class="v"><%= r.student.name %></td></tr>
+        <tr><td class="k">Matricule</td><td class="v"><%= r.student.matricule %></td></tr>
+        <tr><td class="k">Class</td><td class="v"><%= r.sub_class_name || r.class_name || '—' %></td></tr>
+        <tr><td class="k">Academic year</td><td class="v"><%= r.academic_year || '—' %></td></tr>
+        <tr><td class="k">Payment method</td><td class="v"><%= r.payment_method_label %></td></tr>
+        <% if (r.notes) { %><tr><td class="k">Notes</td><td class="v"><%= r.notes %></td></tr><% } %>
+    </table>
+
+    <div class="amount">
+        <div>Amount received</div>
+        <div class="fig"><%= fmt(r.amount) %> FCFA</div>
+        <div class="words"><%= r.amount_in_words %></div>
+    </div>
+
+    <table class="sum">
+        <tr><td>Total school fees for the year</td><td class="n"><%= fmt(r.amount_expected) %> FCFA</td></tr>
+        <tr><td>Total paid to date (incl. this receipt)</td><td class="n"><%= fmt(r.total_paid_to_date) %> FCFA</td></tr>
+        <% if (r.overpayment > 0) { %>
+        <tr class="over"><td>Overpayment (credit)</td><td class="n"><%= fmt(r.overpayment) %> FCFA</td></tr>
+        <% } else { %>
+        <tr class="balance"><td>Balance left to pay</td><td class="n"><%= fmt(r.balance_after_payment) %> FCFA</td></tr>
+        <% } %>
+    </table>
+
+    <div class="sign">
+        <div>Cashier: <%= r.cashier ? r.cashier.name : '—' %></div>
+        <div>Parent / Payer</div>
+    </div>
+
+    <div class="foot">
+        Recorded <%= fmtDateTime(r.recorded_at) %><% if (r.cashier) { %> by <%= r.cashier.name %><% } %>
+        &middot; Printed <%= fmtDateTime(generatedAt) %><% if (printedBy) { %> by <%= printedBy %><% } %>
+        &middot; Please keep this receipt.
+    </div>
+</body>
+</html>
