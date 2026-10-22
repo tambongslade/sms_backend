@@ -72,7 +72,7 @@ const seal = (obj: object) => {
     const data = Buffer.from(JSON.stringify(obj)).toString('base64url');
     return `${data}.${sign(data)}`;
 };
-function unseal(token: string, type: 't' | 's'): { uid: number; name: string; profile: string } | null {
+function unseal(token: string, type: 't' | 's'): { uid: number; name: string; profile: string; page?: string } | null {
     if (!secret() || !token) return null;
     const [data, sig] = String(token).split('.');
     if (!data || !sig) return null;
@@ -123,7 +123,9 @@ router.post('/session', authenticate, async (req: Request, res: Response) => {
             return;
         }
         const user = await prisma.user.findUnique({ where: { id: (req.user as any).id }, select: { name: true } });
-        const ticket = seal({ typ: 't', uid: (req.user as any).id, name: user?.name || 'User', profile, exp: Date.now() + TICKET_MS });
+        // ?page=archives opens the ARCHIVES explorer directly (the "Archives" menu entry); anything else opens file sharing
+        const page = String((req as any).query?.page || '') === 'archives' ? 'archives' : 'files';
+        const ticket = seal({ typ: 't', uid: (req.user as any).id, name: user?.name || 'User', profile, page, exp: Date.now() + TICKET_MS });
         res.json({ success: true, data: { url: `${MOUNT}/open?t=${encodeURIComponent(ticket)}` } });
     } catch (e) {
         console.error('File Management session error:', e);
@@ -140,7 +142,7 @@ router.get('/open', (req: Request, res: Response) => {
     }
     const session = seal({ typ: 's', uid: who.uid, name: who.name, profile: who.profile, exp: Date.now() + SESSION_MS });
     res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(session)}; Path=${MOUNT}; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MS / 1000}${isHttps(req) ? '; Secure' : ''}`);
-    redirect(res, 302, `${MOUNT}/app/?embed=1`);
+    redirect(res, 302, `${MOUNT}/app/${who.page === 'archives' ? 'archives' : ''}?embed=1`);
 });
 
 // ---- 3. proxy to the file app ----
