@@ -1,5 +1,6 @@
 import prisma from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
+import { countActiveStudents } from '../../../utils/schoolCounts';
 
 // Types for Discipline Master enhanced operations
 export interface DisciplineMasterDashboard {
@@ -167,7 +168,7 @@ export async function getDisciplineMasterDashboard(academicYearId?: number): Pro
 
         // Get enrollments for current academic year
         const currentYearEnrollments = await prisma.enrollment.findMany({
-            where: { academic_year_id: currentYear.id },
+            where: { academic_year_id: currentYear.id, student: { status: { not: 'WITHDRAWN' } } },
             select: { id: true }
         });
         const enrollmentIds = currentYearEnrollments.map(e => e.id);
@@ -347,7 +348,7 @@ export async function getBehavioralAnalytics(academicYearId?: number): Promise<B
 
         // Get enrollments for current academic year
         const currentYearEnrollments = await prisma.enrollment.findMany({
-            where: { academic_year_id: currentYear.id },
+            where: { academic_year_id: currentYear.id, student: { status: { not: 'WITHDRAWN' } } },
             select: { id: true }
         });
         const enrollmentIds = currentYearEnrollments.map(e => e.id);
@@ -359,10 +360,8 @@ export async function getBehavioralAnalytics(academicYearId?: number): Promise<B
             issuesByType,
             classroomData
         ] = await Promise.all([
-            // Total students in current year
-            prisma.enrollment.count({
-                where: { academic_year_id: currentYear.id }
-            }),
+            // Total students in current year (shared definition, utils/schoolCounts.ts)
+            countActiveStudents(currentYear.id),
 
             // Students with discipline issues
             prisma.disciplineIssue.findMany({
@@ -401,7 +400,7 @@ export async function getBehavioralAnalytics(academicYearId?: number): Promise<B
 
             // Classroom data for hotspots
             prisma.enrollment.findMany({
-                where: { academic_year_id: currentYear.id },
+                where: { academic_year_id: currentYear.id, student: { status: { not: 'WITHDRAWN' } } },
                 include: {
                     sub_class: {
                         include: { class: true }
@@ -642,7 +641,7 @@ export async function getEarlyWarningSystem(academicYearId?: number): Promise<Ea
 
         // Get enrollments for current academic year
         const currentYearEnrollments = await prisma.enrollment.findMany({
-            where: { academic_year_id: currentYear.id },
+            where: { academic_year_id: currentYear.id, student: { status: { not: 'WITHDRAWN' } } },
             select: { id: true }
         });
         const enrollmentIds = currentYearEnrollments.map(e => e.id);
@@ -708,9 +707,7 @@ export async function getEarlyWarningSystem(academicYearId?: number): Promise<Ea
             });
 
         // Risk indicators
-        const totalStudents = await prisma.enrollment.count({
-            where: { academic_year_id: currentYear.id }
-        });
+        const totalStudents = await countActiveStudents(currentYear.id);
 
         const behaviorSeverity: 'HIGH' | 'MEDIUM' | 'LOW' =
             studentIssueMap.size > totalStudents * 0.1 ? 'HIGH' :

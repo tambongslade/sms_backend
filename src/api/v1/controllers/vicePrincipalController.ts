@@ -61,8 +61,14 @@ export async function getInterviewData(req: Request, res: Response): Promise<voi
         const academicYearId = req.query.academicYearId ? 
             parseInt(req.query.academicYearId as string) : undefined;
         const status = req.query.status as string | undefined;
+        const rawAssignment = String(req.query.assignment ?? 'UNASSIGNED').toUpperCase();
+        if (!['UNASSIGNED', 'ASSIGNED', 'ALL'].includes(rawAssignment)) {
+            res.status(400).json({ success: false, error: 'assignment must be UNASSIGNED, ASSIGNED or ALL' });
+            return;
+        }
+        const assignment = rawAssignment as 'UNASSIGNED' | 'ASSIGNED' | 'ALL';
 
-        const interviewData = await getInterviewManagement(academicYearId, status);
+        const interviewData = await getInterviewManagement(academicYearId, status, assignment);
 
         res.status(200).json({
             success: true,

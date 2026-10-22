@@ -135,28 +135,28 @@ export const linkSubjectToSubClass = async (req: Request, res: Response) => {
         const subjectId = parseInt(req.params.id);
         const { sub_class_id, coefficient } = req.body;
 
-        if (!sub_class_id || !coefficient) {
+        if (!sub_class_id || coefficient === undefined || coefficient === null) {
             res.status(400).json({
                 success: false,
-                error: 'Subclass ID, coefficient, and main teacher ID are required'
+                error: 'sub_class_id and coefficient are required',
             });
             return;
         }
 
         const link = await subjectService.linkSubjectToSubClass(subjectId, {
             sub_class_id,
-            coefficient
+            coefficient,
         });
 
-        res.status(201).json({
+        res.status(200).json({
             success: true,
-            data: link
+            data: link,
         });
     } catch (error: any) {
         console.error('Error linking subject to sub-class:', error);
         res.status(500).json({
             success: false,
-            error: error.message
+            error: error.message,
         });
     }
 };

@@ -6,6 +6,8 @@ import { paginate, PaginationOptions, FilterOptions, PaginatedResult } from '../
 import { getAcademicYearId, getCurrentAcademicYear } from '../../../utils/academicYear'; // Import the utility
 import { generateStaffMatricule } from '../../../utils/matriculeGenerator'; // Import staff matricule generator
 import { SUBCLASS_MAX_STUDENTS } from '../../../utils/capacity';
+import { computeWorkload } from '../../../utils/teacherWorkload';
+import { countActiveStudents, countStreams, countTeachers, INACTIVE_STUDENT_STATUSES } from '../../../utils/schoolCounts';
 import * as disciplineService from './disciplineService'; // Import discipline service for SDM dashboard
 
 // Type definition for the input data for registering with roles
@@ -109,8 +111,69 @@ export interface SearchPersonnelParams {
 export const PERSONNEL_ROLES: Role[] = [
     'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'CONTROLLER',
     'TEACHER', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER', 'DEAN_OF_DISCIPLINE',
+    'DISCIPLINE_COORDINATOR',
     'DEAN_OF_STUDIES', 'FEE_AUDITOR', 'SECRETARY', 'NURSE', 'GUIDANCE_COUNSELOR', 'HOD'
 ];
+
+// Roles the DISCIPLINE_COORDINATOR is allowed to manage as personnel.
+// The coordinator is a scoped personnel-management role: it can hit the same
+// /users/* endpoints as a Principal, but only against users whose entire role
+// set falls within this list. Enforced in assertPersonnelScope below so that
+// route middleware alone cannot be bypassed via API surface changes.
+export const DISCIPLINE_COORDINATOR_MANAGED_ROLES: Role[] = [
+    'DISCIPLINE_MASTER',
+    'SENIOR_DISCIPLINE_MASTER',
+    'DEAN_OF_DISCIPLINE',
+];
+
+// Roles that bypass the coordinator's target-scope filter — i.e. these are the
+// senior admins for whom /users/* is unrestricted. If the actor holds any of
+// these, no scope check is performed.
+const PERSONNEL_MANAGEMENT_BYPASS_ROLES: Role[] = [
+    'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY',
+];
+
+export async function assertPersonnelScope(actorRoles: Role[], targetUserId: number): Promise<void> {
+    if (actorRoles.some(r => PERSONNEL_MANAGEMENT_BYPASS_ROLES.includes(r))) return;
+
+    if (!actorRoles.includes('DISCIPLINE_COORDINATOR')) {
+        const err: any = new Error('Not authorized to manage this user');
+        err.statusCode = 403;
+        throw err;
+    }
+
+    const target = await prisma.user.findUnique({
+        where: { id: targetUserId },
+        include: { user_roles: { select: { role: true } } },
+    });
+    if (!target) {
+        const err: any = new Error(`User ${targetUserId} not found`);
+        err.statusCode = 404;
+        throw err;
+    }
+    const targetRoles = target.user_roles.map(r => r.role);
+    const outOfScope = targetRoles.filter(r => !DISCIPLINE_COORDINATOR_MANAGED_ROLES.includes(r));
+    if (outOfScope.length > 0) {
+        const err: any = new Error(
+            `DISCIPLINE_COORDINATOR can only manage users whose roles are within [${DISCIPLINE_COORDINATOR_MANAGED_ROLES.join(', ')}]; ` +
+            `target holds: ${outOfScope.join(', ')}`
+        );
+        err.statusCode = 403;
+        throw err;
+    }
+}
+
+export function assertRoleWithinCoordinatorScope(actorRoles: Role[], role: Role): void {
+    if (actorRoles.some(r => PERSONNEL_MANAGEMENT_BYPASS_ROLES.includes(r))) return;
+    if (!actorRoles.includes('DISCIPLINE_COORDINATOR')) return;
+    if (!DISCIPLINE_COORDINATOR_MANAGED_ROLES.includes(role)) {
+        const err: any = new Error(
+            `DISCIPLINE_COORDINATOR may only touch roles within [${DISCIPLINE_COORDINATOR_MANAGED_ROLES.join(', ')}]; refusing '${role}'`
+        );
+        err.statusCode = 403;
+        throw err;
+    }
+}
 
 const SORTABLE_FIELDS = new Set([
     'id', 'name', 'email', 'matricule', 'phone', 'gender', 'status',
@@ -234,7 +297,7 @@ export interface SearchTeachersParams {
 
 const TEACHER_SORTABLE_FIELDS = new Set([
     'id', 'name', 'email', 'matricule', 'phone', 'gender', 'status',
-    'created_at', 'updated_at', 'date_of_birth', 'last_seen_at', 'total_hours_per_week'
+    'created_at', 'updated_at', 'date_of_birth', 'last_seen_at', 'total_hours_per_week', 'weekly_periods'
 ]);
 
 export async function searchTeachers(params: SearchTeachersParams): Promise<PaginatedResult<any>> {
@@ -319,13 +382,10 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
         where.AND.push({ class_master_of: { none: {} } });
     }
 
-    // Hours per week range
-    if (params.min_hours_per_week !== undefined || params.max_hours_per_week !== undefined) {
-        const hoursFilter: any = {};
-        if (params.min_hours_per_week !== undefined) hoursFilter.gte = params.min_hours_per_week;
-        if (params.max_hours_per_week !== undefined) hoursFilter.lte = params.max_hours_per_week;
-        where.AND.push({ total_hours_per_week: hoursFilter });
-    }
+    // Hours per week range: hours are derived from the timetable (see
+    // utils/teacherWorkload), not the never-populated User.total_hours_per_week
+    // column, so this filter is applied in memory after the query below.
+    const hasHoursFilter = params.min_hours_per_week !== undefined || params.max_hours_per_week !== undefined;
 
     // has_assignments: any subject_teachers OR teacher_periods for the year
     if (params.has_assignments === true) {
@@ -352,6 +412,10 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
 
     const sortBy = params.sort_by && TEACHER_SORTABLE_FIELDS.has(params.sort_by) ? params.sort_by : 'name';
     const sortOrder: 'asc' | 'desc' = params.sort_order === 'desc' ? 'desc' : 'asc';
+    // Workload is computed, so sorting/filtering on it needs the whole matching
+    // set in memory (about 100 teachers, cheap) before paginating.
+    const sortByWorkload = sortBy === 'total_hours_per_week' || sortBy === 'weekly_periods';
+    const inMemory = sortByWorkload || hasHoursFilter;
 
     const include: any = {
         user_roles: {
@@ -376,6 +440,8 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
             select: {
                 sub_class_id: true,
                 subject_id: true,
+                period_id: true,
+                period: { select: { start_time: true, end_time: true, is_break: true, type: true } },
                 sub_class: {
                     select: {
                         id: true,
@@ -388,16 +454,30 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
         }
     };
 
-    const [total, data] = await Promise.all([
+    const [countAll, rows] = await Promise.all([
         prisma.user.count({ where }),
         prisma.user.findMany({
             where,
-            skip,
-            take: limit,
-            orderBy: { [sortBy]: sortOrder },
+            ...(inMemory ? {} : { skip, take: limit }),
+            orderBy: sortByWorkload ? { name: 'asc' } : { [sortBy]: sortOrder },
             include
         })
     ]);
+    let total = countAll;
+    let data: any[] = rows;
+    if (inMemory) {
+        let all = rows.map((t: any) => ({ t, w: computeWorkload(t.teacher_periods || []) }));
+        if (params.min_hours_per_week !== undefined) all = all.filter((x) => x.w.total_hours_per_week >= params.min_hours_per_week!);
+        if (params.max_hours_per_week !== undefined) all = all.filter((x) => x.w.total_hours_per_week <= params.max_hours_per_week!);
+        if (sortByWorkload) {
+            const dir = sortOrder === 'desc' ? -1 : 1;
+            all.sort((a, b) => (sortBy === 'weekly_periods'
+                ? a.w.weekly_periods - b.w.weekly_periods
+                : a.w.total_minutes - b.w.total_minutes) * dir);
+        }
+        total = all.length;
+        data = all.slice(skip, skip + limit).map((x) => x.t);
+    }
 
     // Shape response: derive subjects, subclasses, HOD info, class-master info
     const shaped = data.map((t: any) => {
@@ -413,6 +493,7 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
         for (const tp of t.teacher_periods || []) {
             if (tp.sub_class && !subClassMap.has(tp.sub_class.id)) subClassMap.set(tp.sub_class.id, tp.sub_class);
         }
+        const workload = computeWorkload(t.teacher_periods || []);
 
         return {
             id: t.id,
@@ -426,7 +507,9 @@ export async function searchTeachers(params: SearchTeachersParams): Promise<Pagi
             date_of_birth: t.date_of_birth,
             address: t.address,
             photo: t.photo,
-            total_hours_per_week: t.total_hours_per_week,
+            // Derived from the timetable; see utils/teacherWorkload.
+            total_hours_per_week: workload.total_hours_per_week,
+            weekly_periods: workload.weekly_periods,
             last_seen_at: t.last_seen_at,
             created_at: t.created_at,
             updated_at: t.updated_at,
@@ -538,7 +621,15 @@ export async function updateUser(id: number, data: Partial<User>): Promise<User>
     }
     const normalizedStatus = data.status ? (data.status as string).toUpperCase() as UserStatus : undefined;
     // Remove id from data if present (Prisma will error if you try to update the id)
-    const { id: _id, ...rest } = data;
+    const { id: _id, ...restRaw } = data;
+    // The case-conversion middleware keeps the original camelCase keys next to the
+    // snake_case copies (e.g. both `whatsappNumber` and `whatsapp_number`). Prisma
+    // rejects the camelCase duplicates ("Unknown argument"), which made editing a
+    // parent's WhatsApp number fail (QA U12). User columns are all snake_case, so
+    // drop any key containing an uppercase letter.
+    const rest = Object.fromEntries(
+        Object.entries(restRaw).filter(([key]) => !/[A-Z]/.test(key)),
+    ) as typeof restRaw;
     return prisma.user.update({
         where: { id },
         data: {
@@ -546,6 +637,89 @@ export async function updateUser(id: number, data: Partial<User>): Promise<User>
             ...(normalizedStatus && { status: normalizedStatus as UserStatus })
         },
     });
+}
+
+/**
+ * Admin-driven password reset for a personnel account (non-parent).
+ * If `newPassword` is provided, the account gets that password and
+ * `must_change_password` is cleared. If omitted, the account is reset
+ * to the shared default `password123` and forced to change on next sign-in.
+ *
+ * Parent accounts must go through `POST /bursar/parents/:parentId/reset-password`
+ * to keep the parent handover flow (temp password + WhatsApp) in one place.
+ */
+const DEFAULT_PERSONNEL_TEMP_PASSWORD = 'password123';
+
+export async function resetPersonnelPassword(
+    userId: number,
+    actorId: number,
+    newPassword?: string,
+): Promise<{ user_id: number; matricule: string; name: string; must_change_password: boolean; temporary_password?: string }> {
+    const user = await prisma.user.findUnique({
+        where: { id: userId },
+        include: { user_roles: { select: { role: true } } },
+    });
+
+    if (!user) {
+        const err: any = new Error(`User with ID ${userId} not found`);
+        err.statusCode = 404;
+        throw err;
+    }
+
+    const roles = user.user_roles.map(r => r.role);
+    const isParentOnly = roles.length > 0 && roles.every(r => r === Role.PARENT);
+    if (isParentOnly) {
+        const err: any = new Error(
+            'This account is a parent — use POST /bursar/parents/:parentId/reset-password',
+        );
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const usingTemp = !newPassword;
+    const passwordToSet = newPassword ?? DEFAULT_PERSONNEL_TEMP_PASSWORD;
+    const hashed = await bcrypt.hash(passwordToSet, 10);
+
+    await prisma.user.update({
+        where: { id: user.id },
+        data: {
+            password: hashed,
+            must_change_password: usingTemp,
+        },
+    });
+
+    // Audit trail: never log the actual password — only whether the default was used.
+    try {
+        await prisma.auditLog.create({
+            data: {
+                user_id: actorId,
+                action: 'PASSWORD_RESET',
+                table_name: 'User',
+                record_id: String(user.id),
+                new_values: {
+                    target_user_id: user.id,
+                    target_matricule: user.matricule,
+                    target_roles: roles,
+                    used_default_password: usingTemp,
+                    must_change_password: usingTemp,
+                },
+            },
+        });
+    } catch (err) {
+        console.error('Audit log write failed for PASSWORD_RESET:', err);
+    }
+
+    console.log(
+        `[PERSONNEL_PASSWORD_RESET] user_id=${user.id} actor_id=${actorId} matricule=${user.matricule ?? ''} used_default=${usingTemp}`,
+    );
+
+    return {
+        user_id: user.id,
+        matricule: user.matricule ?? '',
+        name: user.name,
+        must_change_password: usingTemp,
+        ...(usingTemp && { temporary_password: DEFAULT_PERSONNEL_TEMP_PASSWORD }),
+    };
 }
 
 // Fields a user is allowed to change on their own profile via PUT /users/me.
@@ -797,13 +971,22 @@ export async function createUserWithRole(userData: {
     phone: string;
     address: string;
     role: Role;
+    /** Extra roles to grant alongside `role` (e.g. TEACHER + HOD). */
+    roles?: Role[];
+    academic_year_id?: number;
     status?: string;
     parentAssignments?: { studentId: number }[];
     teacherAssignments?: { subjectId: number }[];
 }): Promise<any> {
     const hashedPassword = await bcrypt.hash(userData.password, 10);
-    const matricule = await generateStaffMatricule([userData.role]);
+    const allRoles = [...new Set<Role>([userData.role, ...(userData.roles ?? [])])];
+    // Matricule position code comes from the roles actually granted (a new
+    // teacher gets ST..., not the parent SO... code).
+    const matricule = await generateStaffMatricule(allRoles);
     const normalizedStatus = userData.status ? (userData.status as string).toUpperCase() as UserStatus : undefined;
+    // Every role in this system is year-scoped (see UserRole rows); a null-year
+    // role is invisible to the year-filtered staff lists (e.g. /users?role=).
+    const academicYearId = await getAcademicYearId(userData.academic_year_id);
     return prisma.$transaction(async (tx) => {
         const newUser = await tx.user.create({
             data: {
@@ -818,11 +1001,12 @@ export async function createUserWithRole(userData: {
                 ...(normalizedStatus && { status: normalizedStatus as UserStatus })
             },
         });
-        await tx.userRole.create({
-            data: {
+        await tx.userRole.createMany({
+            data: allRoles.map((role) => ({
                 user_id: newUser.id,
-                role: userData.role,
-            },
+                role,
+                academic_year_id: academicYearId ?? null,
+            })),
         });
         if (userData.role === 'PARENT' && userData.parentAssignments?.length) {
             const parentAssignmentPromises = userData.parentAssignments.map(assignment =>
@@ -1003,9 +1187,117 @@ export async function removeDisciplineMasterFromSubclass(
     });
 }
 
+/**
+ * Assigns a DM to every sub-class of a given Class for the target academic year.
+ * Idempotent per (user, sub_class, year): skips sub-classes already assigned.
+ */
+export async function assignDisciplineMasterToClass(
+    userId: number,
+    classId: number,
+    academicYearId?: number
+): Promise<RoleAssignment[]> {
+    const yearId = academicYearId ?? await getAcademicYearId();
+    if (!yearId) {
+        throw new Error('Academic Year ID is required but could not be determined.');
+    }
+
+    const user = await prisma.user.findFirst({
+        where: {
+            id: userId,
+            user_roles: { some: { role: Role.DISCIPLINE_MASTER } }
+        }
+    });
+    if (!user) {
+        throw new Error(`User ${userId} not found or does not have the DISCIPLINE_MASTER role.`);
+    }
+
+    const klass = await prisma.class.findUnique({
+        where: { id: classId },
+        include: { sub_classes: { select: { id: true } } }
+    });
+    if (!klass) {
+        throw new Error(`Class ${classId} not found.`);
+    }
+    if (klass.sub_classes.length === 0) {
+        return [];
+    }
+
+    // Find existing assignments to avoid duplicate creates
+    const existing = await prisma.roleAssignment.findMany({
+        where: {
+            user_id: userId,
+            role_type: 'DISCIPLINE_MASTER',
+            academic_year_id: yearId,
+            sub_class_id: { in: klass.sub_classes.map(sc => sc.id) }
+        },
+        select: { sub_class_id: true }
+    });
+    const existingIds = new Set(existing.map(e => e.sub_class_id));
+    const toCreate = klass.sub_classes.filter(sc => !existingIds.has(sc.id));
+
+    if (toCreate.length === 0) {
+        return prisma.roleAssignment.findMany({
+            where: {
+                user_id: userId,
+                role_type: 'DISCIPLINE_MASTER',
+                academic_year_id: yearId,
+                sub_class_id: { in: klass.sub_classes.map(sc => sc.id) }
+            }
+        });
+    }
+
+    await prisma.roleAssignment.createMany({
+        data: toCreate.map(sc => ({
+            user_id: userId,
+            role_type: 'DISCIPLINE_MASTER' as const,
+            sub_class_id: sc.id,
+            academic_year_id: yearId
+        }))
+    });
+
+    return prisma.roleAssignment.findMany({
+        where: {
+            user_id: userId,
+            role_type: 'DISCIPLINE_MASTER',
+            academic_year_id: yearId,
+            sub_class_id: { in: klass.sub_classes.map(sc => sc.id) }
+        }
+    });
+}
+
+/**
+ * Removes every DM sub-class assignment under a Class for the given year.
+ */
+export async function removeDisciplineMasterFromClass(
+    userId: number,
+    classId: number,
+    academicYearId?: number
+): Promise<void> {
+    const yearId = academicYearId ?? await getAcademicYearId();
+    if (!yearId) return;
+
+    const klass = await prisma.class.findUnique({
+        where: { id: classId },
+        include: { sub_classes: { select: { id: true } } }
+    });
+    if (!klass || klass.sub_classes.length === 0) return;
+
+    await prisma.roleAssignment.deleteMany({
+        where: {
+            user_id: userId,
+            role_type: 'DISCIPLINE_MASTER',
+            academic_year_id: yearId,
+            sub_class_id: { in: klass.sub_classes.map(sc => sc.id) }
+        }
+    });
+}
+
 export interface Teacher {
     id: number;
     name: string;
+    /** Distinguishes same/similar-name teachers in dropdowns and chat. */
+    matricule: string | null;
+    status: UserStatus;
     email: string;
     gender: Gender;
     subjects: {
@@ -1046,6 +1338,8 @@ export async function getAllTeachers(subjectId?: number): Promise<Teacher[]> {
     return teachers.map(teacher => ({
         id: teacher.id,
         name: teacher.name,
+        matricule: teacher.matricule,
+        status: teacher.status,
         email: teacher.email,
         gender: teacher.gender,
         subjects: teacher.subject_teachers.map(st => ({
@@ -1053,6 +1347,46 @@ export async function getAllTeachers(subjectId?: number): Promise<Teacher[]> {
             name: st.subject.name,
             category: st.subject.category
         }))
+    }));
+}
+
+// Full teacher roster with a weekly period count each -- built for the
+// printable-forms feature (a blank teacher list, and a "how many periods
+// does each teacher have" sheet), not paginated since a school's whole
+// teaching staff prints on a handful of pages either way.
+export interface TeacherRosterEntry {
+    id: number;
+    name: string;
+    matricule: string | null;
+    weeklyPeriods: number;
+}
+
+export async function getTeacherRoster(academicYearId?: number): Promise<TeacherRosterEntry[]> {
+    const yearId = academicYearId ?? (await getAcademicYearId());
+
+    const teachers = await prisma.user.findMany({
+        where: { user_roles: { some: { role: 'TEACHER' } } },
+        select: { id: true, name: true, matricule: true },
+        orderBy: { name: 'asc' }
+    });
+
+    // Period counts, not summed hours -- see teacherService.getTeacherTimetable
+    // for why: teaching slots aren't a fixed length, so a count is the number
+    // that actually means "how many periods does this teacher have".
+    const counts = yearId
+        ? await prisma.teacherPeriod.groupBy({
+            by: ['teacher_id'],
+            where: { academic_year_id: yearId },
+            _count: { _all: true }
+        })
+        : [];
+    const countByTeacherId = new Map(counts.map(c => [c.teacher_id, c._count._all]));
+
+    return teachers.map(t => ({
+        id: t.id,
+        name: t.name,
+        matricule: t.matricule,
+        weeklyPeriods: countByTeacherId.get(t.id) ?? 0
     }));
 }
 
@@ -1106,13 +1440,8 @@ export async function getSuperManagerDashboard(academicYearId?: number): Promise
                 _count: { user_id: true }
             }).then(result => result.length),
 
-            // Count active student enrollments for current/specified year
-            yearId ?
-                prisma.enrollment.groupBy({
-                    by: ['student_id'],
-                    where: { academic_year_id: yearId }
-                }).then(result => result.length) :
-                prisma.student.count(),
+            // Active students (shared definition, utils/schoolCounts.ts)
+            countActiveStudents(yearId),
 
             // Count total classes
             prisma.class.count(),
@@ -1185,7 +1514,7 @@ export async function getSuperManagerDashboard(academicYearId?: number): Promise
             matricule: teacher.matricule,
             subjects: teacher.subject_teachers.map(st => st.subject.name),
             totalHoursPerWeek: teacher.total_hours_per_week || 0,
-            attendanceRate: 85 // Placeholder - would calculate from actual attendance data
+            attendanceRate: null // Not tracked per teacher here; was a hard-coded 85 placeholder
         }));
 
         // Calculate financial metrics
@@ -1243,22 +1572,14 @@ export async function getPrincipalDashboard(academicYearId?: number): Promise<an
             pendingDisciplineIssues,
             averageAttendanceRate
         ] = await Promise.all([
-            // Count students for current academic year
-            yearId ?
-                prisma.enrollment.groupBy({
-                    by: ['student_id'],
-                    where: { academic_year_id: yearId }
-                }).then(result => result.length) :
-                prisma.student.count(),
+            // Active students (shared definition, utils/schoolCounts.ts)
+            countActiveStudents(yearId),
 
-            // Count teachers
-            prisma.userRole.groupBy({
-                by: ['user_id'],
-                where: { role: 'TEACHER' }
-            }).then(result => result.length),
+            // Teachers for the year (shared definition)
+            countTeachers(yearId),
 
-            // Count total classes
-            prisma.class.count(),
+            // "Classes" = streams (SubClasses)
+            countStreams(),
 
             // Count active exam sequences
             prisma.examSequence.count({
@@ -1277,7 +1598,7 @@ export async function getPrincipalDashboard(academicYearId?: number): Promise<an
                 }) : 0,
 
             // Calculate average attendance rate (simplified)
-            85 // Placeholder - could be calculated from actual attendance data
+            null // Not computed here (was a hard-coded 85 placeholder)
         ]);
 
         return {
@@ -1546,7 +1867,8 @@ export async function getManagerDashboard(academicYearId?: number): Promise<any>
             recentModifications,
             
             // Class Profiles
-            classUtilization
+            classUtilization,
+            classEnrollmentCounts
         ] = await Promise.all([
             // Financial Overview
             prisma.paymentTransaction.aggregate({
@@ -1566,13 +1888,8 @@ export async function getManagerDashboard(academicYearId?: number): Promise<any>
                 }
             }),
 
-            // Student & Class Overview
-            yearId ?
-                prisma.enrollment.groupBy({
-                    by: ['student_id'],
-                    where: { academic_year_id: yearId }
-                }).then(result => result.length) :
-                prisma.student.count(),
+            // Student & Class Overview (shared definition, utils/schoolCounts.ts)
+            countActiveStudents(yearId),
 
             prisma.class.count(),
             prisma.subClass.count(),
@@ -1678,12 +1995,14 @@ export async function getManagerDashboard(academicYearId?: number): Promise<any>
                 }
             }),
 
-            // Class Utilization
+            // Class Utilization -- live counts, not the SubClass.current_students
+            // cache column: that field is only ever incremented on assignment and
+            // never decremented on withdrawal, so it drifts upward forever and
+            // overstates utilization more and more as students get withdrawn.
             prisma.subClass.findMany({
                 select: {
                     id: true,
                     name: true,
-                    current_students: true,
                     class: {
                         select: {
                             name: true,
@@ -1691,7 +2010,15 @@ export async function getManagerDashboard(academicYearId?: number): Promise<any>
                         }
                     }
                 }
-            })
+            }),
+
+            yearId
+                ? prisma.enrollment.groupBy({
+                    by: ['sub_class_id'],
+                    where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
+                    _count: { _all: true }
+                })
+                : Promise.resolve([] as { sub_class_id: number | null; _count: { _all: number } }[])
         ]);
 
         // Calculate key metrics
@@ -1707,8 +2034,11 @@ export async function getManagerDashboard(academicYearId?: number): Promise<any>
             attendanceRate: 85 + Math.random() * 10 // Placeholder - would calculate from actual data
         }));
 
+        const countBySubClassId = new Map(
+            classEnrollmentCounts.map((c: any) => [c.sub_class_id, c._count._all])
+        );
         const classProfileStats = classUtilization.map(subclass => {
-            const current = subclass.current_students || 0;
+            const current = countBySubClassId.get(subclass.id) ?? 0;
             return {
                 id: subclass.id,
                 name: subclass.name,
@@ -1923,13 +2253,9 @@ export async function getSecretaryDashboard(userId: number, academicYearId?: num
             recentStudents,
             recentTeachers
         ] = await Promise.all([
-            prisma.student.count(),
+            prisma.student.count({ where: { status: { notIn: INACTIVE_STUDENT_STATUSES } } }),
 
-            yearId
-                ? prisma.enrollment.count({
-                    where: { academic_year_id: yearId },
-                })
-                : 0,
+            yearId ? countActiveStudents(yearId) : 0,
 
             prisma.student.count({
                 where: { created_at: { gte: since } },

@@ -13,7 +13,7 @@ import {
 
 const router = Router();
 
-const DM_AND_ADMIN = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER'];
+const DM_AND_ADMIN = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER'];
 const DM_VIEW_ROLES = [...DM_AND_ADMIN, 'TEACHER'];
 const ADMIN_DELETE = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL'];
 const EXCUSE_ROLES = [...DM_AND_ADMIN, 'PARENT'];
@@ -33,6 +33,7 @@ router.get('/lateness/alerts', authenticate, authorize(DM_AND_ADMIN), discipline
 
 // === BULK ABSENCES (DM daily roll call) ===
 
+router.get('/absences', authenticate, authorize(DM_AND_ADMIN), disciplineController.listAbsences);
 router.get('/absences/form-data', authenticate, authorize(DM_AND_ADMIN), disciplineController.getAbsenceFormData);
 router.post('/absences/bulk', authenticate, authorize(DM_AND_ADMIN), validateDMSubClassAccess, disciplineController.bulkRecordAbsences);
 router.put('/absences/:id', authenticate, authorize(DM_AND_ADMIN), disciplineController.updateStudentAbsence);
@@ -114,6 +115,10 @@ router.get('/saturday-punishments', authenticate, authorize(DM_AND_ADMIN), satur
 router.get('/saturday-punishments/:id', authenticate, authorize(DM_AND_ADMIN), saturdayPunishmentController.getSaturdayPunishmentById);
 router.put('/saturday-punishments/:id', authenticate, authorize(DM_AND_ADMIN), saturdayPunishmentController.updateSaturdayPunishment);
 router.delete('/saturday-punishments/:id', authenticate, authorize(ADMIN_DELETE), saturdayPunishmentController.deleteSaturdayPunishment);
+
+// === DAILY OVERVIEW (Dean of Discipline dashboard) ===
+// Static path — must be before /:studentId catch-all.
+router.get('/daily-overview', authenticate, authorize(DM_AND_ADMIN), disciplineController.getDailyOverview);
 
 // === DISCIPLINE ISSUES (per student / by id) ===
 // IMPORTANT: keep these LAST so static paths above don't get captured by /:studentId

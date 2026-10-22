@@ -27,7 +27,8 @@ export const createFinanceRequest = async (req: any, res: Response): Promise<any
         return res.status(201).json({ success: true, data: created });
     } catch (err: any) {
         console.error('Error creating finance request:', err);
-        return res.status(400).json({ success: false, error: err.message });
+        const status = err.code === 'FORBIDDEN' ? 403 : 400;
+        return res.status(status).json({ success: false, error: err.message });
     }
 };
 
@@ -51,11 +52,15 @@ export const listFinanceRequests = async (req: any, res: Response): Promise<any>
     }
 };
 
-export const getFinanceRequestById = async (req: Request, res: Response): Promise<any> => {
+export const getFinanceRequestById = async (req: any, res: Response): Promise<any> => {
     try {
         const id = parseInt(req.params.id);
         if (isNaN(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
-        const found = await svc.getFinanceRequestById(id);
+        // Non-oversight viewers only get requests in their own scope (else 404).
+        const found = await svc.getFinanceRequestById(id, {
+            user_id: req.user?.id,
+            roles: (req.user?.role ?? []) as Role[],
+        });
         if (!found) return res.status(404).json({ success: false, error: 'Finance request not found' });
         return res.json({ success: true, data: found });
     } catch (err: any) {

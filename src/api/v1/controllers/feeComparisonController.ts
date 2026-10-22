@@ -99,7 +99,7 @@ export const getEnrolledStudentsFeeStatus = async (req: Request, res: Response):
             parseInt(req.query.academicYearId as string) : undefined;
 
         const status = req.query.status as string | undefined;
-        const allowed = ['MATCHED', 'PAYMENT_MISMATCH', 'MISSING_PRIMARY', 'MISSING_CONTROL', 'NO_RECORDS'];
+        const allowed = ['MATCHED', 'NOT_PAID', 'PAYMENT_MISMATCH', 'MISSING_PRIMARY', 'MISSING_CONTROL', 'NO_RECORDS'];
         if (status && !allowed.includes(status)) {
             return res.status(400).json({
                 success: false,

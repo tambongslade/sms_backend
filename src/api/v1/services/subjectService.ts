@@ -67,6 +67,38 @@ export async function removeTeacher(subject_id: number, teacher_id: number): Pro
     });
 }
 
+export const DEFAULT_SUBJECT_COEFFICIENT = 2;
+
+/**
+ * Make sure a SubClassSubject link exists for a subject that is being taught in
+ * a subclass (e.g. it was put on the timetable). Mark entry needs this link, so
+ * a timetabled subject without it shows "This subject is not taught in the
+ * selected class". New links copy the coefficient used by the same subject in a
+ * sibling subclass of the same class, else DEFAULT_SUBJECT_COEFFICIENT.
+ * Existing links are left untouched. Returns true when a link was created.
+ */
+export async function ensureSubClassSubjectLink(sub_class_id: number, subject_id: number): Promise<boolean> {
+    const existing = await prisma.subClassSubject.findUnique({
+        where: { sub_class_id_subject_id: { sub_class_id, subject_id } },
+        select: { id: true },
+    });
+    if (existing) return false;
+
+    const subClass = await prisma.subClass.findUnique({ where: { id: sub_class_id }, select: { class_id: true } });
+    const sibling = subClass
+        ? await prisma.subClassSubject.findFirst({
+            where: { subject_id, sub_class: { class_id: subClass.class_id } },
+            select: { coefficient: true },
+        })
+        : null;
+
+    const created = await prisma.subClassSubject.createMany({
+        data: [{ sub_class_id, subject_id, coefficient: sibling?.coefficient ?? DEFAULT_SUBJECT_COEFFICIENT }],
+        skipDuplicates: true,
+    });
+    return created.count > 0;
+}
+
 export async function linkSubjectToSubClass(
     subject_id: number,
     data: {
@@ -74,8 +106,20 @@ export async function linkSubjectToSubClass(
         coefficient: number;
     }
 ): Promise<SubClassSubject> {
-    return prisma.subClassSubject.create({
-        data: {
+    // Upsert: if the link already exists, update its coefficient; else create.
+    // Prevents P2002 crashes when the frontend re-links a subject that was
+    // seeded/imported directly into SubClassSubject.
+    return prisma.subClassSubject.upsert({
+        where: {
+            sub_class_id_subject_id: {
+                sub_class_id: data.sub_class_id,
+                subject_id,
+            },
+        },
+        update: {
+            coefficient: data.coefficient,
+        },
+        create: {
             subject_id,
             sub_class_id: data.sub_class_id,
             coefficient: data.coefficient,

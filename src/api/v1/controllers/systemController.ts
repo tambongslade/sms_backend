@@ -36,6 +36,75 @@ function safeParseJson<T>(raw: string | null | undefined, fallback: T): T {
     try { return JSON.parse(raw) as T; } catch { return fallback; }
 }
 
+// Tables sampled to answer "is data still flowing in from the peer?". Deliberately
+// a curated subset of SYNC_TABLES — high-signal, high-volume, and cheap to
+// query. Adding more just costs a couple of MAX/COUNT queries per status call.
+const RECEIVER_ACTIVITY_TABLES = [
+    'Enrollment',
+    'Mark',
+    'PaymentTransaction',
+    'StudentAbsence',
+    'Message',
+    'LogbookEntry',
+    'DMRollCallEntry',
+    'TeacherRollCallEntry',
+    'ChatMessage',
+    'GeneratedReport',
+];
+
+async function getReceiverActivity(ourServerId: string) {
+    // Per-table MAX(updated_at) + count of rows attributable to a peer.
+    const perTable = await Promise.all(RECEIVER_ACTIVITY_TABLES.map(async (table) => {
+        try {
+            const rows: any[] = await prisma.$queryRawUnsafe(
+                `SELECT MAX(updated_at) AS last_at, COUNT(*)::int AS count
+                 FROM "${table}"
+                 WHERE server_id IS NOT NULL AND server_id <> $1`,
+                ourServerId
+            );
+            const row = rows?.[0];
+            return {
+                table,
+                lastReceivedAt: row?.last_at ?? null,
+                incomingRecords: Number(row?.count ?? 0),
+            };
+        } catch {
+            // Table might not exist in an older DB — treat as no activity
+            // instead of failing the whole endpoint.
+            return { table, lastReceivedAt: null as string | null, incomingRecords: 0 };
+        }
+    }));
+
+    const lastReceivedAt = perTable.reduce((max: Date | null, r) => {
+        if (!r.lastReceivedAt) return max;
+        const d = new Date(r.lastReceivedAt);
+        return !max || d > max ? d : max;
+    }, null);
+
+    const totalIncomingRecords = perTable.reduce((s, r) => s + r.incomingRecords, 0);
+
+    // Distinct peers across the sampled tables, most-recently-seen first.
+    let peers: { serverId: string; lastSeenAt: string }[] = [];
+    try {
+        const unionSql = RECEIVER_ACTIVITY_TABLES
+            .map((t) => `SELECT server_id, updated_at FROM "${t}"
+                 WHERE server_id IS NOT NULL AND server_id <> $1`)
+            .join(' UNION ALL ');
+        const rows: any[] = await prisma.$queryRawUnsafe(
+            `SELECT server_id, MAX(updated_at) AS last_seen_at
+             FROM (${unionSql}) AS x
+             GROUP BY server_id
+             ORDER BY last_seen_at DESC`,
+            ourServerId
+        );
+        peers = rows.map((r) => ({ serverId: r.server_id, lastSeenAt: r.last_seen_at }));
+    } catch {
+        peers = [];
+    }
+
+    return { lastReceivedAt, totalIncomingRecords, peers, perTable };
+}
+
 /**
  * Get current system settings
  */
@@ -351,21 +420,39 @@ export async function getSyncStatus(req: Request, res: Response): Promise<void> 
             orderBy: { start_time: 'desc' }
         });
 
-        const isOnline = await adminNetworkChecker.isOnline();
-
         const autoSyncIntervalMinutes = Number.parseInt(process.env.AUTO_SYNC_INTERVAL || '5', 10);
         const remotePeerConfigured = Boolean(process.env.REMOTE_SYNC_URL);
+        const ourServerId = process.env.SERVER_ID || 'local';
+
+        // A box with no REMOTE_SYNC_URL is a *receiver* — pinging the peer would
+        // just add latency for nothing, so skip the network probe there. Initiator
+        // boxes still get the live isOnline check.
+        const [isOnline, incoming] = await Promise.all([
+            remotePeerConfigured ? adminNetworkChecker.isOnline() : Promise.resolve(false),
+            getReceiverActivity(ourServerId),
+        ]);
+
+        // This box's role in the sync mesh. A receiver has no REMOTE_SYNC_URL but
+        // is written to by peers — recognisable by having incoming records from a
+        // different server_id. Anything else is an initiator (or a not-yet-configured box).
+        const role = remotePeerConfigured
+            ? 'INITIATOR'
+            : incoming.peers.length > 0
+                ? 'RECEIVER'
+                : 'UNCONFIGURED';
 
         res.status(200).json({
             success: true,
             data: {
+                role,
                 lastSync: lastLogRow ? parseSyncLogRow(lastLogRow) : null,
                 isOnline,
                 remotePeerConfigured,
                 autoSyncEnabled: Number.isFinite(autoSyncIntervalMinutes) && autoSyncIntervalMinutes > 0,
                 autoSyncIntervalMinutes: Number.isFinite(autoSyncIntervalMinutes) ? autoSyncIntervalMinutes : null,
-                serverId: process.env.SERVER_ID || 'local',
-                syncInFlight: syncInFlight !== null
+                serverId: ourServerId,
+                syncInFlight: syncInFlight !== null,
+                incoming,
             }
         });
     } catch (error: any) {

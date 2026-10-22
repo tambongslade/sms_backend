@@ -9,11 +9,11 @@ const router = Router();
 const REQUESTERS = [
     'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL',
     'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY',
-    'DEAN_OF_STUDIES', 'DEAN_OF_DISCIPLINE', 'SENIOR_DISCIPLINE_MASTER', 'HOD',
+    'DEAN_OF_STUDIES', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR', 'SENIOR_DISCIPLINE_MASTER', 'HOD',
 ];
 const RECIPIENTS = [
     'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY',
-    'DEAN_OF_STUDIES', 'DEAN_OF_DISCIPLINE', 'SENIOR_DISCIPLINE_MASTER', 'HOD',
+    'DEAN_OF_STUDIES', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR', 'SENIOR_DISCIPLINE_MASTER', 'HOD',
     'TEACHER', 'DISCIPLINE_MASTER', 'NURSE', 'FEE_AUDITOR', 'CONTROLLER', 'GUIDANCE_COUNSELOR',
 ];
 const ALL_PARTIES = [...new Set([...REQUESTERS, ...RECIPIENTS])];
@@ -23,6 +23,10 @@ router.post('/', authenticate, authorize(REQUESTERS), ctrl.createReportRequest);
 
 // Convenience listings — service uses req.user.id, so just authenticate
 router.get('/sent', authenticate, authorize(REQUESTERS), ctrl.listMyReportRequests);
+
+// "Request from" picker: people the caller may request a report from.
+// Must stay above /:id.
+router.get('/recipients', authenticate, authorize(REQUESTERS), ctrl.listReportRecipients);
 router.get('/assigned', authenticate, authorize(RECIPIENTS), ctrl.listAssignedReportRequests);
 
 // Generic list (filterable)

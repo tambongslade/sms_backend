@@ -3,6 +3,7 @@
 import prisma, { DayOfWeek } from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
 import * as academicYearService from './academicYearService';
+import * as subjectService from './subjectService';
 import * as XLSX from 'xlsx';
 import ejs from 'ejs';
 import fs from 'fs';
@@ -488,6 +489,9 @@ export async function bulkUpdateTimetable(
                 });
                 result.created++;
             }
+
+            // Marks are keyed by SubClassSubject; keep it in step with the timetable.
+            await subjectService.ensureSubClassSubjectLink(subclassId, parsedSubjectId);
         } catch (error: any) {
             console.error(`Error processing slot for period ${parsedPeriodId}:`, error);
             result.errors.push({ periodId: parsedPeriodId, error: error.message });
@@ -889,9 +893,10 @@ export async function exportTeacherTimetablePdf(
     // Summary chips
     const uniqueClasses = new Set(teacherPeriods.map(tp => tp.sub_class_id)).size;
     const uniqueSubjects = subjectNames.length;
-    const weeklyHours = teacherPeriods.reduce((acc, tp) => {
-        return acc + (toMinutes(tp.period.end_time) - toMinutes(tp.period.start_time)) / 60;
-    }, 0);
+    // Count of periods, not summed clock-hours -- periods aren't a fixed
+    // length (TEACHING slots run 50/55/110 min), so this is the number that
+    // actually matches "how many periods does this teacher teach".
+    const weeklyPeriods = teacherPeriods.length;
 
     const details: Array<{ label: string; value: string }> = [];
     if (departments.length) {
@@ -909,7 +914,7 @@ export async function exportTeacherTimetablePdf(
             `Matricule: ${teacher.matricule || '—'}`,
             `Classes: ${uniqueClasses}`,
             `Subjects: ${uniqueSubjects}`,
-            `Weekly Hours: ${weeklyHours.toFixed(1)}`,
+            `Weekly Periods: ${weeklyPeriods}`,
         ],
         days,
         rows,

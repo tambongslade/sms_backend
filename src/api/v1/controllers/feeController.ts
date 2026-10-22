@@ -1,7 +1,13 @@
 // src/api/v1/controllers/feeController.ts
 import { Request, Response } from 'express';
+import prisma from '../../../config/db';
 import * as feeService from '../services/feeService';
 import * as feeRefundService from '../services/feeRefundService';
+import * as paymentLedger from '../services/paymentLedgerService';
+import * as receiptService from '../services/receiptService';
+import * as feeOutstandingService from '../services/feeOutstandingService';
+import { getAcademicYearId } from '../../../utils/academicYear';
+import { listPaymentMethods } from '../../../utils/paymentMethod';
 import * as financialReportService from '../services/financialReportService';
 import { PaginationOptions, FilterOptions } from '../../../utils/pagination';
 
@@ -61,7 +67,8 @@ export const getAllFees = async (req: Request, res: Response) => {
                     classId: req.query.classId as string,
                     subClassId: req.query.subClassId as string,
                     studentIdentifier: req.query.studentIdentifier as string,
-                    paymentStatus: req.query.paymentStatus as string
+                    paymentStatus: req.query.paymentStatus as string,
+                    includeWithdrawn: req.query.includeWithdrawn as string
                 };
 
                 data = await feeService.getAllFees(paginationOptions, filterOptions, academic_year_id);
@@ -276,14 +283,23 @@ export const getSubclassUnpaidStudents = async (req: Request, res: Response): Pr
 export const recordPayment = async (req: Request, res: Response): Promise<any> => {
     try {
         const feeId = parseInt(req.params.feeId);
+        if (isNaN(feeId)) {
+            return res.status(400).json({ success: false, error: 'Invalid feeId' });
+        }
+        const userId = (req as any).user?.id;
+        if (!userId) {
+            return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
 
-        // Use the body directly plus fee_id and recorded_by_id - middleware handles the conversion
-        const paymentData = {
-            ...req.body,
+        // Body arrives snake_cased by the case-conversion middleware.
+        const { confirm_overpayment, ...body } = req.body || {};
+        const payment = await feeService.recordPayment({
+            ...body,
             fee_id: feeId,
-            recorded_by_id: (req as any).user?.id || 1 // Get from authenticated user or default to 1
-        };
-        const payment = await feeService.recordPayment(paymentData);
+            recorded_by_id: userId,
+            overpayment_policy: 'require_confirmation',
+            confirm_overpayment: confirm_overpayment === true || confirm_overpayment === 'true',
+        });
 
         res.status(201).json({
             success: true,
@@ -291,6 +307,9 @@ export const recordPayment = async (req: Request, res: Response): Promise<any> =
         });
     } catch (error: any) {
         console.error('Error recording payment:', error);
+
+        const mapped = paymentLedger.paymentErrorToHttp(error);
+        if (mapped) return res.status(mapped.status).json(mapped.body);
 
         if (error instanceof feeService.DuplicatePaymentError) {
             return res.status(409).json({
@@ -301,6 +320,9 @@ export const recordPayment = async (req: Request, res: Response): Promise<any> =
                 secondsAgo: error.secondsAgo,
             });
         }
+        if (error.message?.includes('not found') || error.message?.includes('not enrolled')) {
+            return res.status(404).json({ success: false, error: error.message });
+        }
 
         res.status(500).json({
             success: false,
@@ -309,19 +331,35 @@ export const recordPayment = async (req: Request, res: Response): Promise<any> =
     }
 };
 
+/**
+ * PUT /fees/payments/:paymentId  and  PUT /fees/:feeId/payments/:paymentId
+ * Body (camelCase): { amount?, paymentDate?, paymentMethod?, receiptNumber?, notes?, reason? }
+ */
 export const updatePayment = async (req: Request, res: Response): Promise<any> => {
     try {
         const paymentId = parseInt(req.params.paymentId);
         if (isNaN(paymentId)) {
             return res.status(400).json({ success: false, error: 'Invalid paymentId' });
         }
+        const feeId = req.params.feeId !== undefined ? parseInt(req.params.feeId) : undefined;
+        if (req.params.feeId !== undefined && isNaN(feeId as number)) {
+            return res.status(400).json({ success: false, error: 'Invalid feeId' });
+        }
 
         const userRoles = ((req as any).user?.role || []) as string[];
-        const updated = await feeService.updatePayment(paymentId, req.body, userRoles);
+        const { reason, ...body } = req.body || {};
+        const updated = await feeService.updatePayment(paymentId, body, userRoles, {
+            userId: (req as any).user?.id,
+            feeId,
+            reason: typeof reason === 'string' ? reason : null,
+        });
 
         return res.json({ success: true, data: updated });
     } catch (error: any) {
         console.error('Error updating payment:', error);
+
+        const mapped = paymentLedger.paymentErrorToHttp(error);
+        if (mapped) return res.status(mapped.status).json(mapped.body);
 
         if (error instanceof feeService.PaymentEditWindowClosedError) {
             return res.status(403).json({ success: false, error: error.message });
@@ -329,11 +367,71 @@ export const updatePayment = async (req: Request, res: Response): Promise<any> =
         if (error.message?.includes('not found')) {
             return res.status(404).json({ success: false, error: error.message });
         }
-        if (error.message?.includes('Invalid payment method')) {
-            return res.status(400).json({ success: false, error: error.message });
-        }
         return res.status(500).json({ success: false, error: error.message });
     }
+};
+
+/** GET /fees/payments/:paymentId/receipt  -> receipt data (JSON) */
+export const getPaymentReceipt = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const paymentId = parseInt(req.params.paymentId);
+        if (isNaN(paymentId)) {
+            return res.status(400).json({ success: false, error: 'Invalid paymentId' });
+        }
+        const data = await receiptService.getReceiptData(paymentId);
+        if (!data) return res.status(404).json({ success: false, error: 'Payment not found' });
+        return res.json({ success: true, data });
+    } catch (error: any) {
+        console.error('Error fetching receipt:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+/** GET /fees/payments/:paymentId/receipt/pdf?reprint=true  -> application/pdf */
+export const getPaymentReceiptPdf = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const paymentId = parseInt(req.params.paymentId);
+        if (isNaN(paymentId)) {
+            return res.status(400).json({ success: false, error: 'Invalid paymentId' });
+        }
+        const user = (req as any).user;
+        const result = await receiptService.generateReceiptPdf(paymentId, {
+            reprint: req.query.reprint === 'true' || req.query.reprint === '1',
+            printedBy: user?.id
+                ? (await prisma.user.findUnique({ where: { id: user.id }, select: { name: true } }))?.name ?? null
+                : null,
+        });
+        if (!result) return res.status(404).json({ success: false, error: 'Payment not found' });
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="${result.filename}"`);
+        return res.send(result.buffer);
+    } catch (error: any) {
+        console.error('Error generating receipt PDF:', error);
+        return res.status(500).json({ success: false, error: 'Failed to generate receipt PDF' });
+    }
+};
+
+/** GET /fees/outstanding-summary?academicYearId=&classId=&subClassId= — shared outstanding totals + reconciliation */
+export const getOutstandingSummary = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const yearId = await getAcademicYearId(req.query.academicYearId ? parseInt(req.query.academicYearId as string) : undefined);
+        if (!yearId) return res.status(400).json({ success: false, error: 'No academic year found and none provided' });
+        const classId = req.query.classId ? parseInt(req.query.classId as string) : undefined;
+        const subClassId = req.query.subClassId ? parseInt(req.query.subClassId as string) : undefined;
+        const data = await feeOutstandingService.getOutstandingSummary(yearId, {
+            classId: classId && !isNaN(classId) ? classId : undefined,
+            subClassId: subClassId && !isNaN(subClassId) ? subClassId : undefined,
+        });
+        return res.json({ success: true, data: { academicYearId: yearId, ...data } });
+    } catch (error: any) {
+        console.error('Error computing outstanding summary:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+/** GET /fees/payment-methods -> [{ value, label }] for dropdowns */
+export const getPaymentMethods = async (_req: Request, res: Response): Promise<any> => {
+    return res.json({ success: true, data: listPaymentMethods() });
 };
 
 export const getFeePayments = async (req: Request, res: Response): Promise<any> => {

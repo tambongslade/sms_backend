@@ -59,13 +59,29 @@ export async function getStudentStatus(
         enrollment => enrollment.academic_year_id === currentAcademicYearId
     );
 
-    // Count previous enrollments (excluding current year)
+    // Only enrollments in academic years that started BEFORE this one make a
+    // student "returning" (a future-year enrollment must not flip this year's fees).
+    const currentYear = currentEnrollment?.academic_year
+        ?? await prisma.academicYear.findUnique({ where: { id: currentAcademicYearId } });
+    const currentStart = currentYear ? new Date(currentYear.start_date).getTime() : Number.POSITIVE_INFINITY;
     const previousEnrollments = student.enrollments.filter(
-        enrollment => enrollment.academic_year_id !== currentAcademicYearId
+        enrollment => enrollment.academic_year_id !== currentAcademicYearId &&
+            new Date(enrollment.academic_year.start_date).getTime() < currentStart
     ).length;
 
+    // first_enrollment_year_id is stamped with the CURRENT year when a new student
+    // is enrolled, so it only proves "returning" when it points to an earlier year.
+    // (Previously any non-null value made the student OLD, so every newly enrolled
+    // student was charged the old-student fee.)
+    const firstYearStart = student.first_enrollment_year
+        ? new Date(student.first_enrollment_year.start_date).getTime()
+        : null;
+    const firstYearIsEarlier = student.first_enrollment_year_id !== null &&
+        student.first_enrollment_year_id !== currentAcademicYearId &&
+        firstYearStart !== null && firstYearStart < currentStart;
+
     // Determine if student is new to school
-    const isNewToSchool = previousEnrollments === 0 && !student.first_enrollment_year_id;
+    const isNewToSchool = previousEnrollments === 0 && !firstYearIsEarlier;
 
     // Determine if student is repeating (based on enrollment.repeater field)
     const isRepeater = currentEnrollment?.repeater || false;

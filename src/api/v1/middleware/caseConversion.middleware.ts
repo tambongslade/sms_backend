@@ -64,6 +64,9 @@ const convertObjectKeysToClient = (obj: any): any => {
     }
 
     return Object.keys(obj).reduce((acc: any, key: string) => {
+        // Never ship password hashes to clients. Many services `include: { parent: true }`
+        // (full User rows), so strip the field centrally (QA U12).
+        if (key === 'password') return acc;
         let newKey = key;
         // Convert snake_case key to camelCase
         if (key.includes('_')) {

@@ -1,5 +1,6 @@
 import prisma from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
+import { activeEnrollmentWhere, countActiveStudents, countTeachers } from '../../../utils/schoolCounts';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -395,14 +396,9 @@ export async function getSystemStatistics(): Promise<any> {
             recentLogins
         ] = await Promise.all([
             prisma.user.count(),
-            prisma.student.count(),
-            prisma.user.count({
-                where: {
-                    user_roles: {
-                        some: { role: 'TEACHER' }
-                    }
-                }
-            }),
+            // Active students for the current year (shared definition, utils/schoolCounts.ts)
+            countActiveStudents(currentYear?.id),
+            countTeachers(currentYear?.id),
             prisma.user.count({
                 where: {
                     user_roles: {
@@ -413,7 +409,7 @@ export async function getSystemStatistics(): Promise<any> {
             prisma.class.count(),
             prisma.subject.count(),
             prisma.enrollment.count({
-                where: currentYear ? { academic_year_id: currentYear.id } : {}
+                where: activeEnrollmentWhere(currentYear?.id)
             }),
             prisma.schoolFees.count({
                 where: currentYear ? { academic_year_id: currentYear.id } : {}

@@ -13,6 +13,7 @@ const POSITION_CODES = {
     BURSAR: 'SA',
     DEAN_OF_STUDIES: 'SA',
     DEAN_OF_DISCIPLINE: 'SA',
+    DISCIPLINE_COORDINATOR: 'SA',
     SENIOR_DISCIPLINE_MASTER: 'SA',
     FEE_AUDITOR: 'SA',
     SECRETARY: 'SA',
@@ -31,6 +32,7 @@ const MATRICULE_ROLE_PRIORITY: Role[] = [
     Role.MANAGER,                  // SA prefix
     Role.PRINCIPAL,                // SA prefix
     Role.VICE_PRINCIPAL,           // SA prefix
+    Role.DISCIPLINE_COORDINATOR,   // SA prefix - ranked above DoS/DoD as the discipline-side senior leadership seat
     Role.DEAN_OF_STUDIES,          // SA prefix
     Role.DEAN_OF_DISCIPLINE,       // SA prefix
     Role.SENIOR_DISCIPLINE_MASTER, // SA prefix
@@ -72,6 +74,8 @@ export function getPositionCodeForRoles(roles: Role[] | undefined | null): strin
                     return POSITION_CODES.DEAN_OF_STUDIES;
                 case Role.DEAN_OF_DISCIPLINE:
                     return POSITION_CODES.DEAN_OF_DISCIPLINE;
+                case Role.DISCIPLINE_COORDINATOR:
+                    return POSITION_CODES.DISCIPLINE_COORDINATOR;
                 case Role.SENIOR_DISCIPLINE_MASTER:
                     return POSITION_CODES.SENIOR_DISCIPLINE_MASTER;
                 case Role.FEE_AUDITOR:

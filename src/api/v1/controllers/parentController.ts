@@ -585,6 +585,52 @@ export const updateChildProfile = async (req: Request, res: Response): Promise<v
 };
 
 /**
+ * POST /parents/:matricule/child-photo
+ * Parent uploads a photo of their child (camera or file). Multipart form-data
+ * with a single `photo` field. Saves to /uploads/students and pins the
+ * filename on the current-year enrollment so it renders across the portal.
+ */
+export const uploadChildPhoto = async (req: any, res: Response): Promise<void> => {
+    // Multer has already written the file to disk by the time we get here. If
+    // validation below fails, clean up the orphan so the students dir doesn't
+    // fill with garbage from mistyped matricules or race conditions.
+    const cleanup = () => {
+        if (req.file?.path) {
+            try {
+                const fs = require('fs');
+                if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+            } catch { /* best effort */ }
+        }
+    };
+
+    try {
+        const matricule = readMatricule(req);
+        if (!matricule) { cleanup(); res.status(400).json({ success: false, error: 'Matricule is required' }); return; }
+        if (!req.file) { res.status(400).json({ success: false, error: 'No photo file uploaded' }); return; }
+
+        const { getFileUrl, PhotoType } = await import('../../../utils/fileUpload');
+        const result = await parentService.updateChildEnrollmentPhotoByMatricule(
+            matricule,
+            req.file.filename,
+            readAcademicYearId(req)
+        );
+
+        res.status(201).json({
+            success: true,
+            message: 'Child photo uploaded successfully',
+            data: {
+                enrollmentId: result.enrollmentId,
+                filename: result.filename,
+                url: getFileUrl(req, result.filename, PhotoType.STUDENT)
+            }
+        });
+    } catch (err) {
+        cleanup();
+        sendError(res, err, 'Failed to upload child photo');
+    }
+};
+
+/**
  * GET /parents/announcements
  * School-wide announcements aimed at parents. Requires no matricule.
  */

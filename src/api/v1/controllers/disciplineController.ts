@@ -419,6 +419,31 @@ export const deleteStudentAbsence = async (req: Request, res: Response): Promise
     }
 };
 
+/**
+ * Paginated list of StudentAbsence records for the "Class Absences" report.
+ */
+export const listAbsences = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const q = req.finalQuery as any;
+        const result = await disciplineService.listAbsences({
+            absence_type: q.absence_type as any,
+            academic_year_id: q.academic_year_id ? parseInt(q.academic_year_id) : undefined,
+            from: q.from,
+            to: q.to,
+            is_excused: q.is_excused === 'true' ? true : q.is_excused === 'false' ? false : undefined,
+            sub_class_id: q.sub_class_id ? parseInt(q.sub_class_id) : undefined,
+            slot: q.slot as any,
+            source: q.source as any,
+            page: q.page ? parseInt(q.page) : undefined,
+            limit: q.limit ? parseInt(q.limit) : undefined,
+        });
+        return res.json({ success: true, data: result.data, meta: result.meta });
+    } catch (error: any) {
+        console.error('Error listing absences:', error);
+        return res.status(400).json({ success: false, error: error.message });
+    }
+};
+
 // =====================================================================
 // Unified roll call
 // =====================================================================
@@ -724,5 +749,36 @@ export const updateSummons = async (req: Request, res: Response): Promise<any> =
     } catch (error: any) {
         if (error.message === 'SUMMONS_NOT_FOUND') return res.status(404).json({ success: false, error: 'Summons not found' });
         return res.status(400).json({ success: false, error: error.message });
+    }
+};
+
+/**
+ * Daily overview for the Dean of Discipline dashboard. Returns
+ *   - lateTodayCount        (StudentAbsence rows of type MORNING_LATENESS created today)
+ *   - dailyAbsencesCount    (StudentAbsence rows of type CLASS_ABSENCE created today)
+ *   - disciplinaryActionsTodayCount
+ *   - personsOfInterest[]   (top N enrollments with >= threshold absences this academic year)
+ *
+ * Query params:
+ *   - academic_year_id (optional, defaults to current)
+ *   - date (YYYY-MM-DD, optional, defaults to today)
+ *   - poi_threshold (integer, default 5)
+ *   - poi_limit     (integer, default 10)
+ */
+export const getDailyOverview = async (req: any, res: Response): Promise<any> => {
+    try {
+        const overview = await disciplineService.getDailyOverview({
+            academic_year_id: req.finalQuery.academic_year_id ? Number(req.finalQuery.academic_year_id) : undefined,
+            date: req.query.date as string | undefined,
+            from: req.query.from as string | undefined,
+            to: req.query.to as string | undefined,
+            slot: req.query.slot as any,
+            poi_threshold: req.query.poi_threshold ? Number(req.query.poi_threshold) : undefined,
+            poi_limit: req.query.poi_limit ? Number(req.query.poi_limit) : undefined,
+        });
+        return res.json({ success: true, data: overview });
+    } catch (err: any) {
+        console.error('Error getting daily overview:', err);
+        return res.status(500).json({ success: false, error: err.message });
     }
 };

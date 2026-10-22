@@ -7,9 +7,13 @@
 // The `/me/*` sub-tree requires JWT auth and is scoped to the authenticated
 // parent (multi-child support).
 import express from 'express';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 import { portalRateLimit } from '../middleware/portalRateLimit.middleware';
 import { portalAudit } from '../middleware/portalAudit.middleware';
+import upload, { PhotoType, PHOTO_DIRECTORIES } from '../../../utils/fileUpload';
 import {
     getChildDashboard,
     getChildDetails,
@@ -42,7 +46,8 @@ import {
     getMyChildren,
     getSelfServiceProfile,
     updateParentProfile,
-    updateChildProfile
+    updateChildProfile,
+    uploadChildPhoto
 } from '../controllers/parentController';
 
 const router = express.Router();
@@ -107,6 +112,47 @@ router.put('/:matricule/messages/:messageId/read', markParentMessageRead);
 router.get('/:matricule/profile', getSelfServiceProfile);
 router.put('/:matricule/parent-profile', updateParentProfile);
 router.put('/:matricule/child-profile', updateChildProfile);
+
+// Photo upload — parent snaps or picks a photo of their child. Uses a
+// dedicated multer storage so destination + filename can be derived from
+// URL params (which are populated before multer runs). The shared upload
+// helper reads req.body inside its storage callback, but for multipart
+// requests body fields aren't parsed until after the file, so we can't
+// rely on it here. See git history for the bug this fixes.
+const childPhotoStorage = (multer as any).diskStorage({
+    destination: (_req: any, _file: any, cb: any) => {
+        const dir = PHOTO_DIRECTORIES.STUDENT_PHOTOS_DIR;
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        cb(null, dir);
+    },
+    filename: (req: any, file: any, cb: any) => {
+        const safeMatricule = String(req.params.matricule || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const ext = path.extname(file.originalname) || '.jpg';
+        cb(null, `student-${safeMatricule}-${Date.now()}${ext}`);
+    },
+});
+const childPhotoUpload = multer({
+    storage: childPhotoStorage,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb: any) => {
+        if (file.mimetype.startsWith('image/')) cb(null, true);
+        else cb(new Error('Only image files are allowed'));
+    },
+});
+
+router.post(
+    '/:matricule/child-photo',
+    (req, res, next) => {
+        childPhotoUpload.single('photo')(req, res, (err: any) => {
+            if (!err) return next();
+            const message = err?.code === 'LIMIT_FILE_SIZE'
+                ? 'Photo must be under 5 MB'
+                : err?.message || 'Photo upload rejected';
+            res.status(400).json({ success: false, error: message });
+        });
+    },
+    uploadChildPhoto
+);
 
 // Notifications — mirrors /notifications/* but gated by matricule instead of JWT.
 // Parent identity is resolved via ParentStudent link on the matricule's student.

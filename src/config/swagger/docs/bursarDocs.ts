@@ -549,6 +549,71 @@
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
+ *
+ * /bursar/defaulters-report/pdf:
+ *   get:
+ *     summary: Export defaulters report as a printable PDF (one subclass per page)
+ *     description: |
+ *       Renders the defaulters report to a PDF. The output paginates by subclass —
+ *       each subclass prints on its own page — and every row shows Name, Status
+ *       (NEW/OLD), Total Paid, Expected 1st Installment, and Remaining. Accepts
+ *       the same query parameters as `GET /bursar/defaulters-report`.
+ *     tags: [Bursar]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: academicYearId
+ *         schema:
+ *           type: integer
+ *         description: Filter by academic year ID (defaults to current)
+ *       - in: query
+ *         name: minimumAmount
+ *         schema:
+ *           type: number
+ *         description: Minimum outstanding amount to include (FCFA)
+ *       - in: query
+ *         name: classId
+ *         schema:
+ *           type: integer
+ *         description: Filter to a specific class
+ *       - in: query
+ *         name: subClassId
+ *         schema:
+ *           type: integer
+ *         description: Filter to a specific subclass. Omit to include all subclasses.
+ *       - in: query
+ *         name: installment
+ *         schema:
+ *           type: string
+ *           enum: [first, second, third]
+ *         description: Only include students still owing on this installment
+ *     responses:
+ *       200:
+ *         description: PDF file
+ *         content:
+ *           application/pdf:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       401:
+ *         description: Unauthorized
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       403:
+ *         description: Forbidden
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
  */
 
-export { }; 
+export { };

@@ -6,6 +6,7 @@ import * as feeService from './feeService'; // Import feeService
 import { generateStudentMatricule } from '../../../utils/matriculeGenerator'; // Import student matricule generator
 import { setFirstEnrollmentYear, updateNewStudentStatus } from '../../../utils/studentStatus'; // Import student status utilities
 import { StudentStatus, HealthCondition } from '@prisma/client'; // Import StudentStatus + HealthCondition enums
+import { createAuditLog } from './auditTrailService';
 import * as XLSX from 'xlsx';
 import { PDFDocument, StandardFonts, rgb, PageSizes, PDFFont, PDFPage } from 'pdf-lib';
 
@@ -21,13 +22,65 @@ export async function getAllStudents(
     );
 }
 
+// Parent fields safe/useful for student list rows. `parent: true` shipped the whole User
+// row (incl. password hash) for every parent on every list/search request.
+const LIST_PARENT_SELECT = {
+    id: true,
+    name: true,
+    phone: true,
+    email: true,
+    matricule: true,
+    whatsapp_number: true,
+    gender: true,
+    address: true, // read by the bursar student-registration list
+} as const;
+
+/**
+ * Resolve each student's photo in ONE query: the target-year enrollment photo, else the most
+ * recent other enrollment photo (same rule as getStudentEnrollmentPhoto). Previously list
+ * pages called GET /students/:id/enrollment-photo once per row per rendered view (~300
+ * requests for a 100-row desktop page, 35-90 s of server time). Adds `photo` (null = none)
+ * and `photo_resolved: true` so the client knows it need not fetch the photo itself.
+ */
+async function attachResolvedPhotos<T extends { id: number }>(
+    students: T[],
+    targetAcademicYearId?: number | null
+): Promise<Array<T & { photo: string | null; photo_resolved: true }>> {
+    const studentIds = students.map(s => s.id);
+    const photoRows = studentIds.length > 0
+        ? await prisma.enrollment.findMany({
+            where: { student_id: { in: studentIds }, photo: { not: null } },
+            select: { student_id: true, academic_year_id: true, photo: true },
+            orderBy: { academic_year_id: 'desc' },
+        })
+        : [];
+    const photoByStudent = new Map<number, string>();
+    for (const row of photoRows) {
+        if (!row.photo) continue;
+        if (row.academic_year_id === targetAcademicYearId || !photoByStudent.has(row.student_id)) {
+            photoByStudent.set(row.student_id, row.photo);
+        }
+    }
+    return students.map(s => ({
+        ...s,
+        photo: photoByStudent.get(s.id) ?? null,
+        photo_resolved: true as const,
+    }));
+}
+
 // Get all students with their current enrollment info with pagination and filtering
 export async function getAllStudentsWithCurrentEnrollment(
     academicYearIdInput?: number, // Explicitly name the input
     paginationOptions?: PaginationOptions,
     filterOptions?: FilterOptions,
     enrollmentStatus?: 'enrolled' | 'not_enrolled' | 'all', // Add enrollmentStatus parameter
-    teacherSubClassIds?: number[] // Add teacher subclass restriction
+    teacherSubClassIds?: number[], // Add teacher subclass restriction
+    includeWithdrawn: boolean = false, // Named apart from `enrollmentStatus` on purpose: that
+    // param means "enrolled this year or not" and already has its own 'all'; this one is
+    // about Student.status itself (WITHDRAWN = soft-deleted). Off by default so a plain
+    // student list doesn't silently include withdrawn students -- opt in explicitly for
+    // an admin "view withdrawn" report.
+    search?: string // Free text: every whitespace-separated token must match name OR matricule (case-insensitive)
 ): Promise<PaginatedResult<any>> {
 
     // 1. Determine Target Academic Year
@@ -37,7 +90,12 @@ export async function getAllStudentsWithCurrentEnrollment(
     }
 
     // 2. Build Base Where Clause for Student Filters
-    const studentWhere: Prisma.StudentWhereInput = {};
+    // Default excludes students who have left (WITHDRAWN soft-delete and TRANSFERRED
+    // transfer-out, U13) -- the same "active" definition as utils/schoolCounts, so the
+    // list total matches the dashboard student count. includeWithdrawn=true shows them.
+    const studentWhere: Prisma.StudentWhereInput = includeWithdrawn
+        ? {}
+        : { status: { notIn: [StudentStatus.WITHDRAWN, StudentStatus.TRANSFERRED] } };
     let sub_classIdFilter: number | undefined = undefined; // Store sub_class filter separately
 
     if (filterOptions) {
@@ -137,6 +195,17 @@ export async function getAllStudentsWithCurrentEnrollment(
         }
     }
 
+    // Server-side search across all students (not just the current page).
+    const searchTokens = (search || '').split(/\s+/).map(t => t.trim()).filter(Boolean);
+    if (searchTokens.length > 0) {
+        studentWhere.AND = searchTokens.map(token => ({
+            OR: [
+                { name: { contains: token, mode: 'insensitive' as const } },
+                { matricule: { contains: token, mode: 'insensitive' as const } },
+            ],
+        }));
+    }
+
     console.log("Final Student Where:", JSON.stringify(studentWhere));
     console.log("Enrollment Criteria for Include:", JSON.stringify(enrollmentCriteria));
 
@@ -185,16 +254,21 @@ export async function getAllStudentsWithCurrentEnrollment(
             },
             parents: {
                 include: {
-                    parent: true // Include parent details
+                    // Only the contact fields the list needs. `parent: true` shipped the whole
+                    // User row (incl. password hash) for every parent on every page load.
+                    parent: { select: LIST_PARENT_SELECT }
                 }
             }
         }
     });
 
+    // Resolve photos in one batched query (see attachResolvedPhotos).
+    const data = await attachResolvedPhotos(students, targetAcademicYearId);
+
     console.log(`Returning ${students.length} students for page ${page}`);
 
     return {
-        data: students,
+        data,
         meta: {
             total,
             page,
@@ -867,7 +941,11 @@ export async function getStudentsBySubclass(
     return prisma.enrollment.findMany({
         where: {
             sub_class_id,
-            academic_year_id: yearId
+            academic_year_id: yearId,
+            // deleteStudent soft-deletes (WITHDRAWN) without touching the enrollment row,
+            // so a roster query has to exclude it explicitly or a withdrawn student keeps
+            // showing up in their old class. Same for a TRANSFERRED (transfer-out) student.
+            student: { status: { notIn: [StudentStatus.WITHDRAWN, StudentStatus.TRANSFERRED] } }
         },
         include: {
             student: true,
@@ -1027,9 +1105,14 @@ export async function searchStudents(
             ],
         });
 
-        const searchCriteria: Prisma.StudentWhereInput = tokens.length > 0
-            ? { AND: tokens.map(buildTokenOr) }
-            : { OR: [{ name: { contains: searchQuery, mode: 'insensitive' } }] };
+        // Excludes WITHDRAWN the same way the main listing does -- a search shouldn't
+        // surface a soft-deleted student any more readily than browsing would.
+        const searchCriteria: Prisma.StudentWhereInput = {
+            status: { not: StudentStatus.WITHDRAWN },
+            ...(tokens.length > 0
+                ? { AND: tokens.map(buildTokenOr) }
+                : { OR: [{ name: { contains: searchQuery, mode: 'insensitive' } }] }),
+        };
 
         // Count total matching students
         const total = await prisma.student.count({ where: searchCriteria });
@@ -1057,14 +1140,14 @@ export async function searchStudents(
                 } : undefined,
                 parents: {
                     include: {
-                        parent: true
+                        parent: { select: LIST_PARENT_SELECT }
                     }
                 }
             }
         });
 
         return {
-            data: students,
+            data: await attachResolvedPhotos(students, targetAcademicYearId),
             meta: {
                 total,
                 page,
@@ -1298,7 +1381,7 @@ export async function exportSubclassStudentListExcel(
     }
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { sub_class_id: subClassId, academic_year_id: yearId },
+        where: { sub_class_id: subClassId, academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         include: { student: true }
     });
 
@@ -1336,7 +1419,7 @@ export async function exportClassStudentListExcel(
                 orderBy: { name: 'asc' },
                 include: {
                     enrollments: {
-                        where: { academic_year_id: yearId },
+                        where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
                         include: { student: true }
                     }
                 }
@@ -1382,7 +1465,7 @@ type ClassListSection = {
 function sanitizeForPdf(text: string): string {
     // pdf-lib StandardFonts only support WinAnsi (Latin-1) — strip what it can't render.
     return (text || '')
-        .replace(/[ -]/g, ' ')
+        .replace(/[\x00-\x1F]/g, ' ')
         .replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');
 }
 
@@ -1611,7 +1694,7 @@ export async function exportSubclassStudentListPdf(
     }
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { sub_class_id: subClassId, academic_year_id: yearId },
+        where: { sub_class_id: subClassId, academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         include: {
             student: {
                 include: {
@@ -1657,7 +1740,7 @@ export async function exportClassStudentListPdf(
                 orderBy: { name: 'asc' },
                 include: {
                     enrollments: {
-                        where: { academic_year_id: yearId },
+                        where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
                         include: {
                             student: {
                                 include: {
@@ -1724,7 +1807,7 @@ export async function getPromotionPreview(
     }
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { academic_year_id: fromAcademicYearId },
+        where: { academic_year_id: fromAcademicYearId, student: { status: { not: 'WITHDRAWN' } } },
         include: {
             student: true,
             class: { include: { next_class: true } },
@@ -1788,7 +1871,8 @@ export interface PromotionInput {
     student_id: number;
     target_class_id?: number | null; // required unless action = GRADUATE
     repeater?: boolean;
-    action: 'PROMOTE' | 'REPEAT' | 'GRADUATE' | 'TRANSFER';
+    // DISMISS: not re-enrolled for the target year (no enrollment created, status unchanged)
+    action: 'PROMOTE' | 'REPEAT' | 'GRADUATE' | 'TRANSFER' | 'DISMISS';
 }
 
 export interface PromotionResult {
@@ -1816,6 +1900,13 @@ export async function promoteStudents(
 
     for (const p of promotions) {
         try {
+            if (!['PROMOTE', 'REPEAT', 'GRADUATE', 'TRANSFER', 'DISMISS'].includes(p.action)) {
+                throw new Error(`Unknown action ${p.action}`);
+            }
+            if (p.action === 'DISMISS') {
+                results.push({ student_id: p.student_id, success: true });
+                continue;
+            }
             if (p.action === 'GRADUATE' || p.action === 'TRANSFER') {
                 await prisma.student.update({
                     where: { id: p.student_id },
@@ -1897,6 +1988,12 @@ export async function unenrollStudent(
                     saturday_punishments: true,
                     broken_properties: true,
                     disciplinary_actions: true,
+                    dm_roll_call_entries: true,
+                    teacher_roll_call_entries: true,
+                    seized_items: true,
+                    nurse_visit_logs: true,
+                    student_warnings: true,
+                    parent_summons: true,
                 },
             },
         },
@@ -1907,6 +2004,14 @@ export async function unenrollStudent(
     }
 
     const counts = enrollment._count;
+    // Every one of Enrollment's FK-referencing relations has to be checked here,
+    // not just the ones that came to mind when this was written -- an
+    // unchecked one doesn't skip the block, it turns into a raw P2003 postgres
+    // error out of the delete transaction below instead. Confirmed the hard
+    // way: dm_roll_call_entries wasn't in this list, and unenrolling a student
+    // with a discipline-master roll-call entry on their enrollment threw
+    // "Foreign key constraint violated: (not available)" -- a 500, not the
+    // clean ENROLLMENT_HAS_ACADEMIC_RECORDS this function exists to return.
     const hasAcademicRecords =
         counts.marks > 0 ||
         counts.student_sequence_averages > 0 ||
@@ -1914,7 +2019,13 @@ export async function unenrollStudent(
         counts.absences > 0 ||
         counts.saturday_punishments > 0 ||
         counts.broken_properties > 0 ||
-        counts.disciplinary_actions > 0;
+        counts.disciplinary_actions > 0 ||
+        counts.dm_roll_call_entries > 0 ||
+        counts.teacher_roll_call_entries > 0 ||
+        counts.seized_items > 0 ||
+        counts.nurse_visit_logs > 0 ||
+        counts.student_warnings > 0 ||
+        counts.parent_summons > 0;
 
     const hasFinancialRecords =
         counts.payment_transactions > 0 ||
@@ -1949,49 +2060,44 @@ export async function unenrollStudent(
     return { student_id: studentId, academic_year_id: yearId };
 }
 
-// Hard-delete a student and every dependent record. SUPER_MANAGER use only.
-export async function deleteStudent(studentId: number): Promise<void> {
+// Soft-delete: marks the student WITHDRAWN instead of hard-deleting the row
+// and its ~18 tables of dependent data.
+//
+// This used to be a real DELETE, cascaded by hand across every dependent
+// table. The sync system (src/sync) only replicates creates/updates -- it
+// has no concept of a deletion -- so a student removed on one node was
+// invisible to that fact everywhere else, and the very next sync tick
+// re-created it (and its enrollment, fees, attendance...) from whichever
+// node still had the row. On a bidirectional 5-minute loop that meant a
+// deletion essentially never stuck unless done on both databases inside the
+// same window. A status change is an ordinary field update, which the
+// existing sync path already replicates correctly in both directions, so
+// withdrawal now behaves the same as any other edit instead of needing sync
+// support it was never given.
+//
+// Dependent data (fees, payments, attendance, discipline history) is left
+// in place rather than deleted -- it's the paper trail for *why* the
+// student was withdrawn (unpaid fees, absences) and callers that list
+// "active" students already filter on status: ENROLLED.
+export async function deleteStudent(studentId: number, actorUserId: number): Promise<void> {
     const student = await prisma.student.findUnique({ where: { id: studentId } });
     if (!student) {
         throw new Error('STUDENT_NOT_FOUND');
     }
 
-    await prisma.$transaction(async (tx) => {
-        const enrollments = await tx.enrollment.findMany({
-            where: { student_id: studentId },
-            select: { id: true },
-        });
-        const enrollmentIds = enrollments.map((e) => e.id);
+    await prisma.student.update({
+        where: { id: studentId },
+        data: { status: StudentStatus.WITHDRAWN },
+    });
 
-        if (enrollmentIds.length > 0) {
-            await tx.mark.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.studentSequenceAverage.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            // DMRollCallEntry rows must go before StudentAbsence (FK linked_absence_id ON DELETE SET NULL is fine, but entries reference enrollment too).
-            await tx.dMRollCallEntry.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.studentAbsence.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.disciplineIssue.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.saturdayPunishment.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.brokenProperty.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.disciplinaryAction.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.studentWarning.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.parentSummons.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.feeItemPayment.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.refund.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.paymentTransaction.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.controlPaymentTransaction.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.schoolFees.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.controlSchoolFees.deleteMany({ where: { enrollment_id: { in: enrollmentIds } } });
-            await tx.enrollment.deleteMany({ where: { id: { in: enrollmentIds } } });
-        }
-
-        await tx.parentStudent.deleteMany({ where: { student_id: studentId } });
-        await tx.interviewMark.deleteMany({ where: { student_id: studentId } });
-        await tx.studentPreviousSchool.deleteMany({ where: { student_id: studentId } });
-        await tx.feeItem.deleteMany({ where: { student_id: studentId } });
-        await tx.quizSubmission.deleteMany({ where: { student_id: studentId } });
-        await tx.generatedReport.deleteMany({ where: { student_id: studentId } });
-
-        await tx.student.delete({ where: { id: studentId } });
+    await createAuditLog({
+        userId: actorUserId,
+        action: 'WITHDRAW',
+        entityType: 'Student',
+        entityId: studentId,
+        changes: { oldValues: { status: student.status }, newValues: { status: StudentStatus.WITHDRAWN } },
+        description: `Student ${student.matricule ?? studentId} withdrawn (soft delete, replaces hard delete)`,
+        severity: 'MEDIUM',
     });
 }
 

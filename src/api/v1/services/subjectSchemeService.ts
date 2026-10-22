@@ -82,7 +82,7 @@ export async function listSchemes(filter: {
     academic_year_id?: number;
 }) {
     const academic_year_id = await resolveAcademicYearId(filter.academic_year_id);
-    return prisma.subjectScheme.findMany({
+    const rows = await prisma.subjectScheme.findMany({
         where: {
             academic_year_id,
             ...(filter.subject_id && { subject_id: filter.subject_id }),
@@ -97,6 +97,14 @@ export async function listSchemes(filter: {
         },
         orderBy: [{ class_id: 'asc' }, { subject_id: 'asc' }],
     });
+
+    // The response-side snake_to_camel middleware mangles the `_count` key
+    // (Prisma's aggregation shape) into `Count`, so clients can never read
+    // `_count.modules`. Flatten it into a stable top-level field.
+    return rows.map(({ _count, ...rest }) => ({
+        ...rest,
+        module_count: _count.modules,
+    }));
 }
 
 export async function getSchemeById(id: number) {
@@ -136,6 +144,35 @@ export async function createScheme(
     created_by_id: number,
 ) {
     const academic_year_id = await resolveAcademicYearId(data.academic_year_id);
+
+    // One scheme per subject/class/year (subject_class_year_unique). Check up
+    // front so the user gets a readable 409 instead of a raw Prisma P2002.
+    const existing = await prisma.subjectScheme.findUnique({
+        where: {
+            subject_class_year_unique: {
+                subject_id: Number(data.subject_id),
+                class_id: Number(data.class_id),
+                academic_year_id,
+            },
+        },
+        select: {
+            id: true,
+            subject: { select: { name: true } },
+            class: { select: { name: true } },
+            academic_year: { select: { name: true } },
+        },
+    });
+    if (existing) {
+        const err: any = new Error(
+            `A scheme of work already exists for ${existing.subject?.name ?? 'this subject'} — ` +
+            `${existing.class?.name ?? 'this class'} (${existing.academic_year?.name ?? 'this academic year'}). ` +
+            `Open the existing scheme to edit it instead.`,
+        );
+        err.code = 'CONFLICT';
+        err.existing_id = existing.id;
+        throw err;
+    }
+
     return prisma.subjectScheme.create({
         data: {
             subject_id: data.subject_id,
@@ -158,9 +195,36 @@ export async function updateScheme(
         notes?: string | null;
     },
 ) {
+    // Whitelist the editable header fields. The request body arrives with
+    // BOTH the camelCase keys the client sent and their snake_case copies
+    // (caseConversion middleware merges rather than replaces), so passing
+    // `data` straight to Prisma failed every header save with an
+    // "Unknown argument `periodsPerWeek`" 500.
+    const patch: { periods_per_week?: number; annual_teaching_hours?: number; notes?: string | null } = {};
+    if (data.periods_per_week !== undefined && data.periods_per_week !== null) {
+        const n = Number(data.periods_per_week);
+        if (!Number.isInteger(n) || n < 0) {
+            const err: any = new Error('periodsPerWeek must be a non-negative whole number');
+            err.code = 'BAD_REQUEST';
+            throw err;
+        }
+        patch.periods_per_week = n;
+    }
+    if (data.annual_teaching_hours !== undefined && data.annual_teaching_hours !== null) {
+        const n = Number(data.annual_teaching_hours);
+        if (!Number.isInteger(n) || n < 0) {
+            const err: any = new Error('annualTeachingHours must be a non-negative whole number');
+            err.code = 'BAD_REQUEST';
+            throw err;
+        }
+        patch.annual_teaching_hours = n;
+    }
+    if (data.notes !== undefined) {
+        patch.notes = data.notes === null ? null : String(data.notes).trim() || null;
+    }
     return prisma.subjectScheme.update({
         where: { id },
-        data,
+        data: patch,
         include: schemeInclude,
     });
 }
@@ -318,7 +382,15 @@ export async function updateModule(
     id: number,
     data: { order?: number; code?: string | null; title?: string },
 ) {
-    return prisma.schemeModule.update({ where: { id }, data });
+    // Whitelist: req.body may carry extra keys (e.g. moduleId/id) that Prisma rejects.
+    return prisma.schemeModule.update({
+        where: { id },
+        data: {
+            ...(data.order !== undefined && { order: Number(data.order) }),
+            ...(data.code !== undefined && { code: data.code }),
+            ...(data.title !== undefined && { title: data.title }),
+        },
+    });
 }
 
 export async function deleteModule(id: number) {
@@ -357,7 +429,15 @@ export async function updateChapter(
     id: number,
     data: { order?: number; code?: string | null; title?: string },
 ) {
-    return prisma.schemeChapter.update({ where: { id }, data });
+    // Whitelist: req.body may carry extra keys (e.g. moduleId/id) that Prisma rejects.
+    return prisma.schemeChapter.update({
+        where: { id },
+        data: {
+            ...(data.order !== undefined && { order: Number(data.order) }),
+            ...(data.code !== undefined && { code: data.code }),
+            ...(data.title !== undefined && { title: data.title }),
+        },
+    });
 }
 
 export async function deleteChapter(id: number) {

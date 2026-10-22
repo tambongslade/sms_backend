@@ -508,7 +508,7 @@ export async function getLatenessAlerts(academicYearId?: number): Promise<Array<
         where: {
             absence_type: AbsenceType.MORNING_LATENESS,
             created_at: { gte: term.start_date, lte: term.end_date },
-            enrollment: { academic_year_id: yearId },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         },
         _count: { enrollment_id: true },
         having: { enrollment_id: { _count: { gte: SATURDAY_PUNISHMENT_THRESHOLD } } },
@@ -580,7 +580,7 @@ export async function getAbsenceFormData(subClassId: number, date: string, acade
     const dayOfWeek = DAY_OF_WEEK_FROM_INDEX[target.getDay()];
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { sub_class_id: subClassId, academic_year_id: yearId },
+        where: { sub_class_id: subClassId, academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         include: { student: true },
         orderBy: { student: { name: 'asc' } },
     });
@@ -709,6 +709,139 @@ export async function deleteStudentAbsence(id: number): Promise<void> {
     await prisma.studentAbsence.delete({ where: { id } });
 }
 
+// DM roll call has 3 fixed daily check-in slots -- this IS "period" for
+// absence-filtering purposes. TeacherPeriod/Subject is captured on almost no
+// row in practice (bulk roll-call recording doesn't require picking a period),
+// so the slot from the linked DMRollCallEntry is the one dimension that's
+// actually populated and worth filtering/displaying by.
+export type AbsenceSlot = 'SLOT_2' | 'SLOT_5' | 'SLOT_8';
+
+// Which side actually recorded the absence: a Discipline Master's daily/slot
+// roll call (linked via DMRollCallEntry) or a teacher's period roll call
+// (linked via TeacherRollCallEntry) -- see the comment above AbsenceSlot for
+// why teacher_period_id itself isn't a reliable signal for this.
+export type AbsenceSource = 'DM' | 'TEACHER';
+
+export async function listAbsences(filters: {
+    absence_type?: AbsenceType;
+    academic_year_id?: number;
+    from?: string;
+    to?: string;
+    is_excused?: boolean;
+    sub_class_id?: number;
+    slot?: AbsenceSlot;
+    source?: AbsenceSource;
+    page?: number;
+    limit?: number;
+}): Promise<PaginatedResult<any>> {
+    const yearId = filters.academic_year_id ?? await getAcademicYearId();
+    const page = filters.page && filters.page > 0 ? filters.page : 1;
+    const limit = filters.limit && filters.limit > 0 ? filters.limit : 50;
+
+    // filters.slot implies source=DM (a slot only exists on a DM roll call), so
+    // both narrow the same dm_roll_call_entries relation -- merge them into one
+    // condition rather than two separate spreads, which would silently let the
+    // second overwrite the first if both were ever passed together.
+    const dmEntriesWhere = filters.slot
+        ? { some: { dm_roll_call: { slot: filters.slot } } }
+        : filters.source === 'DM'
+            ? { some: {} }
+            : undefined;
+
+    const where: Prisma.StudentAbsenceWhereInput = {
+        ...(filters.absence_type && { absence_type: filters.absence_type }),
+        ...(filters.is_excused !== undefined && { is_excused: filters.is_excused }),
+        ...(dmEntriesWhere && { dm_roll_call_entries: dmEntriesWhere }),
+        ...(filters.source === 'TEACHER' && { teacher_roll_call_entries: { some: {} } }),
+        enrollment: {
+            ...(yearId && { academic_year_id: yearId }),
+            ...(filters.sub_class_id && { sub_class_id: filters.sub_class_id }),
+        },
+    };
+
+    if (filters.from || filters.to) {
+        const gte = filters.from ? new Date(`${filters.from}T00:00:00.000Z`) : undefined;
+        const lte = filters.to ? new Date(`${filters.to}T23:59:59.999Z`) : undefined;
+        where.created_at = { ...(gte && { gte }), ...(lte && { lte }) };
+    }
+
+    const [total, rows, totalsByEnrollment] = await Promise.all([
+        prisma.studentAbsence.count({ where }),
+        prisma.studentAbsence.findMany({
+            where,
+            orderBy: { created_at: 'desc' },
+            skip: (page - 1) * limit,
+            take: limit,
+            include: {
+                enrollment: {
+                    include: {
+                        student: { select: { id: true, name: true, matricule: true } },
+                        sub_class: { select: { id: true, name: true, class: { select: { id: true, name: true } } } },
+                    },
+                },
+                assigned_by: { select: { id: true, name: true } },
+                excused_by: { select: { id: true, name: true } },
+                teacher_period: {
+                    include: {
+                        subject: { select: { id: true, name: true } },
+                        period: { select: { id: true, name: true, start_time: true, end_time: true } },
+                    },
+                },
+                dm_roll_call_entries: {
+                    take: 1,
+                    include: { dm_roll_call: { select: { slot: true } } },
+                },
+                _count: {
+                    select: { dm_roll_call_entries: true, teacher_roll_call_entries: true },
+                },
+            },
+        }),
+        // Per-student total within the same filters (date range, period,
+        // excused status) but NOT the pagination window -- this is what lets
+        // a row say "this student has had N absences in this range" rather
+        // than just showing the one occurrence the row itself represents.
+        prisma.studentAbsence.groupBy({
+            by: ['enrollment_id'],
+            where,
+            _count: { _all: true },
+        }),
+    ]);
+
+    const totalByEnrollmentId = new Map(totalsByEnrollment.map((t) => [t.enrollment_id, t._count._all]));
+
+    // Flatten enrollment.student / enrollment.sub_class to the top level -- the
+    // frontend list view renders a row per absence, not per enrollment, so it
+    // doesn't need (or want) the enrollment wrapper the way discipline-history does.
+    const data = rows.map((r: any) => ({
+        id: r.id,
+        absence_type: r.absence_type,
+        is_excused: r.is_excused,
+        excuse_reason: r.excuse_reason,
+        excused_at: r.excused_at,
+        makeup_status: r.makeup_status,
+        created_at: r.created_at,
+        student: r.enrollment?.student ?? null,
+        sub_class: r.enrollment?.sub_class ?? null,
+        assigned_by: r.assigned_by,
+        excused_by: r.excused_by,
+        teacher_period: r.teacher_period,
+        slot: r.dm_roll_call_entries?.[0]?.dm_roll_call?.slot ?? null,
+        // Prefer DM when a row is somehow linked from both sides -- a DM daily
+        // roll call is the more authoritative record of the two in practice.
+        recorded_via: r._count?.dm_roll_call_entries > 0
+            ? 'DM'
+            : r._count?.teacher_roll_call_entries > 0
+                ? 'TEACHER'
+                : null,
+        total_in_range: totalByEnrollmentId.get(r.enrollment_id) ?? 1,
+    }));
+
+    return {
+        data,
+        meta: { total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) },
+    };
+}
+
 export async function getAllDisciplineIssues(
     paginationOptions?: PaginationOptions,
     filterOptions?: FilterOptions,
@@ -771,32 +904,79 @@ export async function getAllDisciplineIssues(
     }
 
     // Filter by date range
-    if (filterOptions?.start_date && filterOptions?.end_date) {
-        processedFilters.created_at = {
-            gte: new Date(filterOptions.start_date as string),
-            lte: new Date(filterOptions.end_date as string)
+    // Either bound may be given on its own (the Discipline Issues register
+    // lets the user fill just "From" or just "To"). Previously a lone bound
+    // was left in processedFilters and handed to Prisma as an unknown
+    // `start_date`/`end_date` column -> 500. The end date is inclusive of the
+    // whole day (a bare YYYY-MM-DD parses to midnight).
+    if (filterOptions?.start_date || filterOptions?.end_date) {
+        const range: any = {};
+        if (filterOptions?.start_date) {
+            const start = new Date(filterOptions.start_date as string);
+            if (!isNaN(start.getTime())) range.gte = start;
+        }
+        if (filterOptions?.end_date) {
+            const end = new Date(filterOptions.end_date as string);
+            if (!isNaN(end.getTime())) {
+                if (/^\d{4}-\d{2}-\d{2}$/.test(String(filterOptions.end_date))) {
+                    end.setUTCHours(23, 59, 59, 999);
+                }
+                range.lte = end;
+            }
+        }
+        if (Object.keys(range).length > 0) processedFilters.created_at = range;
+    }
+    delete processedFilters.start_date;
+    delete processedFilters.end_date;
+
+    // Scope the register to the selected/current academic year (the overview
+    // tiles that drill into this page are year-scoped too). A student_id
+    // filter already resolved to that year's enrollment above.
+    if (yearId && !filterOptions?.student_id) {
+        processedFilters.enrollment = {
+            ...(processedFilters.enrollment || {}),
+            academic_year_id: yearId,
         };
-        delete processedFilters.start_date;
-        delete processedFilters.end_date;
+    }
+
+    // Exclude withdrawn students from general/roster-style issue listings
+    // (this is what the Discipline Issues register and the DM attendance
+    // page browse). A student_id filter is a deliberate exception -- it
+    // resolves to one specific enrollment/student above, i.e. an admin
+    // explicitly asked for that student's history, which should show
+    // regardless of status (matches getDisciplineHistory's behavior).
+    if (!filterOptions?.student_id) {
+        processedFilters.enrollment = {
+            ...(processedFilters.enrollment || {}),
+            student: {
+                ...(processedFilters.enrollment?.student || {}),
+                status: { not: 'WITHDRAWN' },
+            },
+        };
     }
 
     // Include relations
     const include: any = {};
 
     // Include staff who assigned the issue
-    if (filterOptions?.includeAssignedBy === 'true') {
-        include.assigned_by = true;
-        delete processedFilters.includeAssignedBy;
+    // NOTE: filterOptions keys are snake_case (see allowedFilters in the controller,
+    // which is what extractPaginationAndFilters keys them by) -- these previously
+    // checked the camelCase name, which never matched, so none of these three
+    // includes ever actually fired and callers had to N+1 fetch enrollment details.
+    // Only id/name/matricule -- `true` returned the whole User row
+    // (password hash included) to the browser.
+    const staffSelect = { select: { id: true, name: true, matricule: true } };
+    if (filterOptions?.include_assigned_by === 'true') {
+        include.assigned_by = staffSelect;
     }
 
     // Include staff who reviewed the issue
-    if (filterOptions?.includeReviewedBy === 'true') {
-        include.reviewed_by = true;
-        delete processedFilters.includeReviewedBy;
+    if (filterOptions?.include_reviewed_by === 'true') {
+        include.reviewed_by = staffSelect;
     }
 
     // Include student information
-    if (filterOptions?.includeStudent === 'true') {
+    if (filterOptions?.include_student === 'true') {
         include.enrollment = {
             include: {
                 student: true,
@@ -807,8 +987,12 @@ export async function getAllDisciplineIssues(
                 }
             }
         };
-        delete processedFilters.includeStudent;
     }
+    // Never let the include_* flags reach Prisma's `where` -- a value other
+    // than 'true' (e.g. 'false') used to stay in the filters and 500.
+    delete processedFilters.include_assigned_by;
+    delete processedFilters.include_reviewed_by;
+    delete processedFilters.include_student;
 
     return paginate<DisciplineIssue>(
         prisma.disciplineIssue,
@@ -862,6 +1046,129 @@ export async function getDisciplineHistory(
 }
 
 // =====================================================================
+// Student profile "Discipline Overview" -- one card per category, each
+// carrying a count plus a short recent-items list so a click can show more
+// without a second round trip for the common case (last ~10 is normally
+// enough; a category with more can still be drilled into from its own page).
+// =====================================================================
+
+const RECENT_ITEMS_LIMIT = 10;
+
+export async function getStudentDisciplineOverview(
+    studentId: number,
+    academicYearId?: number
+): Promise<any> {
+    const enrollmentWhere = {
+        student_id: studentId,
+        ...(academicYearId && { academic_year_id: academicYearId }),
+    };
+
+    const [
+        absenceCounts,
+        recentAbsences,
+        latenessCount,
+        recentLateness,
+        issueCount,
+        recentIssues,
+        actionCount,
+        recentActions,
+        warningCount,
+        unresolvedWarningCount,
+        recentWarnings,
+        summonsCount,
+        recentSummons,
+        punishmentCount,
+        recentPunishments,
+        brokenPropertyCount,
+        recentBrokenProperty,
+    ] = await Promise.all([
+        prisma.studentAbsence.groupBy({
+            by: ['is_excused'],
+            where: { absence_type: 'CLASS_ABSENCE', enrollment: enrollmentWhere },
+            _count: { _all: true },
+        }),
+        prisma.studentAbsence.findMany({
+            where: { absence_type: 'CLASS_ABSENCE', enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: {
+                assigned_by: { select: { id: true, name: true } },
+                enrollment: { select: { sub_class: { select: { id: true, name: true, class: { select: { id: true, name: true } } } } } },
+            },
+        }),
+        prisma.studentAbsence.count({ where: { absence_type: 'MORNING_LATENESS', enrollment: enrollmentWhere } }),
+        prisma.studentAbsence.findMany({
+            where: { absence_type: 'MORNING_LATENESS', enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { assigned_by: { select: { id: true, name: true } } },
+        }),
+        prisma.disciplineIssue.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.disciplineIssue.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { assigned_by: { select: { id: true, name: true } } },
+        }),
+        prisma.disciplinaryAction.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.disciplinaryAction.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { decided_by: { select: { id: true, name: true } } },
+        }),
+        prisma.studentWarning.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.studentWarning.count({ where: { enrollment: enrollmentWhere, resolved: false } }),
+        prisma.studentWarning.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { issued_by: { select: { id: true, name: true } } },
+        }),
+        prisma.parentSummons.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.parentSummons.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { created_by: { select: { id: true, name: true } } },
+        }),
+        prisma.saturdayPunishment.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.saturdayPunishment.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { assigned_by: { select: { id: true, name: true } } },
+        }),
+        prisma.brokenProperty.count({ where: { enrollment: enrollmentWhere } }),
+        prisma.brokenProperty.findMany({
+            where: { enrollment: enrollmentWhere },
+            orderBy: { created_at: 'desc' },
+            take: RECENT_ITEMS_LIMIT,
+            include: { reported_by: { select: { id: true, name: true } } },
+        }),
+    ]);
+
+    const excusedCount = absenceCounts.find((r) => r.is_excused === true)?._count._all ?? 0;
+    const unexcusedCount = absenceCounts.find((r) => r.is_excused === false)?._count._all ?? 0;
+
+    return {
+        absences: {
+            total: excusedCount + unexcusedCount,
+            excused: excusedCount,
+            unexcused: unexcusedCount,
+            recent: recentAbsences,
+        },
+        lateness: { total: latenessCount, recent: recentLateness },
+        issues: { total: issueCount, recent: recentIssues },
+        disciplinaryActions: { total: actionCount, recent: recentActions },
+        warnings: { total: warningCount, unresolved: unresolvedWarningCount, recent: recentWarnings },
+        summons: { total: summonsCount, recent: recentSummons },
+        saturdayPunishments: { total: punishmentCount, recent: recentPunishments },
+        brokenProperty: { total: brokenPropertyCount, recent: recentBrokenProperty },
+    };
+}
+
+// =====================================================================
 // Unified roll call (PRESENT / LATE / ABSENT)
 // =====================================================================
 
@@ -909,7 +1216,7 @@ export async function getDailyRollCall(subClassId: number, date: string, academi
     const dayOfWeek = DAY_OF_WEEK_FROM_INDEX[target.getDay()];
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { sub_class_id: subClassId, academic_year_id: yearId },
+        where: { sub_class_id: subClassId, academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
         include: { student: true },
         orderBy: { student: { name: 'asc' } },
     });
@@ -974,7 +1281,7 @@ export async function recordDailyRollCall(input: DailyRollCallInput): Promise<{
 
     const enrollmentIds = input.entries.map(e => e.enrollment_id);
     const enrollments = await prisma.enrollment.findMany({
-        where: { id: { in: enrollmentIds }, academic_year_id: yearId, sub_class_id: input.sub_class_id },
+        where: { id: { in: enrollmentIds }, academic_year_id: yearId, sub_class_id: input.sub_class_id, student: { status: { not: 'WITHDRAWN' } } },
         select: { id: true },
     });
     const validIds = new Set(enrollments.map(e => e.id));
@@ -1080,7 +1387,7 @@ export async function getPeriodRollCall(teacherPeriodId: number): Promise<Period
     const tp = await loadTeacherPeriod(teacherPeriodId);
 
     const enrollments = await prisma.enrollment.findMany({
-        where: { sub_class_id: tp.sub_class_id, academic_year_id: tp.academic_year_id },
+        where: { sub_class_id: tp.sub_class_id, academic_year_id: tp.academic_year_id, student: { status: { not: 'WITHDRAWN' } } },
         include: { student: true },
         orderBy: { student: { name: 'asc' } },
     });
@@ -1152,6 +1459,7 @@ export async function recordPeriodRollCall(input: PeriodRollCallInput): Promise<
             id: { in: input.entries.map(e => e.enrollment_id) },
             sub_class_id: tp.sub_class_id,
             academic_year_id: tp.academic_year_id,
+            student: { status: { not: 'WITHDRAWN' } },
         },
         select: { id: true },
     });
@@ -1625,14 +1933,19 @@ export async function listStudentWarnings(filters: {
     if (filters.enrollment_id) where.enrollment_id = filters.enrollment_id;
     if (filters.resolved !== undefined) where.resolved = filters.resolved;
 
+    // Exclude withdrawn students from roster-style browsing (sub_class_id,
+    // or no filter at all -- e.g. the "Active Warnings" register). A
+    // student_id (or enrollment_id) is a deliberate exception: an explicit
+    // single-student target should still show regardless of status.
     if (filters.student_id || filters.sub_class_id) {
         where.enrollment = {
             academic_year_id: yearId,
             ...(filters.student_id ? { student_id: filters.student_id } : {}),
             ...(filters.sub_class_id ? { sub_class_id: filters.sub_class_id } : {}),
+            ...(filters.student_id ? {} : { student: { status: { not: 'WITHDRAWN' } } }),
         };
     } else if (!filters.enrollment_id) {
-        where.enrollment = { academic_year_id: yearId };
+        where.enrollment = { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } };
     }
 
     return prisma.studentWarning.findMany({
@@ -1704,14 +2017,17 @@ export async function listParentSummons(filters: {
     if (filters.enrollment_id) where.enrollment_id = filters.enrollment_id;
     if (filters.status) where.status = filters.status;
 
+    // Exclude withdrawn students from roster-style browsing -- see the same
+    // exception rationale in listStudentWarnings above.
     if (filters.student_id || filters.sub_class_id) {
         where.enrollment = {
             academic_year_id: yearId,
             ...(filters.student_id ? { student_id: filters.student_id } : {}),
             ...(filters.sub_class_id ? { sub_class_id: filters.sub_class_id } : {}),
+            ...(filters.student_id ? {} : { student: { status: { not: 'WITHDRAWN' } } }),
         };
     } else if (!filters.enrollment_id) {
-        where.enrollment = { academic_year_id: yearId };
+        where.enrollment = { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } };
     }
 
     return prisma.parentSummons.findMany({
@@ -1782,4 +2098,166 @@ export async function updateParentSummons(
             ...(data.parent_id !== undefined && { parent_id: data.parent_id }),
         },
     });
+}
+
+/**
+ * Aggregate discipline metrics for a role's overview dashboard.
+ *
+ * Ranges: pass `from` + `to` (ISO date, inclusive) for arbitrary windows.
+ * Backward-compat: if only `date` is given, the range is that single day.
+ * With neither, defaults to today. All counts stay scoped to the current
+ * academic year unless `academic_year_id` overrides it.
+ *
+ * Field names still say "today"/"daily" — callers depend on that shape.
+ * When the range is wider than a day, the counts are the totals across it.
+ */
+export async function getDailyOverview(opts: {
+    academic_year_id?: number;
+    date?: string;
+    from?: string;
+    to?: string;
+    slot?: AbsenceSlot;
+    poi_threshold?: number;
+    poi_limit?: number;
+} = {}) {
+    const yearId = opts.academic_year_id ?? await getAcademicYearId();
+    if (!yearId) {
+        return {
+            date: opts.date ?? null,
+            from: opts.from ?? null,
+            to: opts.to ?? null,
+            academic_year_id: null,
+            lateTodayCount: 0,
+            dailyAbsencesCount: 0,
+            disciplinaryActionsTodayCount: 0,
+            personsOfInterest: [],
+            dailyBreakdown: [],
+        };
+    }
+
+    const slotFilter = opts.slot
+        ? { dm_roll_call_entries: { some: { dm_roll_call: { slot: opts.slot } } } }
+        : {};
+
+    // Resolve the [dayStart, dayEnd] window from whichever of from/to/date the caller provided.
+    const rangeSource: Date = opts.from ? new Date(opts.from) : (opts.date ? new Date(opts.date) : new Date());
+    const rangeEnd: Date = opts.to ? new Date(opts.to) : (opts.date ? new Date(opts.date) : new Date());
+    const dayStart = new Date(rangeSource); dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(rangeEnd); dayEnd.setHours(23, 59, 59, 999);
+
+    const threshold = opts.poi_threshold && opts.poi_threshold > 0 ? opts.poi_threshold : 5;
+    const limit = opts.poi_limit && opts.poi_limit > 0 ? opts.poi_limit : 10;
+
+    // Late arrivals today (MORNING_LATENESS)
+    const lateTodayCountPromise = prisma.studentAbsence.count({
+        where: {
+            absence_type: 'MORNING_LATENESS',
+            created_at: { gte: dayStart, lte: dayEnd },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
+            ...slotFilter,
+        },
+    });
+
+    // Class absences today (CLASS_ABSENCE, unexcused)
+    const dailyAbsencesPromise = prisma.studentAbsence.count({
+        where: {
+            absence_type: 'CLASS_ABSENCE',
+            created_at: { gte: dayStart, lte: dayEnd },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
+            ...slotFilter,
+        },
+    });
+
+    // Per-day counts across the whole range, for the "absences per day"
+    // breakdown. Bucketed in JS rather than a SQL date_trunc so this stays
+    // portable across the Postgres locale quirks already hit elsewhere in
+    // this codebase (see database-syncer.ts) -- a term's worth of absence
+    // rows is small enough that this costs nothing measurable.
+    const breakdownRowsPromise = prisma.studentAbsence.findMany({
+        where: {
+            absence_type: 'CLASS_ABSENCE',
+            created_at: { gte: dayStart, lte: dayEnd },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
+            ...slotFilter,
+        },
+        select: { created_at: true },
+    });
+
+    // Disciplinary actions logged today (regardless of approval state)
+    const actionsTodayPromise = prisma.disciplinaryAction.count({
+        where: {
+            created_at: { gte: dayStart, lte: dayEnd },
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
+        },
+    });
+
+    // Persons of Interest: enrollments with the most unexcused CLASS_ABSENCE this year, above threshold
+    const poiRaw = await prisma.studentAbsence.groupBy({
+        by: ['enrollment_id'],
+        where: {
+            absence_type: 'CLASS_ABSENCE',
+            is_excused: false,
+            enrollment: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
+            ...slotFilter,
+        },
+        _count: { enrollment_id: true },
+        orderBy: { _count: { enrollment_id: 'desc' } },
+        take: limit * 3, // over-fetch so we can filter by threshold cleanly
+    });
+
+    const poiFiltered = poiRaw.filter((r) => r._count.enrollment_id >= threshold).slice(0, limit);
+    let personsOfInterest: any[] = [];
+    if (poiFiltered.length > 0) {
+        const enrollments = await prisma.enrollment.findMany({
+            where: { id: { in: poiFiltered.map((r) => r.enrollment_id) } },
+            include: {
+                student: { select: { id: true, name: true, matricule: true } },
+                sub_class: { select: { id: true, name: true, class: { select: { id: true, name: true } } } },
+            },
+        });
+        const byId = new Map(enrollments.map((e) => [e.id, e]));
+        personsOfInterest = poiFiltered.map((r) => {
+            const e = byId.get(r.enrollment_id);
+            return {
+                enrollment_id: r.enrollment_id,
+                absence_count: r._count.enrollment_id,
+                student: e?.student ?? null,
+                sub_class: e?.sub_class
+                    ? { id: e.sub_class.id, name: e.sub_class.name, class: e.sub_class.class }
+                    : null,
+            };
+        });
+    }
+
+    const [lateTodayCount, dailyAbsencesCount, disciplinaryActionsTodayCount, breakdownRows] = await Promise.all([
+        lateTodayCountPromise,
+        dailyAbsencesPromise,
+        actionsTodayPromise,
+        breakdownRowsPromise,
+    ]);
+
+    const countsByDay = new Map<string, number>();
+    for (const row of breakdownRows) {
+        const day = row.created_at.toISOString().slice(0, 10);
+        countsByDay.set(day, (countsByDay.get(day) ?? 0) + 1);
+    }
+    // Every day in the range gets an entry (0 included) so the frontend can
+    // render a continuous list/chart without having to fill gaps itself.
+    const dailyBreakdown: Array<{ date: string; count: number }> = [];
+    for (const d = new Date(dayStart); d <= dayEnd; d.setDate(d.getDate() + 1)) {
+        const key = d.toISOString().slice(0, 10);
+        dailyBreakdown.push({ date: key, count: countsByDay.get(key) ?? 0 });
+    }
+
+    return {
+        date: dayStart.toISOString().slice(0, 10),
+        from: dayStart.toISOString().slice(0, 10),
+        to: dayEnd.toISOString().slice(0, 10),
+        academic_year_id: yearId,
+        lateTodayCount,
+        dailyAbsencesCount,
+        disciplinaryActionsTodayCount,
+        personsOfInterest,
+        dailyBreakdown,
+    };
 }

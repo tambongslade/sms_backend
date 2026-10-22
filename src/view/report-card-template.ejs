@@ -1,0 +1,196 @@
+<%
+/*
+ * Sequence / term / annual report card. One <section class="card"> per student.
+ * Data is produced by reportCardService.buildCards() from resultsService, the
+ * same numbers the Results screen shows.
+ *   NC = no mark: printed as "NC" and left out of the average.
+ */
+const f2 = v => (v === null || v === undefined) ? 'NC' : Number(v).toFixed(2);
+%>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title><%= documentTitle %></title>
+<style>
+    @page { size: A4 portrait; margin: 8mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Helvetica', 'Arial', sans-serif; color: #111827; margin: 0; font-size: 8pt;
+           -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .card { page-break-after: always; }
+    .card:last-child { page-break-after: auto; }
+    .letterhead { display: flex; align-items: center; justify-content: space-between;
+                  border-bottom: 1.5px solid #000; padding-bottom: 3px; margin-bottom: 3px; font-size: 6.5pt; }
+    .letterhead .col { width: 36%; text-align: center; line-height: 1.2; }
+    .letterhead .col p { margin: 0; }
+    .letterhead .bold { font-weight: 700; }
+    .letterhead .logo { width: 28%; text-align: center; }
+    .letterhead .logo img { max-height: 46px; max-width: 100%; }
+    .school { text-align: center; margin: 2px 0 4px; }
+    .school h2 { margin: 0; font-size: 12pt; font-weight: 800; }
+    .school .tag { font-style: italic; font-size: 7.5pt; color: #374151; }
+    .school .contact { font-size: 7pt; color: #4b5563; }
+    h1.title { text-align: center; margin: 4px 0 6px; font-size: 12pt; letter-spacing: 1px; text-transform: uppercase; }
+    h1.title small { display: block; font-size: 8.5pt; letter-spacing: 0; text-transform: none; font-weight: 600; }
+    .info { display: flex; gap: 8px; margin-bottom: 6px; }
+    .info .who { flex: 1; }
+    .info .who .name { font-size: 11pt; font-weight: 800; margin-bottom: 2px; }
+    .info table { border-collapse: collapse; width: 100%; }
+    .info td { padding: 1px 3px; font-size: 8pt; vertical-align: top; }
+    .info td.l { color: #4b5563; white-space: nowrap; width: 1%; }
+    .info td.v { font-weight: 700; }
+    .photo { width: 78px; height: 92px; border: 1px solid #9ca3af; object-fit: cover; background: #f3f4f6; }
+    table.marks { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+    table.marks th, table.marks td { border: 1px solid #6b7280; padding: 2px 3px; text-align: center; }
+    table.marks th { background: #e5e7eb; font-size: 7pt; text-transform: uppercase; }
+    table.marks td.subj { text-align: left; }
+    table.marks td.subj .t { color: #4b5563; font-size: 6.5pt; }
+    table.marks tr.cat td { background: #f3f4f6; font-weight: 700; text-align: left; text-transform: uppercase; font-size: 7pt; }
+    table.marks tr.sum td { background: #fef9c3; font-weight: 700; }
+    table.marks td.nc { color: #b91c1c; font-weight: 700; }
+    table.marks td.fail { color: #b91c1c; }
+    .summary { display: flex; gap: 6px; margin: 4px 0; }
+    .box { border: 1px solid #6b7280; padding: 4px 6px; flex: 1; }
+    .box h3 { margin: 0 0 3px; font-size: 7.5pt; text-transform: uppercase; color: #374151; }
+    .box table { width: 100%; border-collapse: collapse; }
+    .box td { padding: 1px 2px; }
+    .box td.v { text-align: right; font-weight: 700; }
+    .big { font-size: 11pt; font-weight: 800; white-space: nowrap; }
+    .decision { font-size: 11pt; font-weight: 800; text-align: center; padding: 4px; border: 2px solid #111827; margin: 4px 0; }
+    .sign { display: flex; gap: 6px; margin-top: 6px; }
+    .sign .s { flex: 1; border: 1px solid #6b7280; height: 62px; padding: 3px 5px; font-weight: 700; font-size: 7.5pt; }
+    .sign .s .n { font-weight: 400; color: #374151; }
+    .note { font-size: 6.5pt; color: #4b5563; margin-top: 4px; }
+</style>
+</head>
+<body>
+<% cards.forEach(function(card) { %>
+<section class="card">
+    <div class="letterhead">
+        <div class="col">
+            <p class="bold">REPUBLIC OF CAMEROON</p><p>Peace - Work - Fatherland</p>
+            <p>MINISTRY OF SECONDARY EDUCATION</p>
+        </div>
+        <div class="logo"><% if (school.logo) { %><img src="<%= school.logo %>" alt=""><% } %></div>
+        <div class="col">
+            <p class="bold">REPUBLIQUE DU CAMEROUN</p><p>Paix - Travail - Patrie</p>
+            <p>MINISTERE DES ENSEIGNEMENTS SECONDAIRES</p>
+        </div>
+    </div>
+    <div class="school">
+        <h2><%= school.name %></h2>
+        <div class="tag"><%= school.tagline %></div>
+        <div class="contact"><%= school.address %> &middot; Tel: <%= school.phone %></div>
+    </div>
+
+    <h1 class="title"><%= card.title %><small><%= card.subtitle %></small></h1>
+
+    <div class="info">
+        <div class="who">
+            <div class="name"><%= card.student.name %></div>
+            <table>
+                <tr><td class="l">Registration No.</td><td class="v"><%= card.student.matricule %></td>
+                    <td class="l">Class</td><td class="v"><%= card.classInfo.name %></td></tr>
+                <tr><td class="l">Date / place of birth</td><td class="v"><%= card.student.dateOfBirth %><%= card.student.placeOfBirth ? ' - ' + card.student.placeOfBirth : '' %></td>
+                    <td class="l">Enrolled</td><td class="v"><%= card.classInfo.enrolled %></td></tr>
+                <tr><td class="l">Gender</td><td class="v"><%= card.student.gender %></td>
+                    <td class="l">Class master</td><td class="v"><%= card.classInfo.classMaster || '' %></td></tr>
+                <tr><td class="l">Repeater</td><td class="v"><%= card.student.repeater ? 'Yes' : 'No' %></td>
+                    <td class="l">Academic year</td><td class="v"><%= card.academicYear %></td></tr>
+            </table>
+        </div>
+        <img class="photo" src="<%= card.student.photo %>" alt="">
+    </div>
+
+    <table class="marks">
+        <thead>
+            <tr>
+                <th style="text-align:left">Subject / Teacher</th>
+                <% card.partLabels.forEach(function(l) { %><th><%= l %></th><% }) %>
+                <th><%= card.markLabel %></th>
+                <th>Coef</th>
+                <th>Mark x Coef</th>
+                <th>Rank</th>
+                <th>Grade</th>
+                <th>Min</th>
+                <th>Avg</th>
+                <th>Max</th>
+            </tr>
+        </thead>
+        <tbody>
+        <% card.categories.forEach(function(cat) { %>
+            <tr class="cat"><td colspan="<%= 9 + card.partLabels.length %>"><%= cat.name %></td></tr>
+            <% cat.subjects.forEach(function(s) { %>
+            <tr>
+                <td class="subj"><div><strong><%= s.name %></strong></div><div class="t"><%= s.teacher || '' %></div></td>
+                <% s.parts.forEach(function(p) { %><td class="<%= p === null ? 'nc' : '' %>"><%= f2(p) %></td><% }) %>
+                <td class="<%= s.score === null ? 'nc' : (s.score < passMark ? 'fail' : '') %>"><%= f2(s.score) %></td>
+                <td><%= s.coefficient %></td>
+                <td><%= s.score === null ? '-' : f2(s.weighted) %></td>
+                <td><%= s.rankLabel %></td>
+                <td><%= s.grade %></td>
+                <td><%= f2(s.min) %></td>
+                <td><%= f2(s.avg) %></td>
+                <td><%= f2(s.max) %></td>
+            </tr>
+            <% }) %>
+            <tr class="sum">
+                <td class="subj">Sub-total</td>
+                <% card.partLabels.forEach(function() { %><td></td><% }) %>
+                <td><%= f2(cat.average) %></td>
+                <td><%= cat.coefficient %></td>
+                <td><%= f2(cat.weighted) %></td>
+                <td colspan="5"></td>
+            </tr>
+        <% }) %>
+        </tbody>
+    </table>
+
+    <div class="summary">
+        <div class="box">
+            <h3>Student</h3>
+            <table>
+                <tr><td>Total coefficient (marked subjects)</td><td class="v"><%= card.totals.coefficient %></td></tr>
+                <tr><td>Total mark x coef</td><td class="v"><%= f2(card.totals.weighted) %></td></tr>
+                <tr><td>Subjects marked / passed</td><td class="v"><%= card.totals.subjectsMarked %> / <%= card.totals.subjectsPassed %></td></tr>
+                <tr><td>Average</td><td class="v big"><%= f2(card.totals.average) %> / 20</td></tr>
+                <tr><td>Rank</td><td class="v"><%= card.totals.rankLabel %><%= card.totals.rank !== null ? ' / ' + card.classStats.ranked : '' %></td></tr>
+                <tr><td>Appreciation</td><td class="v"><%= card.totals.appreciation %></td></tr>
+            </table>
+        </div>
+        <% if (card.termAverages && card.termAverages.length) { %>
+        <div class="box">
+            <h3>Term averages</h3>
+            <table>
+                <% card.termAverages.forEach(function(t) { %>
+                <tr><td><%= t.name %></td><td class="v"><%= f2(t.average) %><%= t.rankLabel !== 'NC' ? ' (' + t.rankLabel + ')' : '' %></td></tr>
+                <% }) %>
+                <tr><td><strong>Annual average</strong></td><td class="v"><%= f2(card.totals.average) %></td></tr>
+            </table>
+        </div>
+        <% } %>
+        <div class="box">
+            <h3>Class</h3>
+            <table>
+                <tr><td>Class average</td><td class="v"><%= f2(card.classStats.classAverage) %></td></tr>
+                <tr><td>Highest / lowest</td><td class="v"><%= f2(card.classStats.highest) %> / <%= f2(card.classStats.lowest) %></td></tr>
+                <tr><td>Success rate</td><td class="v"><%= card.classStats.successRate === null ? 'NC' : card.classStats.successRate.toFixed(1) + '%' %></td></tr>
+                <tr><td>Students ranked</td><td class="v"><%= card.classStats.ranked %> / <%= card.classStats.enrolled %></td></tr>
+            </table>
+        </div>
+    </div>
+
+    <% if (card.decision) { %>
+    <div class="decision">Council decision: <%= card.decision %></div>
+    <% } %>
+
+    <div class="sign">
+        <div class="s">Class master's remarks<div class="n"><%= card.remark %></div></div>
+        <div class="s">Parent's signature</div>
+        <div class="s">The Principal</div>
+    </div>
+    <div class="note">NC = not classified (no mark recorded). Subjects marked NC are not counted in the average. Generated <%= generatedAt %>.</div>
+</section>
+<% }) %>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import prisma from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
+import { countActiveStudents } from '../../../utils/schoolCounts';
 
 // Types for Manager Operations
 export interface ManagerDashboard {
@@ -172,9 +173,7 @@ export async function getManagerDashboard(academicYearId?: number): Promise<Mana
                     created_at: { gte: oneWeekAgo }
                 }
             }),
-            prisma.enrollment.count({
-                where: { academic_year_id: currentYear.id }
-            })
+            countActiveStudents(currentYear.id)
         ]);
 
         // Calculate staff metrics

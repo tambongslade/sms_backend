@@ -139,43 +139,47 @@ export function authAuditMiddleware(req: Request, res: Response, next: NextFunct
   const originalJson = res.json;
 
   res.json = function (data: any) {
-    // Log authentication attempts
-    const action = req.url.includes('login') ? 'LOGIN_ATTEMPT' :
+    const action = req.url.includes('change-password') ? 'CHANGE_PASSWORD' :
+      req.url.includes('login') ? 'LOGIN_ATTEMPT' :
       req.url.includes('logout') ? 'LOGOUT' : 'AUTH_ACTION';
 
-    if (data.success && data.data && data.data.user) {
-      // Successful authentication
-      autoLog(
-        data.data.user.id,
-        action,
-        'User',
-        data.data.user.id,
-        {
-          success: true,
-          matricule: data.data.user.matricule,
-          role: data.data.user.role
-        },
-        req
-      ).catch(error => {
-        console.error('Auth audit logging failed:', error);
-      });
-    } else if (!data.success) {
-      // Failed authentication - log as system action
-      autoLog(
-        0, // System user
-        'FAILED_' + action,
-        'User',
-        0,
-        {
-          success: false,
-          attemptedMatricule: req.body.matricule,
-          error: data.error
-        },
-        req
-      ).catch(error => {
-        console.error('Failed auth audit logging failed:', error);
-      });
+    if (data.success) {
+      if (data.data && data.data.user) {
+        // Login/register — user object is in response payload
+        autoLog(
+          data.data.user.id,
+          action,
+          'User',
+          data.data.user.id,
+          {
+            success: true,
+            matricule: data.data.user.matricule,
+            role: data.data.user.role
+          },
+          req
+        ).catch(error => {
+          console.error('Auth audit logging failed:', error);
+        });
+      } else {
+        // Change-password / logout: no user in payload — fall back to the authenticated caller.
+        const authedUserId = (req as any).user?.id;
+        if (authedUserId) {
+          autoLog(
+            authedUserId,
+            action,
+            'User',
+            authedUserId,
+            { success: true },
+            req
+          ).catch(error => {
+            console.error('Auth audit logging failed:', error);
+          });
+        }
+      }
     }
+    // Failed authentication is intentionally not written to AuditLog:
+    // user_id is a non-null FK to User.id, so logging with 0/unknown violates
+    // the constraint and spams the error log on every bad login attempt.
 
     return originalJson.call(this, data);
   };

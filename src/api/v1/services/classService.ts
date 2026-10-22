@@ -43,7 +43,8 @@ export async function getAllClasses(
                     sub_class_id: {
                         in: sub_classIds
                     },
-                    ...(academicYearId && { academic_year_id: academicYearId })
+                    ...(academicYearId && { academic_year_id: academicYearId }),
+                    student: { status: { not: 'WITHDRAWN' } }
                 }
             });
 
@@ -106,7 +107,8 @@ export async function getAllSubclasses(
             const studentCount = await prisma.enrollment.count({
                 where: {
                     sub_class_id: sub_class.id,
-                    ...(academicYearId && { academic_year_id: academicYearId })
+                    ...(academicYearId && { academic_year_id: academicYearId }),
+                    student: { status: { not: 'WITHDRAWN' } }
                 }
             });
 
@@ -155,7 +157,8 @@ export async function getAllClassesWithSubclasses(): Promise<any[]> {
                     const studentCount = await prisma.enrollment.count({
                         where: {
                             sub_class_id: sub_class.id,
-                            ...(academicYearId && { academic_year_id: academicYearId })
+                            ...(academicYearId && { academic_year_id: academicYearId }),
+                            student: { status: { not: 'WITHDRAWN' } }
                         }
                     });
                     return {
@@ -221,7 +224,8 @@ export async function getClassById(id: number): Promise<any> {
             const studentCount = await prisma.enrollment.count({
                 where: {
                     sub_class_id: sub_class.id,
-                    ...(academicYearId && { academic_year_id: academicYearId })
+                    ...(academicYearId && { academic_year_id: academicYearId }),
+                    student: { status: { not: 'WITHDRAWN' } }
                 }
             });
             return {

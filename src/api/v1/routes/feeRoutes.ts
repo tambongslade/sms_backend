@@ -30,6 +30,17 @@ router.get('/refunds/:id', authenticate, authorize(VIEW_REFUNDS), feeController.
 // Registered before /:id so the literal "payments" segment isn't captured as :id
 router.put('/payments/:paymentId', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR']), feeController.updatePayment);
 
+// GET /fees/outstanding-summary - Shared outstanding totals + reconciliation line (same rule as every finance screen)
+router.get('/outstanding-summary', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR', 'SECRETARY', 'FEE_AUDITOR']), feeController.getOutstandingSummary);
+
+// GET /fees/payment-methods - Accepted payment methods with display labels (for dropdowns)
+router.get('/payment-methods', authenticate, feeController.getPaymentMethods);
+
+// GET /fees/payments/:paymentId/receipt[/pdf] - Receipt data / printable PDF (reprints from history)
+const RECEIPT_ROLES = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR', 'SECRETARY', 'FEE_AUDITOR'];
+router.get('/payments/:paymentId/receipt', authenticate, authorize(RECEIPT_ROLES), feeController.getPaymentReceipt);
+router.get('/payments/:paymentId/receipt/pdf', authenticate, authorize(RECEIPT_ROLES), feeController.getPaymentReceiptPdf);
+
 // GET /fees/:id - Get a specific fee by ID
 router.get('/:id', authenticate, feeController.getFeeById);
 
@@ -69,5 +80,9 @@ router.get('/:feeId/payments', authenticate, feeController.getFeePayments);
 // a PaymentTransaction is created automatically. This endpoint remains for
 // walk-in cash payments that the Bursar records directly at the desk.
 router.post('/:feeId/payments', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR']), feeController.recordPayment);
+
+// PUT /fees/:feeId/payments/:paymentId - Edit a payment (nested form used by the fee-management UI).
+// Same rules as PUT /fees/payments/:paymentId; additionally checks the payment belongs to :feeId.
+router.put('/:feeId/payments/:paymentId', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR']), feeController.updatePayment);
 
 export default router;

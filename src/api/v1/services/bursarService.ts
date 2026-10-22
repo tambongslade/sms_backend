@@ -5,6 +5,12 @@ import { StudentStatus, Gender, Role, Relationship } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import { updateNewStudentStatus } from '../../../utils/studentStatus';
 import { normalizeRelationship } from './studentService';
+import ejs from 'ejs';
+import fs from 'fs';
+import path from 'path';
+import * as PuppeteerManager from '../../../utils/puppeteerManager';
+import { ensureSchoolFeeForEnrollment } from './feeService';
+import { getOutstandingSummary, getPaymentMethodTotals, ACTIVE_FEE_ROW_WHERE, summarizeBalances } from './feeOutstandingService';
 
 // Types for bursar operations
 export interface ParentContactInput {
@@ -273,19 +279,11 @@ export async function createStudentWithParent(data: StudentWithParentData): Prom
                 }
             });
 
-            // 4. Create initial fee record if class has base fee
-            let feeRecord = null;
-            if (classExists.base_fee && classExists.base_fee > 0) {
-                feeRecord = await tx.schoolFees.create({
-                    data: {
-                        enrollment_id: enrollment.id,
-                        amount_expected: classExists.base_fee,
-                        amount_paid: 0,
-                        due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-                        academic_year_id: yearId
-                    }
-                });
-            }
+            // 4. The SchoolFees row is created after commit by
+            // ensureSchoolFeeForEnrollment (shared formula: base + misc + new/old
+            // fee, due date from the term fee deadlines). It used to be created
+            // here with base_fee only and a "today + 30 days" due date.
+            let feeRecord: { id: number; amount_expected: number } | null = null;
 
             return {
                 student: {
@@ -314,6 +312,13 @@ export async function createStudentWithParent(data: StudentWithParentData): Prom
 
         // Update is_new_student field based on enrollment history (after transaction)
         await updateNewStudentStatus(result.student.id);
+
+        try {
+            const { fee } = await ensureSchoolFeeForEnrollment(result.enrollment.id);
+            result.fee_record = { id: fee.id, amount_expected: fee.amount_expected };
+        } catch (feeErr) {
+            console.error(`Failed to create SchoolFees for enrollment ${result.enrollment.id}:`, feeErr);
+        }
 
         return result;
     } catch (error) {
@@ -598,111 +603,92 @@ export async function getBursarDashboard(academicYearId?: number): Promise<any> 
             throw new Error('No current academic year found and none provided.');
         }
 
+        const now = new Date();
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        // Students of THIS year (not withdrawn) — the population every card uses.
+        const activeStudentWhere = {
+            status: { not: 'WITHDRAWN' as const },
+            enrollments: { some: { academic_year_id: yearId } },
+        };
+
         const [
-            owingFees,
+            outstanding,
+            paymentMethods,
+            transactionsThisMonth,
             recentPayments,
             newStudents,
             studentsWithParents,
             studentsWithoutParents
         ] = await Promise.all([
-            // Outstanding-fee rows for this year (one row per enrollment): used to
-            // compute number of students owing and total amount owed.
-            prisma.schoolFees.findMany({
-                where: { academic_year_id: yearId },
-                select: {
-                    enrollment_id: true,
-                    amount_expected: true,
-                    amount_paid: true
-                }
+            // Shared outstanding rule (same numbers as Defaulters / Fee Statistics / Reports).
+            getOutstandingSummary(yearId),
+
+            // Real per-method totals for the year (all methods incl. Cash / mobile money).
+            getPaymentMethodTotals(yearId),
+
+            prisma.paymentTransaction.count({
+                where: { academic_year_id: yearId, payment_date: { gte: monthStart } },
             }),
 
-            // Recent payments (kept for recentTransactions/recentRegistrations)
-            prisma.schoolFees.findMany({
-                where: {
-                    academic_year_id: yearId,
-                    amount_paid: { gt: 0 }
-                },
+            // Most recent payment transactions (not fee rows) for the activity list.
+            prisma.paymentTransaction.findMany({
+                where: { academic_year_id: yearId },
+                orderBy: [{ created_at: 'desc' }],
+                take: 5,
                 include: {
                     enrollment: {
                         include: {
-                            student: {
-                                include: {
-                                    parents: {
-                                        include: {
-                                            parent: true
-                                        }
-                                    }
-                                }
-                            },
-                            class: true // Include the class directly from enrollment
-                        }
-                    }
+                            student: { include: { parents: { include: { parent: true } } } },
+                            class: true,
+                            sub_class: { include: { class: true } },
+                        },
+                    },
                 },
-                orderBy: { updated_at: 'desc' },
-                take: 5
             }),
 
-            // New students this month
-            prisma.student.count({
+            // New students this month = enrolments of this academic year whose
+            // enrolment date falls in the current month (was: every Student row
+            // created this month, i.e. the whole school after a bulk import).
+            prisma.enrollment.count({
                 where: {
-                    created_at: {
-                        gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
-                    }
-                }
+                    academic_year_id: yearId,
+                    enrollment_date: { gte: monthStart },
+                    student: { status: { not: 'WITHDRAWN' } },
+                },
             }),
 
-            // Students with parents
-            prisma.student.count({
-                where: {
-                    parents: {
-                        some: {}
-                    }
-                }
-            }),
-
-            // Students without parents
-            prisma.student.count({
-                where: {
-                    parents: {
-                        none: {}
-                    }
-                }
-            })
+            prisma.student.count({ where: { ...activeStudentWhere, parents: { some: {} } } }),
+            prisma.student.count({ where: { ...activeStudentWhere, parents: { none: {} } } }),
         ]);
 
-        // Aggregate outstanding balances per enrollment (one student = one enrollment per year).
-        const owingByEnrollment = new Map<number, number>();
-        for (const row of owingFees) {
-            const balance = (row.amount_expected || 0) - (row.amount_paid || 0);
-            if (balance > 0) {
-                owingByEnrollment.set(
-                    row.enrollment_id,
-                    (owingByEnrollment.get(row.enrollment_id) || 0) + balance
-                );
-            }
-        }
-        const studentsOwingCount = owingByEnrollment.size;
-        const totalAmountOwed = Array.from(owingByEnrollment.values())
-            .reduce((sum, v) => sum + v, 0);
-
         return {
-            studentsOwingCount,
-            totalAmountOwed,
-            recentTransactions: recentPayments.length,
+            studentsOwingCount: outstanding.students_owing,
+            totalAmountOwed: outstanding.total_outstanding,
+            totalExpected: outstanding.total_expected,
+            totalCollected: outstanding.total_collected,
+            totalOverpayments: outstanding.total_overpayments,
+            studentCount: outstanding.student_count,
+            enrollmentsWithoutFeeRecord: outstanding.enrollments_without_fee_record,
+            reconciliation: outstanding.reconciliation,
+            recentTransactions: transactionsThisMonth,
             newStudentsThisMonth: newStudents,
             studentsWithParents,
             studentsWithoutParents,
-            paymentMethods: [
-                { method: 'EXPRESS_UNION', count: 0, totalAmount: 0 },
-                { method: 'CCA', count: 0, totalAmount: 0 },
-                { method: 'F3DC', count: 0, totalAmount: 0 },
-                { method: 'AFRILAND_FIRST_BANK', count: 0, totalAmount: 0 }
-            ],
-            recentRegistrations: recentPayments.slice(0, 5).map(payment => ({
+            paymentMethods,
+            recentPayments: recentPayments.map(p => ({
+                id: p.id,
+                receiptNumber: p.receipt_number,
+                amount: p.amount,
+                paymentMethod: p.payment_method,
+                paymentDate: p.payment_date,
+                studentName: p.enrollment.student.name,
+                className: p.enrollment.sub_class?.name || p.enrollment.class?.name || 'N/A',
+            })),
+            recentRegistrations: recentPayments.map(payment => ({
                 studentName: payment.enrollment.student.name,
                 parentName: payment.enrollment.student.parents[0]?.parent?.name || 'N/A', // Get the first parent's name
                 registrationDate: payment.enrollment.created_at,
-                className: payment.enrollment.class?.name || 'N/A'
+                className: payment.enrollment.sub_class?.class?.name || payment.enrollment.class?.name || 'N/A'
             }))
         };
     } catch (error) {
@@ -725,6 +711,11 @@ export interface DefaultersReportOptions {
     classId?: number;
     subClassId?: number;
     includeDetails?: boolean;
+    // Filters the list to students who still owe something specifically on
+    // this installment. Installments are derived, not stored: payments fill
+    // them FIFO (1st term's amount first, then 2nd, then 3rd/remainder) --
+    // same rule superManagerOverviewService.ts uses for its collection chart.
+    installment?: 'first' | 'second' | 'third';
 }
 
 export async function getDefaultersReport(options: DefaultersReportOptions = {}): Promise<any> {
@@ -733,17 +724,21 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
         throw new Error('No current academic year found and none provided.');
     }
 
-    const enrollmentFilter: any = {};
-    if (options.classId) enrollmentFilter.class_id = options.classId;
-    if (options.subClassId) enrollmentFilter.sub_class_id = options.subClassId;
+    // Same population and class rule as feeOutstandingService (M8): withdrawn
+    // students excluded; class = placed sub-class's class, else registered class.
+    const feeWhere: any = { AND: [{ academic_year_id: yearId }, ACTIVE_FEE_ROW_WHERE] };
+    if (options.classId) {
+        feeWhere.AND.push({
+            OR: [
+                { enrollment: { sub_class: { class_id: options.classId } } },
+                { enrollment: { sub_class_id: null, class_id: options.classId } },
+            ],
+        });
+    }
+    if (options.subClassId) feeWhere.AND.push({ enrollment: { sub_class_id: options.subClassId } });
 
     const feeRows = await prisma.schoolFees.findMany({
-        where: {
-            academic_year_id: yearId,
-            ...(Object.keys(enrollmentFilter).length > 0
-                ? { enrollment: { is: enrollmentFilter } }
-                : {})
-        },
+        where: feeWhere,
         select: {
             enrollment_id: true,
             amount_expected: true,
@@ -754,13 +749,19 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
                     id: true,
                     class_id: true,
                     sub_class_id: true,
-                    class: { select: { id: true, name: true } },
+                    class: {
+                        select: {
+                            id: true, name: true,
+                            first_term_fee: true, second_term_fee: true, third_term_fee: true,
+                        }
+                    },
                     sub_class: { select: { id: true, name: true } },
                     student: {
                         select: {
                             id: true,
                             name: true,
                             matricule: true,
+                            is_new_student: true,
                             parents: {
                                 select: {
                                     parent: {
@@ -786,7 +787,12 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
         studentId: number;
         studentName: string;
         matricule: string;
+        isNewStudent: boolean;
         outstanding: number;
+        totalPaid: number;
+        // 1st/2nd/3rd term fee for the enrollment's class -- the schedule
+        // payments get applied against FIFO to derive per-installment owing.
+        schedule: { first: number; second: number; third: number };
         oldestDueDate: Date | null;
         parentPhone?: string;
     }
@@ -800,6 +806,7 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
         const existing = perEnrollment.get(row.enrollment_id);
         if (existing) {
             existing.outstanding += balance;
+            existing.totalPaid += row.amount_paid || 0;
             if (row.due_date && (!existing.oldestDueDate || row.due_date < existing.oldestDueDate)) {
                 existing.oldestDueDate = row.due_date;
             }
@@ -818,7 +825,14 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
             studentId: student?.id ?? 0,
             studentName: student?.name || 'Unknown',
             matricule: student?.matricule || '',
+            isNewStudent: student?.is_new_student ?? true,
             outstanding: balance,
+            totalPaid: row.amount_paid || 0,
+            schedule: {
+                first: enrollment?.class?.first_term_fee || 0,
+                second: enrollment?.class?.second_term_fee || 0,
+                third: enrollment?.class?.third_term_fee || 0,
+            },
             oldestDueDate: row.due_date ?? null,
             parentPhone: firstParent?.whatsapp_number || firstParent?.phone || undefined
         });
@@ -830,14 +844,46 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
 
     const defaulters = Array.from(perEnrollment.values()).filter(d => d.outstanding >= minAmount && d.outstanding > 0);
 
-    // Group by class
+    // Same FIFO rule as superManagerOverviewService.ts's collection chart:
+    // a payment covers the 1st term's fee first, then the 2nd, then the 3rd.
+    // What's left of the class schedule after that is what's still owed on
+    // each installment.
+    const installmentBreakdown = (d: DefaulterAgg) => {
+        const { first, second, third } = d.schedule;
+        const paidToFirst = Math.min(d.totalPaid, first);
+        const paidToSecond = Math.min(Math.max(d.totalPaid - first, 0), second);
+        const paidToThird = Math.min(Math.max(d.totalPaid - first - second, 0), third);
+        return {
+            first: { expected: first, paid: paidToFirst, outstanding: Math.max(first - paidToFirst, 0) },
+            second: { expected: second, paid: paidToSecond, outstanding: Math.max(second - paidToSecond, 0) },
+            third: { expected: third, paid: paidToThird, outstanding: Math.max(third - paidToThird, 0) },
+        };
+    };
+
+    let defaultersForList = defaulters;
+    if (options.installment) {
+        defaultersForList = defaulters.filter(
+            d => installmentBreakdown(d)[options.installment!].outstanding > 0
+        );
+    }
+
+    // Grouped from whatever's actually in the (possibly installment-filtered)
+    // list, so this summary always matches what the student list below it shows.
     const byClassMap = new Map<string, {
         classId: number | null;
         className: string;
         defaultersCount: number;
         outstandingAmount: number;
     }>();
-    for (const d of defaulters) {
+    const bySubClassMap = new Map<string, {
+        subClassId: number | null;
+        subClassName: string;
+        classId: number | null;
+        className: string;
+        defaultersCount: number;
+        outstandingAmount: number;
+    }>();
+    for (const d of defaultersForList) {
         const key = String(d.classId ?? `name:${d.className}`);
         const bucket = byClassMap.get(key) || {
             classId: d.classId,
@@ -848,40 +894,56 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
         bucket.defaultersCount += 1;
         bucket.outstandingAmount += d.outstanding;
         byClassMap.set(key, bucket);
+
+        const subKey = `${key}::${d.subClassId ?? `name:${d.subClassName}`}`;
+        const subBucket = bySubClassMap.get(subKey) || {
+            subClassId: d.subClassId,
+            subClassName: d.subClassName,
+            classId: d.classId,
+            className: d.className,
+            defaultersCount: 0,
+            outstandingAmount: 0
+        };
+        subBucket.defaultersCount += 1;
+        subBucket.outstandingAmount += d.outstanding;
+        bySubClassMap.set(subKey, subBucket);
     }
     const byClass = Array.from(byClassMap.values()).sort((a, b) => b.outstandingAmount - a.outstandingAmount);
-
-    // Group by amount range
-    const ranges: Array<{ range: string; min: number; max: number | null }> = [
-        { range: '0-10000', min: 0, max: 10000 },
-        { range: '10001-50000', min: 10001, max: 50000 },
-        { range: '50001-100000', min: 50001, max: 100000 },
-        { range: '100000+', min: 100001, max: null }
-    ];
-    const byAmountRange = ranges.map(r => {
-        const inBucket = defaulters.filter(d =>
-            d.outstanding >= r.min && (r.max === null || d.outstanding <= r.max)
-        );
-        return {
-            range: r.range,
-            count: inBucket.length,
-            totalAmount: inBucket.reduce((s, d) => s + d.outstanding, 0)
-        };
+    // Sorted by class → subclass (natural sort) so the PDF can page-break on
+    // subclass changes and render each subclass as its own printable page.
+    const bySubClass = Array.from(bySubClassMap.values()).sort((a, b) => {
+        const byClassName = a.className.localeCompare(b.className, undefined, { numeric: true, sensitivity: 'base' });
+        if (byClassName !== 0) return byClassName;
+        return a.subClassName.localeCompare(b.subClassName, undefined, { numeric: true, sensitivity: 'base' });
     });
 
     const now = Date.now();
     const DAY_MS = 1000 * 60 * 60 * 24;
 
-    const students = defaulters
-        .sort((a, b) => b.outstanding - a.outstanding)
+    const students = defaultersForList
+        .sort((a, b) => {
+            // Class → subclass (natural sort so "Form 2" precedes "Form 10"),
+            // then highest outstanding. Grouped this way so the PDF can page-
+            // break on subclass boundaries and put each subclass on its own page.
+            const byClass = a.className.localeCompare(b.className, undefined, { numeric: true, sensitivity: 'base' });
+            if (byClass !== 0) return byClass;
+            const bySubClass = a.subClassName.localeCompare(b.subClassName, undefined, { numeric: true, sensitivity: 'base' });
+            if (bySubClass !== 0) return bySubClass;
+            return b.outstanding - a.outstanding;
+        })
         .map(d => {
             const base: any = {
                 studentId: d.studentId,
                 studentName: d.studentName,
                 matricule: d.matricule,
+                studentStatus: d.isNewStudent ? 'NEW' : 'OLD',
+                classId: d.classId,
                 className: d.className,
+                subClassId: d.subClassId,
                 subClassName: d.subClassName,
+                totalPaid: d.totalPaid,
                 outstandingAmount: d.outstanding,
+                installments: installmentBreakdown(d),
                 dueDate: d.oldestDueDate ? d.oldestDueDate.toISOString() : null,
                 daysOverdue: d.oldestDueDate
                     ? Math.max(0, Math.floor((now - d.oldestDueDate.getTime()) / DAY_MS))
@@ -893,13 +955,125 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
             return base;
         });
 
-    const totalOutstanding = defaulters.reduce((s, d) => s + d.outstanding, 0);
+    const totalOutstanding = defaultersForList.reduce((s, d) => s + d.outstanding, 0);
+
+    // Whole-population totals with the shared rule, so this page can show the
+    // same reconciliation line as Overview / Fee Statistics / Reports (M8).
+    const summary = summarizeBalances(feeRows.map(r => {
+        const e = r.amount_expected || 0, p = r.amount_paid || 0;
+        return { amount_expected: e, amount_paid: p, balance: Math.max(e - p, 0), overpayment: Math.max(p - e, 0) };
+    }));
 
     return {
-        totalDefaulters: defaulters.length,
+        totalDefaulters: defaultersForList.length,
         totalOutstanding,
+        summary,
         byClass,
-        byAmountRange,
+        bySubClass,
         students
     };
+}
+
+// -------------------- Defaulters PDF export --------------------
+
+const defaultersTemplateCache: { html?: string } = {};
+function loadDefaultersTemplate(): string {
+    if (!defaultersTemplateCache.html) {
+        const templatePath = path.join(process.cwd(), 'src/view/defaulters-template.ejs');
+        defaultersTemplateCache.html = fs.readFileSync(templatePath, 'utf-8');
+    }
+    return defaultersTemplateCache.html;
+}
+
+const defaultersLogoCache: { dataUri?: string } = {};
+function loadDefaultersLogoDataUri(): string {
+    if (!defaultersLogoCache.dataUri) {
+        try {
+            const logoPath = path.join(process.cwd(), 'public/school.png');
+            const buf = fs.readFileSync(logoPath);
+            defaultersLogoCache.dataUri = `data:image/png;base64,${buf.toString('base64')}`;
+        } catch {
+            defaultersLogoCache.dataUri = '';
+        }
+    }
+    return defaultersLogoCache.dataUri;
+}
+
+export async function generateDefaultersReportPdf(
+    options: DefaultersReportOptions = {}
+): Promise<{ buffer: Buffer; filename: string }> {
+    const report = await getDefaultersReport(options);
+
+    const yearId = options.academicYearId || (await getCurrentAcademicYear())?.id;
+    const year = yearId
+        ? await prisma.academicYear.findUnique({ where: { id: yearId }, select: { name: true } })
+        : null;
+    const academicYearName = year?.name || 'Current Academic Year';
+
+    // Group students into per-subclass pages so each subclass prints on its
+    // own page. Preserves the sort order established in getDefaultersReport
+    // (className -> subClassName -> outstanding desc).
+    interface SubclassPage {
+        classId: number | null;
+        className: string;
+        subClassId: number | null;
+        subClassName: string;
+        totalOutstanding: number;
+        totalPaid: number;
+        students: any[];
+    }
+    const pageMap = new Map<string, SubclassPage>();
+    for (const s of report.students) {
+        const key = `${s.classId ?? `n:${s.className}`}::${s.subClassId ?? `n:${s.subClassName}`}`;
+        let page = pageMap.get(key);
+        if (!page) {
+            page = {
+                classId: s.classId,
+                className: s.className,
+                subClassId: s.subClassId,
+                subClassName: s.subClassName,
+                totalOutstanding: 0,
+                totalPaid: 0,
+                students: []
+            };
+            pageMap.set(key, page);
+        }
+        page.students.push(s);
+        page.totalOutstanding += s.outstandingAmount || 0;
+        page.totalPaid += s.totalPaid || 0;
+    }
+    const pages = Array.from(pageMap.values());
+
+    const template = loadDefaultersTemplate();
+    const html = ejs.render(template, {
+        academicYearName,
+        totalDefaulters: report.totalDefaulters,
+        totalOutstanding: report.totalOutstanding,
+        pages,
+        installment: options.installment || null,
+        documentTitle: `Fees Defaulters Report ${academicYearName}`,
+        schoolLogo: loadDefaultersLogoDataUri(),
+        schoolName: "ST STEPHEN'S INTERNATIONAL COLLEGE",
+        schoolTagline: 'Excellence for Higher Heights',
+        schoolAddress: 'Yaounde Essono city Damas',
+        schoolPhone: '(+237) 680 188 080 / 681 630 435',
+        generatedAt: new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }),
+    });
+
+    const page = await PuppeteerManager.newPage();
+    try {
+        await page.setContent(html, { waitUntil: 'networkidle0' });
+        const pdf = await page.pdf({
+            format: 'A4',
+            landscape: false,
+            printBackground: true,
+            margin: { top: '10mm', right: '10mm', bottom: '10mm', left: '10mm' },
+            preferCSSPageSize: true,
+        });
+        const buffer = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
+        const safeYear = academicYearName.replace(/[^a-zA-Z0-9-]+/g, '_');
+        return { buffer, filename: `defaulters-report-${safeYear}.pdf` };
+    } finally {
+        try { await page.close(); } catch { /* noop */ }
+    }
 }

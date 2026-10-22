@@ -2,6 +2,7 @@
 import prisma from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
 import { SUBCLASS_MAX_STUDENTS, getClassMaxStudents } from '../../../utils/capacity';
+import { activeEnrollmentWhere, countActiveStudents } from '../../../utils/schoolCounts';
 
 /**
  * Enhanced Super Manager Dashboard with comprehensive analytics
@@ -359,17 +360,13 @@ async function getSystemStatistics(yearId?: number) {
             include: {
                 sub_classes: {
                     include: {
-                        enrollments: yearId ? {
-                            where: { academic_year_id: yearId }
-                        } : true
+                        enrollments: { where: activeEnrollmentWhere(yearId) }
                     }
                 }
             }
         }),
 
-        yearId ? prisma.enrollment.count({
-            where: { academic_year_id: yearId }
-        }) : prisma.enrollment.count()
+        countActiveStudents(yearId)
     ]);
 
     const usersByRole = userStats.map(stat => ({
@@ -495,13 +492,11 @@ async function getStudentRegistrationStats(yearId?: number) {
             }
         }),
 
-        yearId ? prisma.enrollment.count({
-            where: { academic_year_id: yearId }
-        }) : prisma.enrollment.count(),
+        countActiveStudents(yearId),
 
         yearId ? prisma.enrollment.count({
             where: {
-                academic_year_id: yearId,
+                ...activeEnrollmentWhere(yearId),
                 sub_class_id: null
             }
         }) : 0
@@ -605,7 +600,8 @@ async function getVPStudentManagement(yearId?: number) {
         yearId ? prisma.enrollment.findMany({
             where: {
                 academic_year_id: yearId,
-                sub_class_id: null
+                sub_class_id: null,
+                student: { status: { not: 'WITHDRAWN' } }
             },
             include: {
                 student: true,
@@ -613,16 +609,14 @@ async function getVPStudentManagement(yearId?: number) {
             }
         }) : [],
 
-        yearId ? prisma.enrollment.count({
-            where: { academic_year_id: yearId }
-        }) : 0,
+        yearId ? countActiveStudents(yearId) : 0,
 
         prisma.class.findMany({
             include: {
                 sub_classes: {
                     include: {
                         enrollments: yearId ? {
-                            where: { academic_year_id: yearId }
+                            where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } }
                         } : true
                     }
                 }

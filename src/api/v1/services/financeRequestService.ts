@@ -92,23 +92,47 @@ function validatePayload(type: FinanceRequestType, payload: any, amount: number 
     }
 }
 
-// Per-type creator restrictions (route authorize() is intentionally permissive).
-function assertCreatorRole(type: FinanceRequestType, roles: Role[]) {
-    const isPrincipalPlus = userHasMinTier(roles, RoleTier.HEAD_OF_SCHOOL);
-    const isBursarPlus = userHasMinTier(roles, RoleTier.SENIOR_LEADERSHIP);
+// Roles that run the finance office and may raise any request type for anyone.
+// Explicit list (not a tier check): SENIOR_LEADERSHIP also contains VP / SECRETARY /
+// DISCIPLINE_COORDINATOR, who must not raise refunds or fee reductions.
+const FINANCE_CREATOR_ROLES: Role[] = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR'] as Role[];
+
+// Roles that see every finance request (oversight). Everyone else only sees
+// requests they raised, money addressed to them, or (parents) their children's.
+const OVERSIGHT_VIEW_ROLES: Role[] = [
+    'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY', 'FEE_AUDITOR',
+] as Role[];
+
+const isFinanceCreator = (roles: Role[]) => roles.some((r) => FINANCE_CREATOR_ROLES.includes(r));
+const isOversightViewer = (roles: Role[]) => roles.some((r) => OVERSIGHT_VIEW_ROLES.includes(r));
+const isStaff = (roles: Role[]) => roles.some((r) => r !== ('PARENT' as Role));
+
+export class FinanceRequestForbiddenError extends Error {
+    code = 'FORBIDDEN';
+}
+
+// Per-type creator restrictions (route authorize() is intentionally permissive:
+// any authenticated user reaches here). Messages are user-facing — no role lists.
+function assertCreatorRole(type: FinanceRequestType, roles: Role[], requesterId: number, payload: any) {
+    const financeCreator = isFinanceCreator(roles);
     const isParent = roles.includes('PARENT' as Role);
 
     if (type === 'PAYMENT_CLAIM') {
-        if (!isParent && !isBursarPlus) {
-            throw new Error('Only PARENT or Bursar+ may create a PAYMENT_CLAIM');
+        if (!isParent && !financeCreator) {
+            throw new FinanceRequestForbiddenError('Only parents or the Bursar can submit a payment claim.');
         }
-    } else if (type === 'REFUND') {
-        if (!isBursarPlus) {
-            throw new Error('Only Bursar+ may create a REFUND request');
+    } else if (type === 'PERSONNEL_DISBURSEMENT') {
+        if (financeCreator) return;
+        // Any staff member may ask the Bursar for money for themselves.
+        if (!isStaff(roles)) {
+            throw new FinanceRequestForbiddenError('You are not allowed to request money.');
         }
-    } else if (type === 'FEE_REDUCTION' || type === 'PERSONNEL_DISBURSEMENT' || type === 'BANK_VERIFICATION') {
-        if (!isBursarPlus) {
-            throw new Error(`Only Bursar+ may create a ${type} request`);
+        if (payload?.recipientUserId !== requesterId) {
+            throw new FinanceRequestForbiddenError('You can only request money for yourself.');
+        }
+    } else if (type === 'REFUND' || type === 'FEE_REDUCTION' || type === 'BANK_VERIFICATION') {
+        if (!financeCreator) {
+            throw new FinanceRequestForbiddenError('Only the Bursar or school leadership can create this type of request.');
         }
     }
 }
@@ -134,10 +158,12 @@ export interface CreateFinanceRequestInput {
     requested_by_roles?: Role[];
 }
 
-export async function createFinanceRequest(input: CreateFinanceRequestInput): Promise<FinanceRequest> {
+export async function createFinanceRequest(input: CreateFinanceRequestInput) {
     if (!input.reason || !input.reason.trim()) throw new Error('reason is required');
-    if (input.requested_by_roles) assertCreatorRole(input.type, input.requested_by_roles);
     validatePayload(input.type, input.payload, input.amount ?? null);
+    if (input.requested_by_roles) {
+        assertCreatorRole(input.type, input.requested_by_roles, input.requested_by_id, input.payload);
+    }
 
     if (input.type === 'FEE_REDUCTION') {
         const enr = await prisma.enrollment.findUnique({ where: { id: input.payload.enrollmentId } });
@@ -167,8 +193,7 @@ export async function createFinanceRequest(input: CreateFinanceRequestInput): Pr
         if (!enr) throw new Error(`Enrollment ${enrollmentId} not found`);
 
         const isParent = (input.requested_by_roles ?? []).includes('PARENT' as Role);
-        const isBursarPlus = userHasMinTier(input.requested_by_roles ?? [], RoleTier.SENIOR_LEADERSHIP);
-        if (isParent && !isBursarPlus) {
+        if (isParent && !isFinanceCreator(input.requested_by_roles ?? [])) {
             await assertParentOwnsEnrollment(input.requested_by_id, enrollmentId);
         }
     } else if (input.type === 'REFUND') {
@@ -202,7 +227,7 @@ export async function createFinanceRequest(input: CreateFinanceRequestInput): Pr
     // Fire notifications (best-effort — never block the create).
     notifyOnCreate(created).catch((e) => console.error('finance-request notify-on-create failed', e));
 
-    return created;
+    return (await getFinanceRequestById(created.id)) ?? created;
 }
 
 // ---------- Listing ----------
@@ -244,14 +269,20 @@ export async function listFinanceRequests(opts: ListFinanceRequestsOptions) {
         ];
     }
 
+    // Non-oversight viewers (teachers, HODs, parents, ...) only ever see their own.
+    if (opts.viewer_user_id && !isOversightViewer(opts.viewer_roles ?? [])) {
+        const scope = await viewerScopeWhere(opts.viewer_user_id, opts.viewer_roles ?? []);
+        where.AND = [
+            ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+            scope,
+        ];
+    }
+
     const [total, requests] = await Promise.all([
         prisma.financeRequest.count({ where }),
         prisma.financeRequest.findMany({
             where,
-            include: {
-                requested_by: { select: { id: true, name: true, matricule: true } },
-                acted_by: { select: { id: true, name: true, matricule: true } },
-            },
+            include: PEOPLE_INCLUDE,
             orderBy: { created_at: 'desc' },
             skip: (page - 1) * limit,
             take: limit,
@@ -259,18 +290,138 @@ export async function listFinanceRequests(opts: ListFinanceRequestsOptions) {
     ]);
 
     return {
-        data: requests,
+        data: await enrichFinanceRequests(requests),
         meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
 }
 
-export async function getFinanceRequestById(id: number) {
-    return prisma.financeRequest.findUnique({
-        where: { id },
-        include: {
-            requested_by: { select: { id: true, name: true, matricule: true } },
-            acted_by: { select: { id: true, name: true, matricule: true } },
-        },
+/**
+ * Fetch one request. When `viewer` is given and is not an oversight role, the
+ * request is only returned if it falls inside that viewer's scope (else null → 404).
+ */
+export async function getFinanceRequestById(id: number, viewer?: { user_id: number; roles: Role[] }) {
+    let where: Prisma.FinanceRequestWhereInput = { id };
+    if (viewer && !isOversightViewer(viewer.roles)) {
+        where = { AND: [{ id }, await viewerScopeWhere(viewer.user_id, viewer.roles)] };
+    }
+    const found = await prisma.financeRequest.findFirst({ where, include: PEOPLE_INCLUDE });
+    if (!found) return null;
+    const [enriched] = await enrichFinanceRequests([found]);
+    return enriched;
+}
+
+// ---------- Display enrichment ----------
+const PERSON_SELECT = { id: true, name: true, matricule: true } as const;
+const PEOPLE_INCLUDE = {
+    requested_by: { select: PERSON_SELECT },
+    acted_by: { select: PERSON_SELECT },
+} satisfies Prisma.FinanceRequestInclude;
+
+/**
+ * Requests a non-oversight viewer may see: ones they raised, money addressed to
+ * them, and — for parents — anything about a child they are linked to.
+ */
+async function viewerScopeWhere(userId: number, roles: Role[]): Promise<Prisma.FinanceRequestWhereInput> {
+    const or: Prisma.FinanceRequestWhereInput[] = [
+        { requested_by_id: userId },
+        { payload: { path: ['recipientUserId'], equals: userId } as any },
+    ];
+    if (roles.includes('PARENT' as Role)) {
+        const links = await prisma.parentStudent.findMany({ where: { parent_id: userId }, select: { student_id: true } });
+        const studentIds = links.map((l) => l.student_id);
+        if (studentIds.length) {
+            const enrollments = await prisma.enrollment.findMany({
+                where: { student_id: { in: studentIds } },
+                select: { id: true },
+            });
+            for (const sid of studentIds) or.push({ payload: { path: ['studentId'], equals: sid } as any });
+            for (const e of enrollments) or.push({ payload: { path: ['enrollmentId'], equals: e.id } as any });
+        }
+    }
+    return { OR: or };
+}
+
+/**
+ * Attach human-readable context so clients never have to show raw ids:
+ * - student:    { id, name, matricule }               (from payload.enrollmentId or payload.studentId)
+ * - enrollment: { id, class_name, sub_class_name, academic_year_name }
+ * - recipient:  { id, name, matricule }               (PERSONNEL_DISBURSEMENT payload.recipientUserId)
+ * Missing references resolve to null. Batched: 3 queries max per call.
+ */
+async function enrichFinanceRequests<T extends FinanceRequest>(requests: T[]) {
+    const num = (v: any) => (typeof v === 'number' ? v : undefined);
+    const enrollmentIds = new Set<number>();
+    const studentIds = new Set<number>();
+    const recipientIds = new Set<number>();
+    for (const r of requests) {
+        const p = (r.payload ?? {}) as any;
+        const eid = num(p.enrollmentId);
+        const sid = num(p.studentId);
+        const rid = num(p.recipientUserId);
+        if (eid) enrollmentIds.add(eid);
+        else if (sid) studentIds.add(sid);
+        if (rid) recipientIds.add(rid);
+    }
+
+    const enrollmentSelect = {
+        id: true,
+        student_id: true,
+        academic_year_id: true,
+        student: { select: { id: true, name: true, matricule: true } },
+        class: { select: { name: true } },
+        sub_class: { select: { name: true } },
+        academic_year: { select: { name: true } },
+    } as const;
+
+    const [enrollments, studentEnrollments, recipients] = await Promise.all([
+        enrollmentIds.size
+            ? prisma.enrollment.findMany({ where: { id: { in: [...enrollmentIds] } }, select: enrollmentSelect })
+            : Promise.resolve([]),
+        // Student-only payloads (e.g. BANK_VERIFICATION): use the student's latest enrollment for the class label.
+        studentIds.size
+            ? prisma.enrollment.findMany({
+                where: { student_id: { in: [...studentIds] } },
+                select: enrollmentSelect,
+                orderBy: [{ academic_year: { start_date: 'desc' } }, { id: 'desc' }],
+            })
+            : Promise.resolve([]),
+        recipientIds.size
+            ? prisma.user.findMany({ where: { id: { in: [...recipientIds] } }, select: PERSON_SELECT })
+            : Promise.resolve([]),
+    ]);
+
+    // Students with no enrollment at all still need a name.
+    const studentsWithoutEnrollment = [...studentIds].filter((sid) => !studentEnrollments.some((e) => e.student_id === sid));
+    const bareStudents = studentsWithoutEnrollment.length
+        ? await prisma.student.findMany({ where: { id: { in: studentsWithoutEnrollment } }, select: { id: true, name: true, matricule: true } })
+        : [];
+
+    type Enr = (typeof enrollments)[number];
+    const toEnrollmentRef = (e: Enr) => ({
+        id: e.id,
+        class_name: e.class?.name ?? null,
+        sub_class_name: e.sub_class?.name ?? null,
+        academic_year_name: e.academic_year?.name ?? null,
+    });
+    const byEnrollment = new Map(enrollments.map((e) => [e.id, e]));
+    const latestByStudent = new Map<number, Enr>();
+    for (const e of studentEnrollments) if (!latestByStudent.has(e.student_id)) latestByStudent.set(e.student_id, e);
+    const bareById = new Map(bareStudents.map((s) => [s.id, s]));
+    const recipientById = new Map(recipients.map((u) => [u.id, u]));
+
+    return requests.map((r) => {
+        const p = (r.payload ?? {}) as any;
+        const eid = num(p.enrollmentId);
+        const sid = num(p.studentId);
+        const rid = num(p.recipientUserId);
+        const enr = eid ? byEnrollment.get(eid) : sid ? latestByStudent.get(sid) : undefined;
+        const student = enr?.student ?? (sid ? bareById.get(sid) : undefined) ?? null;
+        return {
+            ...r,
+            student,
+            enrollment: enr ? toEnrollmentRef(enr) : null,
+            recipient: rid ? recipientById.get(rid) ?? null : null,
+        };
     });
 }
 
@@ -323,9 +474,11 @@ function canActOnRequest(
         if (action !== 'COMPLETE' && action !== 'REJECT') {
             return { allowed: false, reason: 'BANK_VERIFICATION only supports COMPLETE or REJECT' };
         }
-        // Anyone with Bursar+ view can act (Secretary, FeeAuditor, Bursar, Principal+).
-        // We can't check roles precisely here without the full role list — caller should already
-        // be one of these per route authorize(). If not principalPlus, ensure at least field-staff.
+        // Finance oversight roles (Secretary, Fee Auditor, Bursar, VP, Principal+) clear bank slips.
+        // The reject/complete routes have no authorize(), so this check is the gate.
+        if (!isOversightViewer(actorRoles)) {
+            return { allowed: false, reason: 'You are not allowed to verify bank deposits' };
+        }
         return { allowed: true };
     }
 
@@ -443,7 +596,9 @@ async function transition(
         console.error('finance-request notify-on-transition failed', e)
     );
 
-    return updated;
+    // Return the same shape as list/detail (requester/actor names, student, class)
+    // so clients can swap the row in place without losing display fields.
+    return (await getFinanceRequestById(id)) ?? updated;
 }
 
 export const approveFinanceRequest = (id: number, actorUserId: number, actorRoles: Role[], notes?: string) =>

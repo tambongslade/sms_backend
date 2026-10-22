@@ -33,26 +33,23 @@ router.post('/assign-subclass',
 
 // VP Dashboard: View students awaiting assignment
 // GET /enrollment/unassigned - Get all students awaiting subclass assignment
-// VICE_PRINCIPAL, PRINCIPAL, and SUPER_MANAGER can view this
 router.get('/unassigned',
     authenticate,
-    authorize(['VICE_PRINCIPAL', 'PRINCIPAL', 'SUPER_MANAGER']),
+    authorize(['VICE_PRINCIPAL', 'PRINCIPAL', 'SUPER_MANAGER', 'BURSAR']),
     enrollmentController.getUnassignedStudents
 );
 
 // GET /enrollment/available-subclasses/:classId - Get available subclasses for a class
-// VICE_PRINCIPAL, PRINCIPAL, and SUPER_MANAGER can view this
 router.get('/available-subclasses/:classId',
     authenticate,
-    authorize(['VICE_PRINCIPAL', 'PRINCIPAL', 'SUPER_MANAGER']),
+    authorize(['VICE_PRINCIPAL', 'PRINCIPAL', 'SUPER_MANAGER', 'BURSAR']),
     enrollmentController.getAvailableSubclasses
 );
 
 // GET /enrollment/stats - Get enrollment workflow statistics
-// Management roles can view statistics
 router.get('/stats',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'MANAGER']),
+    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'MANAGER', 'BURSAR']),
     enrollmentController.getEnrollmentStats
 );
 

@@ -25,6 +25,7 @@ import {
     LeaveRequest, LeaveStatus, LeaveType
 } from '@prisma/client';
 import * as dotenv from 'dotenv';
+import { enqueueChange, ensureOutboxTables, isOutboxEnabled } from '../sync/outbox';
 
 // Ensure environment variables are loaded
 dotenv.config();
@@ -58,9 +59,20 @@ const SYNCED_MODELS = new Set([
     'ExamSequence', 'TeacherPeriod', 'ParentStudent', 'SchoolFees',
 ]);
 
+// Push-on-write queue (SYNC_OUTBOX=on): the tables are created from code, see sync/outbox.ts.
+if (isOutboxEnabled()) {
+    ensureOutboxTables(prisma as any).catch(err => console.error('[OUTBOX] could not create tables:', err?.message));
+}
+
 prisma.$use(async (params, next) => {
     if (!params.model || !SYNCED_MODELS.has(params.model)) return next(params);
     const localId = process.env.SERVER_ID || 'local';
+
+    // A write that arrives with another server's server_id came from the peer (the sync
+    // passes it explicitly): it must not be queued again or it would bounce straight back.
+    const explicitServerId = params.args?.data?.server_id ?? params.args?.create?.server_id ?? params.args?.update?.server_id;
+    const fromPeer = explicitServerId !== undefined && explicitServerId !== null && explicitServerId !== localId;
+    const trackedAction = params.action === 'create' || params.action === 'update' || params.action === 'upsert';
 
     if (params.action === 'create' || params.action === 'update') {
         if (params.args?.data && !('server_id' in params.args.data)) {
@@ -84,7 +96,13 @@ prisma.$use(async (params, next) => {
         }
     }
 
-    return next(params);
+    const result = await next(params);
+
+    if (isOutboxEnabled() && trackedAction && !fromPeer && result && typeof (result as any).id === 'number') {
+        void enqueueChange(prisma as any, params.model, (result as any).id);
+    }
+
+    return result;
 });
 
 export {

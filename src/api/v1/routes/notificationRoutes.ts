@@ -11,6 +11,7 @@ import {
     deleteNotification,
     getPushStatus,
     sendTestPush,
+    getPendingTasksSummary,
 } from '../controllers/notificationController';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 
@@ -32,6 +33,14 @@ router.get('/me/unread-count',
 router.get('/me/unread-breakdown',
     authenticate,
     getUnreadBreakdown
+);
+
+// Actionable pending-tasks summary for the login pop-up.
+// Aggregates counts across disciplinary approvals, custody transfers, and finance requests
+// that specifically require this user's action.
+router.get('/me/pending-tasks',
+    authenticate,
+    getPendingTasksSummary
 );
 
 // Mark all of a user's notifications as read

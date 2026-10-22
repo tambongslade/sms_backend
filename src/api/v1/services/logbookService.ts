@@ -26,7 +26,12 @@ const entryInclude = {
         include: {
             period: true,
             subject: { select: { id: true, name: true } },
-            sub_class: { select: { id: true, name: true, class_id: true } },
+            sub_class: {
+                select: { id: true, name: true, class_id: true, class: { select: { id: true, name: true } } },
+            },
+            // The review page's Teacher column reads teacherPeriod.teacher.name;
+            // without this it was always "—".
+            teacher: { select: { id: true, name: true, matricule: true } },
         },
     },
     lesson: {
@@ -136,7 +141,10 @@ export async function getEntryById(id: number) {
 export async function listEntries(filter: {
     teacher_id?: number;
     sub_class_id?: number;
+    class_id?: number;
     subject_id?: number;
+    /** Restrict to these subjects (HOD department scoping). [] = nothing. */
+    subject_ids?: number[];
     teacher_period_id?: number;
     lesson_id?: number;
     academic_year_id?: number;
@@ -168,13 +176,64 @@ export async function listEntries(filter: {
             teacher_period: {
                 ...(academic_year_id && { academic_year_id }),
                 ...(filter.sub_class_id && { sub_class_id: filter.sub_class_id }),
-                ...(filter.subject_id && { subject_id: filter.subject_id }),
+                ...(filter.class_id && { sub_class: { class_id: filter.class_id } }),
+                ...(filter.subject_ids
+                    ? {
+                          subject_id: filter.subject_id
+                              ? (filter.subject_ids.includes(filter.subject_id) ? filter.subject_id : -1)
+                              : { in: filter.subject_ids },
+                      }
+                    : filter.subject_id
+                        ? { subject_id: filter.subject_id }
+                        : {}),
             },
         },
         include: entryInclude,
         orderBy: [{ date_taught: 'desc' }, { id: 'desc' }],
         take: 200,
     });
+}
+
+/**
+ * Options for the Logbook Review filters (teachers / classes / sub-classes /
+ * subjects), taken from the academic year's timetable so they match what can
+ * actually appear in the list. `subject_ids` scopes to an HOD's department.
+ */
+export async function getReviewFilterOptions(filter: { academic_year_id?: number; subject_ids?: number[] }) {
+    const academic_year_id = await getAcademicYearId(filter.academic_year_id);
+    const periods = await prisma.teacherPeriod.findMany({
+        where: {
+            ...(academic_year_id && { academic_year_id }),
+            ...(filter.subject_ids && { subject_id: { in: filter.subject_ids } }),
+        },
+        select: {
+            teacher: { select: { id: true, name: true, matricule: true } },
+            subject: { select: { id: true, name: true } },
+            sub_class: { select: { id: true, name: true, class: { select: { id: true, name: true } } } },
+        },
+    });
+    const teachers = new Map<number, { id: number; name: string; matricule: string | null }>();
+    const subjects = new Map<number, { id: number; name: string }>();
+    const classes = new Map<number, { id: number; name: string }>();
+    const subClasses = new Map<number, { id: number; name: string; class_id: number; class_name: string }>();
+    for (const p of periods) {
+        if (p.teacher) teachers.set(p.teacher.id, p.teacher);
+        subjects.set(p.subject.id, p.subject);
+        classes.set(p.sub_class.class.id, p.sub_class.class);
+        subClasses.set(p.sub_class.id, {
+            id: p.sub_class.id,
+            name: p.sub_class.name,
+            class_id: p.sub_class.class.id,
+            class_name: p.sub_class.class.name,
+        });
+    }
+    const byName = <T extends { name: string }>(a: T, b: T) => a.name.localeCompare(b.name);
+    return {
+        teachers: [...teachers.values()].sort(byName),
+        subjects: [...subjects.values()].sort(byName),
+        classes: [...classes.values()].sort(byName),
+        sub_classes: [...subClasses.values()].sort((a, b) => a.class_name.localeCompare(b.class_name) || a.name.localeCompare(b.name)),
+    };
 }
 
 export async function reviewEntry(
@@ -227,17 +286,27 @@ export async function getSchemeCoverage(subject_scheme_id: number) {
 
     let total = 0;
     let completed = 0;
-    for (const m of scheme.modules) {
-        for (const c of m.chapters) {
-            for (const l of c.lessons) {
-                total += 1;
-                if (l.logbook_entries.some((e) => e.status === 'COMPLETED')) completed += 1;
-            }
-        }
-    }
+    // The response-side snake_to_camel middleware mangles `_count` into
+    // `Count` (regex replaces the leading `_c` with `C`), so clients can never
+    // read `_count.logbook_entries`. Flatten it into `logbook_entry_count`
+    // on each lesson.
+    const flatScheme = {
+        ...scheme,
+        modules: scheme.modules.map((m) => ({
+            ...m,
+            chapters: m.chapters.map((c) => ({
+                ...c,
+                lessons: c.lessons.map(({ _count, ...lesson }) => {
+                    total += 1;
+                    if (lesson.logbook_entries.some((e) => e.status === 'COMPLETED')) completed += 1;
+                    return { ...lesson, logbook_entry_count: _count.logbook_entries };
+                }),
+            })),
+        })),
+    };
 
     return {
-        scheme,
+        scheme: flatScheme,
         summary: {
             total_lessons: total,
             completed_lessons: completed,

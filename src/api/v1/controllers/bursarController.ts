@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import * as bursarService from '../services/bursarService';
+import * as studentService from '../services/studentService';
+import prisma from '../../../config/db';
 import { Gender } from '@prisma/client';
 
 /**
@@ -18,6 +20,7 @@ export const createStudentWithParent = async (req: Request, res: Response): Prom
             residence: residence,
             former_school: formerSchool,
             class_id: classId,
+            sub_class_id: subClassId, // optional stream; enrolled server-side after creation
             is_new_student: isNewStudent,
             ream_of_paper_collected: reamOfPaperCollected,
             academic_year_id: academicYearId,
@@ -41,13 +44,44 @@ export const createStudentWithParent = async (req: Request, res: Response): Prom
             return;
         }
 
-        // Validate required fields (student side)
-        if (!dateOfBirth || !placeOfBirth || !gender || !residence || !classId) {
+        // Validate required fields (student side). Name only the fields that
+        // are actually missing, with readable labels (the old message always
+        // listed all five, even when only one was empty).
+        const requiredStudentFields: Array<[unknown, string]> = [
+            [dateOfBirth, 'Date of Birth'],
+            [placeOfBirth, 'Place of Birth'],
+            [gender, 'Gender'],
+            [residence, 'Residence'],
+            [classId, 'Class'],
+        ];
+        const missingStudentFields = requiredStudentFields
+            .filter(([v]) => v === undefined || v === null || String(v).trim() === '')
+            .map(([, label]) => label);
+        if (missingStudentFields.length) {
             res.status(400).json({
                 success: false,
-                error: 'Missing required fields: dateOfBirth, placeOfBirth, gender, residence, classId'
+                error: `Missing required field(s): ${missingStudentFields.join(', ')}`
             });
             return;
+        }
+
+        // Optional stream: check it belongs to the chosen class *before*
+        // creating anything, so a bad pick fails loudly instead of the student
+        // being saved without a stream.
+        let parsedSubClassId: number | undefined;
+        if (subClassId !== undefined && subClassId !== null && String(subClassId) !== '') {
+            parsedSubClassId = parseInt(subClassId);
+            const sc = isNaN(parsedSubClassId)
+                ? null
+                : await prisma.subClass.findUnique({ where: { id: parsedSubClassId }, select: { class_id: true } });
+            if (!sc) {
+                res.status(400).json({ success: false, error: 'Selected stream (subclass) not found' });
+                return;
+            }
+            if (sc.class_id !== parseInt(classId)) {
+                res.status(400).json({ success: false, error: 'Selected stream does not belong to the selected class' });
+                return;
+            }
         }
 
         // Validate parents array if provided, otherwise require legacy single-parent fields.
@@ -121,10 +155,28 @@ export const createStudentWithParent = async (req: Request, res: Response): Prom
             relationship: relationship
         });
 
+        // Put the student in the chosen stream in the same request (the UI
+        // used to do this as a second call, and a failure there left the
+        // student saved without a stream).
+        let subClassWarning: string | undefined;
+        if (parsedSubClassId && result?.student?.id) {
+            try {
+                await studentService.enrollStudentInSubclass(result.student.id, {
+                    sub_class_id: parsedSubClassId,
+                    academic_year_id: academicYearId ? parseInt(academicYearId) : undefined,
+                    ream_of_paper_collected: reamOfPaperCollected !== undefined ? Boolean(reamOfPaperCollected) : undefined,
+                });
+                (result.enrollment as any).sub_class_id = parsedSubClassId;
+            } catch (enrollErr: any) {
+                console.error('Student created but stream assignment failed:', enrollErr);
+                subClassWarning = `Student created, but assigning the stream failed: ${enrollErr.message}`;
+            }
+        }
+
         res.status(201).json({
             success: true,
             message: 'Student registered successfully with parent account created',
-            data: result
+            data: subClassWarning ? { ...result, sub_class_warning: subClassWarning } : result
         });
     } catch (error: any) {
         console.error('Error creating student with parent:', error);
@@ -376,7 +428,8 @@ export const getDefaultersReport = async (req: Request, res: Response): Promise<
             minimumAmount,
             classId,
             subClassId,
-            includeDetails
+            includeDetails,
+            installment
         } = req.query as Record<string, string | undefined>;
 
         const toNumber = (v: string | undefined) => {
@@ -385,12 +438,17 @@ export const getDefaultersReport = async (req: Request, res: Response): Promise<
             return Number.isNaN(n) ? undefined : n;
         };
 
+        const validInstallment = installment === 'first' || installment === 'second' || installment === 'third'
+            ? installment
+            : undefined;
+
         const defaulters = await bursarService.getDefaultersReport({
             academicYearId: toNumber(academicYearId),
             minimumAmount: toNumber(minimumAmount),
             classId: toNumber(classId),
             subClassId: toNumber(subClassId),
-            includeDetails: includeDetails === 'true'
+            includeDetails: includeDetails === 'true',
+            installment: validInstallment
         });
 
         res.status(200).json({
@@ -400,6 +458,52 @@ export const getDefaultersReport = async (req: Request, res: Response): Promise<
         });
     } catch (error: any) {
         console.error('Error fetching defaulters report:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+};
+
+/**
+ * Export defaulters report as a printable PDF (one subclass per page).
+ * GET /api/v1/bursar/defaulters-report/pdf
+ */
+export const exportDefaultersReportPdf = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const {
+            academicYearId,
+            minimumAmount,
+            classId,
+            subClassId,
+            includeDetails,
+            installment
+        } = req.query as Record<string, string | undefined>;
+
+        const toNumber = (v: string | undefined) => {
+            if (v === undefined || v === '') return undefined;
+            const n = Number(v);
+            return Number.isNaN(n) ? undefined : n;
+        };
+
+        const validInstallment = installment === 'first' || installment === 'second' || installment === 'third'
+            ? installment
+            : undefined;
+
+        const { buffer, filename } = await bursarService.generateDefaultersReportPdf({
+            academicYearId: toNumber(academicYearId),
+            minimumAmount: toNumber(minimumAmount),
+            classId: toNumber(classId),
+            subClassId: toNumber(subClassId),
+            includeDetails: includeDetails === 'true',
+            installment: validInstallment
+        });
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(buffer);
+    } catch (error: any) {
+        console.error('Error exporting defaulters report PDF:', error);
         res.status(500).json({
             success: false,
             error: error.message

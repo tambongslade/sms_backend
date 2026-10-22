@@ -86,6 +86,8 @@ const SYNC_TABLES: string[] = [
     // ---- Student-level extensions (need Enrollment / Student) ----
     // -> Student
     'StudentPreviousSchool',
+    // -> Student  (U13 transfer-out; table from migration 20261020400000_add_student_transfer)
+    'StudentTransfer',
     // -> AcademicYear, Class, SubClass, Student, User
     'FeeItem',
     // -> AcademicYear, Enrollment
@@ -189,6 +191,14 @@ const SYNC_TABLES: string[] = [
 // ordered run converges in one or two passes.
 const MAX_DEFERRED_PASSES = 5;
 
+// Cross-tick failure ceiling. After MAX_STRIKES consecutive failures a record
+// is quarantined: still attempted every tick (auto-recovery when the underlying
+// data problem gets fixed on either side), but no longer blocks its table's
+// cursor from advancing. Anything below this counts as a blocker -- one
+// unquarantined failure is enough to pin the whole table's cursor. Matches the
+// deferred-passes philosophy: "genuinely can't be placed."
+const MAX_STRIKES = 5;
+
 export class SyncManager {
     private dbSyncer: DatabaseSyncer;
     private networkChecker: NetworkChecker;
@@ -252,20 +262,28 @@ export class SyncManager {
 
             console.log('Starting database sync...');
 
-            // 1. Get last sync timestamp
-            const lastSync = await this.getLastSyncTimestamp();
+            // 1. Sync every table in dependency order. Each table reads its own
+            //    cursor (SyncCursor) and captures its own start-time; those
+            //    start-times are held aside so cursors can be advanced AFTER
+            //    the deferred retry pass, once we know which records are truly
+            //    still failing.
+            const { deferred, tableRuns } = await this.syncAllTables(syncLog);
 
-            // 2. Sync every table in dependency order, collecting records whose
-            //    referenced rows have not arrived yet.
-            const deferred = await this.syncAllTables(lastSync, syncLog);
-
-            // 3. Retry those until a pass stops making progress. This is what
-            //    resolves self-references (Class -> Class) and anything the
-            //    static ordering gets wrong.
+            // 2. Retry deferred records until a pass stops making progress.
+            //    Resolves self-references (Class -> Class) and static-ordering
+            //    misses. Records that still fail after this pass get a
+            //    cross-tick strike (SyncFailure).
             await this.drainDeferred(deferred, syncLog);
 
-            // 4. Update sync timestamp
-            await this.updateSyncTimestamp();
+            // 3. For each table: advance its cursor to the captured start-time
+            //    if -- and only if -- no unquarantined failures remain for that
+            //    table. A single failing record with strikes < MAX_STRIKES
+            //    holds the cursor for that one table; every other table
+            //    advances on its own schedule. This is the whole point of the
+            //    per-table cursor.
+            for (const run of tableRuns) {
+                await this.maybeAdvanceCursor(run.table, run.startTime);
+            }
 
             // Per-table failures are collected into syncLog.errors rather than
             // thrown, so reporting COMPLETED unconditionally hid them: a sync
@@ -296,14 +314,24 @@ export class SyncManager {
         return syncLog;
     }
 
-    // Walks SYNC_TABLES in dependency order and returns the records held back
-    // because something they reference has not arrived yet.
-    private async syncAllTables(lastSync: Date, syncLog: SyncLog): Promise<DeferredRecord[]> {
+    // Walks SYNC_TABLES in dependency order. For each table: capture a
+    // start-time BEFORE reading its cursor and fetching its batch (so records
+    // created mid-tick with a later updated_at cannot be skipped when we later
+    // advance the cursor), then push+pull. Returns the deferred records for
+    // the retry pass plus a per-table run record the caller uses to decide
+    // cursor advances after the deferred pass has settled.
+    private async syncAllTables(syncLog: SyncLog): Promise<{
+        deferred: DeferredRecord[];
+        tableRuns: { table: string; startTime: Date }[];
+    }> {
         const deferred: DeferredRecord[] = [];
+        const tableRuns: { table: string; startTime: Date }[] = [];
 
         for (const table of SYNC_TABLES) {
+            const startTime = new Date();
             try {
-                const result = await this.dbSyncer.syncTable(table, lastSync);
+                const cursor = await this.getTableCursor(table);
+                const result = await this.dbSyncer.syncTable(table, cursor);
                 syncLog.recordsProcessed += result.recordsProcessed;
                 syncLog.conflicts.push(...result.conflicts);
                 // syncTable collects per-record failures into result.errors rather
@@ -315,16 +343,24 @@ export class SyncManager {
             } catch (error: any) {
                 syncLog.errors.push(`${table}: ${error.message}`);
             }
+            tableRuns.push({ table, startTime });
         }
 
-        return deferred;
+        return { deferred, tableRuns };
     }
 
-    // Retries held-back records until a pass applies nothing new. Whatever is
-    // left after that genuinely cannot be placed — it points at a table this
-    // module does not sync — so it becomes a reported error rather than
-    // vanishing.
+    // Retries held-back records until a pass applies nothing new. Records
+    // that clear the retry get their SyncFailure row deleted (any transient
+    // problem is over). Records still unplaced after MAX_DEFERRED_PASSES get
+    // a cross-tick strike bump -- five straight ticks in this state and they
+    // quarantine, letting their table's cursor advance while they keep being
+    // logged and retried every tick for auto-recovery.
     private async drainDeferred(deferred: DeferredRecord[], syncLog: SyncLog) {
+        // Snapshot the initial pending set so we can identify which records
+        // got applied by the retry pass. Anything applied gets its SyncFailure
+        // row cleared; anything still pending at the end gets a strike.
+        const initialKeys = new Set(deferred.map(d => this.failureKey(d.table, Number(d.record.id))));
+
         let pending = deferred;
 
         for (let pass = 1; pending.length > 0 && pass <= MAX_DEFERRED_PASSES; pass++) {
@@ -343,7 +379,24 @@ export class SyncManager {
             pending = remaining;
         }
 
+        // Success side: records that started pending but aren't in the final
+        // set got placed. Clear their failure rows.
+        const finalKeys = new Set(pending.map(p => this.failureKey(p.table, p.record.id)));
+        for (const key of initialKeys) {
+            if (!finalKeys.has(key)) {
+                const [table, idStr] = key.split('#');
+                await this.dbSyncer.recordSuccess(table, Number(idStr), 'pull');
+            }
+        }
+
         if (pending.length === 0) return;
+
+        // Failure side: bump strikes for each record that made it through the
+        // whole deferred pass and still failed. Once strikes hit MAX_STRIKES,
+        // the record is quarantined and stops holding back its table's cursor.
+        for (const item of pending) {
+            await this.dbSyncer.recordFailure(item.table, Number(item.record.id), 'pull', item.lastError);
+        }
 
         // Collapse to one line per table+constraint; thousands of identical FK
         // failures are one problem, not thousands.
@@ -357,20 +410,43 @@ export class SyncManager {
         }
     }
 
-    private async getLastSyncTimestamp(): Promise<Date> {
-        const lastSync = await prisma.syncMetadata.findFirst({
-            orderBy: { timestamp: 'desc' }
-        });
-
-        return lastSync?.timestamp || new Date(0);
+    private failureKey(table: string, recordId: number): string {
+        return `${table}#${recordId}`;
     }
 
-    private async updateSyncTimestamp() {
-        await prisma.syncMetadata.create({
-            data: {
-                timestamp: new Date(),
-                server_type: process.env.SERVER_TYPE || 'local'
-            }
+    // Per-table cursor read. Falls back to the legacy global SyncMetadata
+    // timestamp on first-run-per-table so no table regresses to epoch after
+    // deploy: whatever the last global tick reached becomes each table's
+    // starting cursor. If neither exists (fresh install), epoch is the safe
+    // default -- the sync will just re-scan everything, all writes are
+    // idempotent via findLocalMatch.
+    private async getTableCursor(tableName: string): Promise<Date> {
+        const row = await prisma.syncCursor.findUnique({ where: { table_name: tableName } });
+        if (row) return row.cursor;
+
+        const legacy = await prisma.syncMetadata.findFirst({ orderBy: { timestamp: 'desc' } });
+        const seed = legacy?.timestamp || new Date(0);
+        await prisma.syncCursor.create({ data: { table_name: tableName, cursor: seed } });
+        return seed;
+    }
+
+    // Advance a table's cursor iff no unquarantined failures remain for it.
+    // Never regresses -- if the caller's captured startTime is somehow earlier
+    // than the stored cursor (clock skew, concurrent run), the write is a
+    // no-op rather than a rewind.
+    private async maybeAdvanceCursor(tableName: string, newCursor: Date) {
+        const blockers = await prisma.syncFailure.count({
+            where: { table_name: tableName, strikes: { lt: MAX_STRIKES } }
+        });
+        if (blockers > 0) return;
+
+        const existing = await prisma.syncCursor.findUnique({ where: { table_name: tableName } });
+        if (existing && existing.cursor >= newCursor) return;
+
+        await prisma.syncCursor.upsert({
+            where: { table_name: tableName },
+            update: { cursor: newCursor },
+            create: { table_name: tableName, cursor: newCursor }
         });
     }
 

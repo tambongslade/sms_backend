@@ -7,6 +7,7 @@
 import prisma from '../../../config/db';
 import { DayOfWeek, Prisma, TeacherRollCallStatus } from '@prisma/client';
 import { getAcademicYearId } from '../../../utils/academicYear';
+import { schoolNow } from '../../../utils/schoolClock';
 
 // ---------- Helpers ----------
 
@@ -17,8 +18,11 @@ function normalizeDate(input: Date | string): Date {
     return d;
 }
 
+// "Today" / day-of-week / minutes are taken in the school timezone
+// (Africa/Douala) -- the server runs in Europe/Berlin, which put the current
+// period up to 2h off and flipped the date at the wrong midnight.
 function isToday(date: Date): boolean {
-    const t = new Date();
+    const t = schoolNow().dateOnly;
     return (
         date.getUTCFullYear() === t.getUTCFullYear() &&
         date.getUTCMonth() === t.getUTCMonth() &&
@@ -41,12 +45,11 @@ function currentDayOfWeek(): DayOfWeek {
         DayOfWeek.FRIDAY,
         DayOfWeek.SATURDAY,
     ];
-    return days[new Date().getDay()];
+    return days[schoolNow().dateOnly.getUTCDay()];
 }
 
 function currentMinutes(): number {
-    const d = new Date();
-    return d.getHours() * 60 + d.getMinutes();
+    return schoolNow().minutes;
 }
 
 function badRequest(msg: string): Error {
@@ -115,7 +118,7 @@ export async function getCurrentPeriodForTeacher(teacherId: number) {
         };
     }
 
-    const view = await loadRollCallView(current.id, teacherId, new Date());
+    const view = await loadRollCallView(current.id, teacherId, schoolNow().dateStr);
     return {
         ...view,
         total_students: view.roster.length,
@@ -240,6 +243,7 @@ async function loadRollCallView(
             where: {
                 sub_class_id: tp.sub_class_id,
                 academic_year_id: tp.academic_year_id,
+                student: { status: { not: 'WITHDRAWN' } },
             },
             include: {
                 student: {
@@ -319,11 +323,10 @@ export async function recordTeacherRollCall(input: {
     notes?: string;
     recorded_by_id: number;
 }) {
-    const dateOnly = normalizeDate(input.date ?? new Date());
+    const dateOnly = normalizeDate(input.date ?? schoolNow().dateStr);
     if (!isToday(dateOnly)) {
         // Allow past-day corrections up to 3 days back; forbid future dates.
-        const now = new Date();
-        now.setUTCHours(0, 0, 0, 0);
+        const now = schoolNow().dateOnly;
         const diffDays = (now.getTime() - dateOnly.getTime()) / (24 * 60 * 60 * 1000);
         if (diffDays < 0) throw badRequest('Cannot record roll call for a future date');
         if (diffDays > 3) throw badRequest('Roll call can only be recorded within 3 days of the class');
@@ -355,6 +358,7 @@ export async function recordTeacherRollCall(input: {
             id: { in: enrollmentIds },
             sub_class_id: tp.sub_class_id,
             academic_year_id: tp.academic_year_id,
+            student: { status: { not: 'WITHDRAWN' } },
         },
         select: { id: true },
     });
@@ -437,7 +441,7 @@ export async function listMyRollCalls(
     if (opts.from) where.date = { ...(where.date as any), gte: normalizeDate(opts.from) };
     if (opts.to) where.date = { ...(where.date as any), lte: normalizeDate(opts.to) };
 
-    return prisma.teacherRollCall.findMany({
+    const rows = await prisma.teacherRollCall.findMany({
         where,
         include: {
             teacher_period: {
@@ -456,6 +460,16 @@ export async function listMyRollCalls(
         orderBy: [{ date: 'desc' }, { created_at: 'desc' }],
         take: limit,
     });
+    return rows.map(withEntryCount);
+}
+
+/**
+ * Prisma's `_count` key does not survive the snake->camel response middleware
+ * (`_count` becomes `Count`), so the UI read `_count.entries` as undefined and
+ * showed "0 students" on every roll call. Expose plain `entry_count`.
+ */
+function withEntryCount<T extends { _count: { entries: number } }>(rc: T): T & { entry_count: number } {
+    return { ...rc, entry_count: rc._count.entries };
 }
 
 // ---------- Oversight (SDM / Dean of Discipline / VP / Principal) ----------
@@ -496,7 +510,7 @@ export async function listRollCallsForOversight(opts: OversightFilters) {
             : {}),
     };
 
-    return prisma.teacherRollCall.findMany({
+    const rows = await prisma.teacherRollCall.findMany({
         where,
         include: {
             teacher_period: {
@@ -524,6 +538,7 @@ export async function listRollCallsForOversight(opts: OversightFilters) {
         orderBy: [{ date: 'desc' }, { created_at: 'desc' }],
         take: limit,
     });
+    return rows.map(withEntryCount);
 }
 
 export async function getRollCallDetail(rollCallId: number) {

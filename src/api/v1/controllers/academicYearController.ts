@@ -43,6 +43,20 @@ export const createAcademicYear = async (req: Request, res: Response): Promise<v
                     });
                     return;
                 }
+                if (term.is_holiday && (!Array.isArray(term.class_ids) || term.class_ids.length === 0)) {
+                    res.status(400).json({
+                        success: false,
+                        error: 'Holiday terms must specify at least one class in classIds'
+                    });
+                    return;
+                }
+                if (term.class_ids !== undefined && !Array.isArray(term.class_ids)) {
+                    res.status(400).json({
+                        success: false,
+                        error: 'classIds must be an array of class IDs'
+                    });
+                    return;
+                }
             }
         }
 
@@ -361,9 +375,9 @@ export const getAvailableAcademicYearsForRole = async (req: Request, res: Respon
             return;
         }
 
-        // For global roles (like SUPER_MANAGER), return all academic years
-        // For year-specific roles, return academic years where the user has access
-        const globalRoles = ['SUPER_MANAGER'];
+        // For global roles (SUPER_MANAGER, MANAGER — Tier 1 executives), return all academic years.
+        // For year-specific roles, return academic years where the user has access.
+        const globalRoles = ['SUPER_MANAGER', 'MANAGER'];
 
         let academicYears;
 

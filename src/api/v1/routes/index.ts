@@ -14,6 +14,7 @@ import unifiedPaymentRoutes from './unifiedPaymentRoutes';
 import subjectRoutes from './subjectRoutes';
 import disciplineRoutes from './disciplineRoutes';
 import examRoutes, { marksRouter, reportCardsRouter } from './examRoutes';
+import resultsRoutes from './resultsRoutes';
 import communicationRoutes from './communicationRoutes';
 import mobileRoutes from './mobileRoutes';
 import fileRoutes from './fileRoutes';
@@ -146,6 +147,9 @@ router.use('/marks', marksRouter);
 
 // Report cards endpoints are mounted at /report-cards
 router.use('/report-cards', reportCardsRouter);
+
+// Class results, CSV export and promotion preview
+router.use('/results', resultsRoutes);
 
 // Quiz endpoints are mounted at /quiz
 router.use('/quiz', quizRoutes);

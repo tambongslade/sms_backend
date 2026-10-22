@@ -80,6 +80,7 @@ export async function getDMRollCall(
         where: {
             sub_class_id: subClassId,
             academic_year_id: yearId,
+            student: { status: { not: 'WITHDRAWN' } },
         },
         include: {
             student: {
@@ -298,6 +299,7 @@ export async function recordDMRollCall(input: {
             id: { in: enrollmentIds },
             sub_class_id: input.sub_class_id,
             academic_year_id: yearId,
+            student: { status: { not: 'WITHDRAWN' } },
         },
         select: { id: true },
     });

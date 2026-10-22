@@ -1,6 +1,7 @@
 // src/api/v1/services/financialReportService.ts
 import prisma from '../../../config/db';
 import { getAcademicYearId } from '../../../utils/academicYear';
+import { getFeeBalances, summarizeBalances, ACTIVE_FEE_ROW_WHERE } from './feeOutstandingService';
 import { Parser } from 'json2csv';
 import * as XLSX from 'xlsx';
 import { PDFDocument, rgb, StandardFonts, PageSizes } from 'pdf-lib';
@@ -20,69 +21,8 @@ export async function generateClassFeeSummaryReport(
         throw new Error("No academic year found and none provided");
     }
 
-    // Build where clause
-    const where: any = { academic_year_id: yearId };
-    if (classId) {
-        where.enrollment = {
-            sub_class: { class_id: classId }
-        };
-    }
-
-    // Get fees with class grouping
-    const fees = await prisma.schoolFees.findMany({
-        where,
-        include: {
-            enrollment: {
-                include: {
-                    sub_class: {
-                        include: { class: true }
-                    }
-                }
-            }
-        }
-    });
-
-    // Group by class and calculate summaries
-    const classGroups = fees.reduce((acc, fee) => {
-        const className = fee.enrollment.sub_class?.class?.name || 'No Class';
-
-        if (!acc[className]) {
-            acc[className] = {
-                className,
-                totalStudents: 0,
-                totalExpected: 0,
-                totalPaid: 0,
-                totalOutstanding: 0,
-                studentsWithPayments: 0,
-                averagePaymentPercentage: 0
-            };
-        }
-
-        acc[className].totalStudents++;
-        acc[className].totalExpected += fee.amount_expected;
-        acc[className].totalPaid += fee.amount_paid;
-        acc[className].totalOutstanding += (fee.amount_expected - fee.amount_paid);
-
-        if (fee.amount_paid > 0) {
-            acc[className].studentsWithPayments++;
-        }
-
-        return acc;
-    }, {} as Record<string, any>);
-
-    // Calculate averages and format data
-    const reportData = Object.values(classGroups).map((group: any) => ({
-        className: group.className,
-        totalStudents: group.totalStudents,
-        totalExpected: parseFloat(group.totalExpected.toFixed(2)),
-        totalPaid: parseFloat(group.totalPaid.toFixed(2)),
-        totalOutstanding: parseFloat(group.totalOutstanding.toFixed(2)),
-        paymentPercentage: group.totalExpected > 0
-            ? parseFloat(((group.totalPaid / group.totalExpected) * 100).toFixed(2))
-            : 0,
-        studentsWithPayments: group.studentsWithPayments,
-        studentsWithoutPayments: group.totalStudents - group.studentsWithPayments
-    }));
+    // Same numbers as the on-screen report / Overview / Defaulters (shared rule, M8).
+    const reportData = await getClassFeeSummaryData(yearId, classId);
 
     // Generate file
     let buffer: Buffer;
@@ -463,69 +403,36 @@ export async function getClassFeeSummaryData(
         throw new Error("No academic year found and none provided");
     }
 
-    // Build where clause
-    const where: any = { academic_year_id: yearId };
-    if (classId) {
-        where.enrollment = {
-            sub_class: { class_id: classId }
-        };
+    // Shared population/balance rule (M8): withdrawn excluded, unplaced students
+    // counted under their registered class, overpayments never offset debts.
+    const rows = await getFeeBalances(yearId, { classId });
+
+    const groups = new Map<string, { className: string; rows: typeof rows }>();
+    for (const r of rows) {
+        const key = String(r.class_id ?? r.class_name);
+        if (!groups.has(key)) groups.set(key, { className: r.class_name, rows: [] });
+        groups.get(key)!.rows.push(r);
     }
 
-    // Get fees with class grouping
-    const fees = await prisma.schoolFees.findMany({
-        where,
-        include: {
-            enrollment: {
-                include: {
-                    sub_class: {
-                        include: { class: true }
-                    }
-                }
-            }
-        }
+    return Array.from(groups.values()).map(g => {
+        const t = summarizeBalances(g.rows);
+        const withPayments = g.rows.filter(r => r.amount_paid > 0).length;
+        return {
+            className: g.className,
+            totalStudents: t.student_count,
+            totalExpected: t.total_expected,
+            totalPaid: t.total_collected,
+            totalOutstanding: t.total_outstanding,
+            totalOverpayments: t.total_overpayments,
+            studentsOwing: t.students_owing,
+            paymentPercentage: t.total_expected > 0
+                ? parseFloat(((t.total_collected / t.total_expected) * 100).toFixed(2))
+                : 0,
+            studentsWithPayments: withPayments,
+            studentsWithoutPayments: t.student_count - withPayments,
+            reconciliation: t.reconciliation.formula,
+        };
     });
-
-    // Group by class and calculate summaries
-    const classGroups = fees.reduce((acc, fee) => {
-        const className = fee.enrollment.sub_class?.class?.name || 'No Class';
-
-        if (!acc[className]) {
-            acc[className] = {
-                className,
-                totalStudents: 0,
-                totalExpected: 0,
-                totalPaid: 0,
-                totalOutstanding: 0,
-                studentsWithPayments: 0,
-                averagePaymentPercentage: 0
-            };
-        }
-
-        acc[className].totalStudents++;
-        acc[className].totalExpected += fee.amount_expected;
-        acc[className].totalPaid += fee.amount_paid;
-        acc[className].totalOutstanding += (fee.amount_expected - fee.amount_paid);
-
-        if (fee.amount_paid > 0) {
-            acc[className].studentsWithPayments++;
-        }
-
-        return acc;
-    }, {} as Record<string, any>);
-
-    // Calculate averages and format data
-    return Object.values(classGroups).map((group: any) => ({
-        className: group.className,
-        totalStudents: group.totalStudents,
-        totalExpected: parseFloat(group.totalExpected.toFixed(2)),
-        totalPaid: parseFloat(group.totalPaid.toFixed(2)),
-        totalOutstanding: parseFloat(group.totalOutstanding.toFixed(2)),
-        paymentPercentage: group.totalExpected > 0
-            ? parseFloat(((group.totalPaid / group.totalExpected) * 100).toFixed(2))
-            : 0,
-        studentsWithPayments: group.studentsWithPayments,
-        studentsWithoutPayments: group.totalStudents - group.studentsWithPayments
-    }));
 }
 
 /**
@@ -542,25 +449,29 @@ export async function getStudentDetailedFeesData(
         throw new Error("No academic year found and none provided");
     }
 
-    // Build where clause
-    const where: any = { academic_year_id: yearId };
+    // Shared population rule (M8): withdrawn excluded; unplaced students via registered class.
+    const where: any = { AND: [{ academic_year_id: yearId }, ACTIVE_FEE_ROW_WHERE] };
 
     if (classId) {
-        where.enrollment = {
-            sub_class: { class_id: classId }
-        };
+        where.AND.push({
+            OR: [
+                { enrollment: { sub_class: { class_id: classId } } },
+                { enrollment: { sub_class_id: null, class_id: classId } },
+            ]
+        });
     }
 
     if (studentIdentifier) {
-        where.enrollment = {
-            ...(where.enrollment || {}),
-            student: {
-                OR: [
-                    { name: { contains: studentIdentifier, mode: 'insensitive' } },
-                    { matricule: { contains: studentIdentifier, mode: 'insensitive' } }
-                ]
+        where.AND.push({
+            enrollment: {
+                student: {
+                    OR: [
+                        { name: { contains: studentIdentifier, mode: 'insensitive' } },
+                        { matricule: { contains: studentIdentifier, mode: 'insensitive' } }
+                    ]
+                }
             }
-        };
+        });
     }
 
     const fees = await prisma.schoolFees.findMany({
@@ -569,6 +480,7 @@ export async function getStudentDetailedFeesData(
             enrollment: {
                 include: {
                     student: true,
+                    class: true,
                     sub_class: {
                         include: { class: true }
                     }
@@ -587,11 +499,12 @@ export async function getStudentDetailedFeesData(
     return fees.map(fee => ({
         studentName: fee.enrollment.student.name,
         studentMatricule: fee.enrollment.student.matricule,
-        className: fee.enrollment.sub_class?.class?.name || 'No Class',
+        className: fee.enrollment.sub_class?.class?.name || fee.enrollment.class?.name || 'No Class',
         subClassName: fee.enrollment.sub_class?.name || 'No Subclass',
         expectedAmount: parseFloat((fee.amount_expected || 0).toFixed(2)),
         paidAmount: parseFloat((fee.amount_paid || 0).toFixed(2)),
-        outstanding: parseFloat(((fee.amount_expected || 0) - (fee.amount_paid || 0)).toFixed(2)),
+        outstanding: parseFloat(Math.max((fee.amount_expected || 0) - (fee.amount_paid || 0), 0).toFixed(2)),
+        overpayment: parseFloat(Math.max((fee.amount_paid || 0) - (fee.amount_expected || 0), 0).toFixed(2)),
         paymentPercentage: (fee.amount_expected || 0) > 0
             ? parseFloat((((fee.amount_paid || 0) / fee.amount_expected) * 100).toFixed(2))
             : 0,

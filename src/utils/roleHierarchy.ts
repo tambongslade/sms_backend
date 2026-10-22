@@ -3,7 +3,7 @@ import { Role } from '@prisma/client';
 export enum RoleTier {
     EXECUTIVE = 1,        // SUPER_MANAGER, MANAGER
     HEAD_OF_SCHOOL = 2,   // PRINCIPAL
-    SENIOR_LEADERSHIP = 3,// VP, BURSAR, SECRETARY
+    SENIOR_LEADERSHIP = 3,// VP, BURSAR, SECRETARY, DISCIPLINE_COORDINATOR
     DEPT_HEAD = 4,        // DOS, DOD, SDM, HOD
     FIELD_STAFF = 5,      // TEACHER, DM, NURSE, FEE_AUDITOR, GUIDANCE_COUNSELOR, CONTROLLER
     EXTERNAL = 6,         // PARENT
@@ -18,6 +18,7 @@ export const ROLE_TIER: Record<Role, RoleTier> = {
     VICE_PRINCIPAL: RoleTier.SENIOR_LEADERSHIP,
     BURSAR: RoleTier.SENIOR_LEADERSHIP,
     SECRETARY: RoleTier.SENIOR_LEADERSHIP,
+    DISCIPLINE_COORDINATOR: RoleTier.SENIOR_LEADERSHIP,
 
     CONTROLLER: RoleTier.FIELD_STAFF,
 
@@ -45,6 +46,7 @@ export const ROLE_PARENT: Record<Role, Role | null> = {
     VICE_PRINCIPAL: 'PRINCIPAL',
     BURSAR: 'PRINCIPAL',
     SECRETARY: 'PRINCIPAL',
+    DISCIPLINE_COORDINATOR: 'PRINCIPAL', // reports directly to PRINCIPAL — parallel to VP but scoped to the discipline chain
 
     DEAN_OF_STUDIES: 'VICE_PRINCIPAL',
     DEAN_OF_DISCIPLINE: 'VICE_PRINCIPAL',
@@ -81,6 +83,7 @@ export const ROLE_DEPARTMENT: Record<Role, Department> = {
     TEACHER: Department.ACADEMIC,
 
     DEAN_OF_DISCIPLINE: Department.DISCIPLINE,
+    DISCIPLINE_COORDINATOR: Department.DISCIPLINE,
     SENIOR_DISCIPLINE_MASTER: Department.DISCIPLINE,
     DISCIPLINE_MASTER: Department.DISCIPLINE,
 

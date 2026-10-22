@@ -122,17 +122,32 @@ function isSuperManager(roles: string[]): boolean {
 function assertRoles(roles: string[], allowed: string[]) {
     if (roles.includes('SUPER_MANAGER')) return;
     if (!allowed.some((r) => roles.includes(r))) {
-        throw new Error(`Forbidden: requires one of ${allowed.join(', ')}`);
+        throw new Error("Forbidden: you don't have permission to perform this action.");
     }
 }
 
 // ---------- Salary Profiles ----------
 
+/**
+ * Tolerantly map client input to the SalaryType enum. Accepts the canonical values
+ * (TEACHER_HOURLY / ADMIN_FIXED) in any case, plus the short aliases the UI has used
+ * historically (HOURLY / FIXED, "teacher hourly", "admin-fixed", ...).
+ * Returns null when the value is missing or unrecognised.
+ */
+export function normalizeSalaryType(v: unknown): SalaryType | null {
+    if (typeof v !== 'string') return null;
+    const key = v.trim().toUpperCase().replace(/[\s-]+/g, '_');
+    if (!key) return null;
+    if (['TEACHER_HOURLY', 'HOURLY', 'TEACHER'].includes(key)) return 'TEACHER_HOURLY';
+    if (['ADMIN_FIXED', 'FIXED', 'ADMIN', 'MONTHLY', 'BASE'].includes(key)) return 'ADMIN_FIXED';
+    return null;
+}
+
 export interface CreateProfileInput {
     user_id: number;
-    salary_type: SalaryType;
-    hourly_rate?: number;
-    base_salary?: number;
+    salary_type: SalaryType | string;
+    hourly_rate?: number | string | null;
+    base_salary?: number | string | null;
     academic_year_id?: number;
     notes?: string;
 }
@@ -145,23 +160,30 @@ export async function createSalaryProfile(
     const yearId = input.academic_year_id ?? (await getAcademicYearId());
     if (!yearId) throw new Error('No current academic year is set');
 
-    if (input.salary_type === 'TEACHER_HOURLY') {
-        if (input.hourly_rate == null || input.hourly_rate < 0) {
+    const salaryType = normalizeSalaryType(input.salary_type);
+    if (!salaryType) {
+        throw new Error(
+            input.salary_type == null || input.salary_type === ''
+                ? 'salaryType is required (TEACHER_HOURLY or ADMIN_FIXED)'
+                : `Invalid salaryType "${input.salary_type}" (expected TEACHER_HOURLY or ADMIN_FIXED)`
+        );
+    }
+    const userId = toInt(input.user_id, 'user_id');
+    const hourlyRate = toNumber(input.hourly_rate, 'hourly_rate');
+    const baseSalary = toNumber(input.base_salary, 'base_salary');
+    if (salaryType === 'TEACHER_HOURLY') {
+        if (hourlyRate == null || hourlyRate < 0) {
             throw new Error('hourly_rate is required and must be >= 0 for TEACHER_HOURLY');
         }
-    } else if (input.salary_type === 'ADMIN_FIXED') {
-        if (input.base_salary == null || input.base_salary < 0) {
-            throw new Error('base_salary is required and must be >= 0 for ADMIN_FIXED');
-        }
-    } else {
-        throw new Error('Invalid salary_type');
+    } else if (baseSalary == null || baseSalary < 0) {
+        throw new Error('base_salary is required and must be >= 0 for ADMIN_FIXED');
     }
 
-    const user = await prisma.user.findUnique({ where: { id: input.user_id } });
-    if (!user) throw new Error(`User ${input.user_id} not found`);
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new Error(`User ${userId} not found`);
 
     const existing = await prisma.salaryProfile.findUnique({
-        where: { user_id_academic_year_id: { user_id: input.user_id, academic_year_id: yearId } },
+        where: { user_id_academic_year_id: { user_id: userId, academic_year_id: yearId } },
     });
     if (existing) throw new Error('A salary profile already exists for this user in this academic year');
 
@@ -169,11 +191,11 @@ export async function createSalaryProfile(
 
     const created = await prisma.salaryProfile.create({
         data: {
-            user_id: input.user_id,
+            user_id: userId,
             academic_year_id: yearId,
-            salary_type: input.salary_type,
-            hourly_rate: input.salary_type === 'TEACHER_HOURLY' ? input.hourly_rate : null,
-            base_salary: input.salary_type === 'ADMIN_FIXED' ? input.base_salary : null,
+            salary_type: salaryType,
+            hourly_rate: salaryType === 'TEACHER_HOURLY' ? hourlyRate : null,
+            base_salary: salaryType === 'ADMIN_FIXED' ? baseSalary : null,
             notes: input.notes?.trim() || null,
             status: superManagerCreated ? 'ACTIVE' : 'PENDING_APPROVAL',
             created_by_id: caller.id,
@@ -201,7 +223,7 @@ export async function createSalaryProfile(
 
 export interface ListProfilesFilter {
     status?: SalaryProfileStatus;
-    salary_type?: SalaryType;
+    salary_type?: SalaryType | string;
     academic_year_id?: number;
     user_id?: number;
     page?: number;
@@ -215,7 +237,7 @@ export async function listSalaryProfiles(filter: ListProfilesFilter) {
     const where: Prisma.SalaryProfileWhereInput = {
         ...(yearId ? { academic_year_id: yearId } : {}),
         ...(filter.status ? { status: filter.status } : {}),
-        ...(filter.salary_type ? { salary_type: filter.salary_type } : {}),
+        ...(normalizeSalaryType(filter.salary_type) ? { salary_type: normalizeSalaryType(filter.salary_type)! } : {}),
         ...(filter.user_id ? { user_id: filter.user_id } : {}),
     };
     const [items, total] = await Promise.all([
@@ -537,6 +559,12 @@ export async function createAllowance(
     assertRoles(caller.roles, ['MANAGER']);
     if (!input.reason?.trim()) throw new Error('reason is required');
     if (input.amount == null || input.amount < 0) throw new Error('amount must be >= 0');
+    // type is optional for clients: defaults to ALLOWANCE, case-insensitive.
+    const allowanceType = String(input.type ?? 'ALLOWANCE').trim().toUpperCase();
+    if (allowanceType !== 'ALLOWANCE' && allowanceType !== 'BONUS') {
+        throw new Error('type must be ALLOWANCE or BONUS');
+    }
+    input = { ...input, type: allowanceType as SalaryAllowanceType };
 
     const profile = await prisma.salaryProfile.findUnique({ where: { id: input.salary_profile_id } });
     if (!profile) throw new Error(`SalaryProfile ${input.salary_profile_id} not found`);

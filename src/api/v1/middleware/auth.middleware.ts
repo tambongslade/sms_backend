@@ -269,13 +269,16 @@ export const authorize = (roles: string[]) => {
         }
 
         return res.status(403).json({
-            error: `Forbidden: Insufficient permissions. Required: ${roles.join(' or ')}, You have: ${user.role.join(', ')}`
+            success: false,
+            // Never echo role codes back to the client — users only need to know
+            // the action isn't open to them.
+            error: "You don't have permission to perform this action."
         });
     };
 };
 
 import { Role } from '@prisma/client';
-import { RoleTier, userHasMinTier, getRolesAtOrAbove } from '../../../utils/roleHierarchy';
+import { RoleTier, userHasMinTier } from '../../../utils/roleHierarchy';
 
 /**
  * Authorize a route by minimum hierarchy tier. Lower tier number = higher authority.
@@ -294,8 +297,8 @@ export const authorizeMinTier = (minTier: RoleTier) => {
             return next();
         }
         return res.status(403).json({
-            error: `Forbidden: Insufficient tier. Required tier <= ${minTier}, you have: ${user.role.join(', ')}`,
-            allowedRoles: getRolesAtOrAbove(minTier),
+            success: false,
+            error: "You don't have permission to perform this action.",
         });
     };
 };

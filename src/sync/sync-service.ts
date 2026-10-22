@@ -41,15 +41,18 @@ export class SyncService {
   }
 
   private async isFirstRun(): Promise<boolean> {
-    // Check if sync metadata exists
+    // First run == no per-table cursor rows yet. SyncMetadata is no longer
+    // written to under the per-table-cursor design, so checking it would
+    // report "first run" every tick after deploy and repeatedly trigger the
+    // initial-sync branch.
     const { PrismaClient } = require('@prisma/client');
     const prisma = new PrismaClient();
-    
+
     try {
-      const metadata = await prisma.syncMetadata.findFirst();
-      return !metadata;
+      const cursor = await prisma.syncCursor.findFirst();
+      return !cursor;
     } catch (error: any) {
-      // Table might not exist yet
+      // Table might not exist yet (pre-migration)
       return true;
     }
   }

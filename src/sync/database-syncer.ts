@@ -66,6 +66,28 @@ export class DatabaseSyncer {
     return null;
   }
 
+  // The local row that logically corresponds to this incoming record. Natural
+  // key wins over id where the model has an @@unique composite: primary keys
+  // aren't portable across nodes (each side runs its own autoincrement), so
+  // two nodes will happily mint the same id for two different logical rows.
+  //
+  // Matching by id first turned that into corruption: ChatChannelMember 291
+  // on the VPS is "channel 2, user 756" but on the peer it is "channel 21,
+  // user 394", and the update tried to renumber the VPS row's natural key
+  // onto a pair another local row (id 270) already occupies -- looping every
+  // sync run on the @@unique. Natural key first routes the write to the row
+  // that actually holds that pair.
+  //
+  // Falls back to findUnique(id) when the model has no @@unique (like
+  // PaymentTransaction, where id is the only signal available) or when the
+  // incoming record leaves the natural-key columns unset.
+  private async findLocalMatch(model: any, tableName: string, record: RemoteRecord) {
+    const byNaturalKey = await this.findByNaturalKey(model, tableName, record);
+    if (byNaturalKey) return byNaturalKey;
+    if (record.id === undefined || record.id === null) return null;
+    return await model.findUnique({ where: { id: record.id } });
+  }
+
   private fieldsOf(tableName: string): Set<string> {
     const cached = DatabaseSyncer.fieldCache.get(tableName);
     if (cached) return cached;
@@ -126,7 +148,30 @@ export class DatabaseSyncer {
     return model;
   }
 
-  async syncTable(tableName: string, lastSync: Date): Promise<SyncResult> {
+  // Whether an incoming record is older than what we already have and should
+  // be ignored rather than overwrite our fresher state.
+  //
+  // The receive path used to call updateRecord unconditionally, and because
+  // Prisma preserves an explicit updated_at in a mutation payload, a peer
+  // pushing a stale copy silently rewound both the row's data AND its
+  // updated_at back to the peer's old timestamp. That is how the VPS lost
+  // fresh admin password resets: the school node still held the pre-reset
+  // User row, pushed it up on the next sync, and the receive handler wrote it
+  // over the reset — hash, must_change_password, server_id, updated_at, all
+  // reverted, with nothing in the log to explain it.
+  //
+  // Strict "greater than": equal timestamps are not stale (same write, just
+  // acknowledged), and missing timestamps fall through to the old behaviour
+  // rather than block writes on tables that never had updated_at.
+  private isIncomingStale(local: any, incoming: any): boolean {
+    if (!local || !incoming) return false;
+    const localAt = local.updated_at ? new Date(local.updated_at).getTime() : NaN;
+    const incomingAt = incoming.updated_at ? new Date(incoming.updated_at).getTime() : NaN;
+    if (Number.isNaN(localAt) || Number.isNaN(incomingAt)) return false;
+    return localAt > incomingAt;
+  }
+
+  async syncTable(tableName: string, cursor: Date): Promise<SyncResult> {
     const result: SyncResult = {
       recordsProcessed: 0,
       conflicts: [],
@@ -135,11 +180,13 @@ export class DatabaseSyncer {
     };
 
     try {
-      // Get local changes since last sync
-      const localChanges = await this.getLocalChanges(tableName, lastSync);
+      // Get local changes since this table's own cursor. Per-table cursors
+      // mean a poison record in one table cannot freeze replication for the
+      // other ~80 -- unrelated tables advance independently.
+      const localChanges = await this.getLocalChanges(tableName, cursor);
 
-      // Get remote changes since last sync
-      const remoteChanges = await this.getRemoteChanges(tableName, lastSync);
+      // Same window on the peer side.
+      const remoteChanges = await this.getRemoteChanges(tableName, cursor);
 
       // Push local changes to remote
       await this.pushLocalChanges(tableName, localChanges, result);
@@ -196,9 +243,18 @@ export class DatabaseSyncer {
 
         await this.apiClient.pushRecord(tableName, syncRecord);
         result.recordsProcessed++;
+        // Any prior push-side failure for this record is resolved; clear its
+        // SyncFailure row so the counter cannot get stuck high after a
+        // transient issue that has since fixed itself.
+        await this.recordSuccess(tableName, record.id, 'push');
 
       } catch (error: any) {
         result.errors.push(`Push ${tableName}[${record.id}]: ${error.message}`);
+        // Cross-tick strike. If this hits MAX_STRIKES the record quarantines
+        // and stops holding back this table's cursor -- but it still gets
+        // attempted every tick so it auto-recovers when the underlying data
+        // problem (e.g. missing parent Enrollment on the peer) is fixed.
+        await this.recordFailure(tableName, record.id, 'push', this.shortError(error));
       }
     }
   }
@@ -225,17 +281,10 @@ export class DatabaseSyncer {
         remoteRecord.server_id = peerId;
       }
       try {
-        // Check if record exists locally, by id first and then by natural key.
-        // Only a record that is absent under both is genuinely new; anything
-        // found the second way is the same row wearing the peer's id, and has
-        // to be updated in place under the id this node already gave it.
-        let localRecord = await model.findUnique({
-          where: { id: remoteRecord.id }
-        });
-
-        if (!localRecord) {
-          localRecord = await this.findByNaturalKey(model, tableName, remoteRecord);
-        }
+        // Find the local row this remote logically maps to. Natural key wins
+        // over id when the model has an @@unique -- see findLocalMatch for
+        // the collision that motivated the reorder.
+        const localRecord = await this.findLocalMatch(model, tableName, remoteRecord);
 
         if (!localRecord) {
           // New record - insert. The remote record is a flat Prisma row.
@@ -258,16 +307,30 @@ export class DatabaseSyncer {
             // No conflict - update. Addressed by the LOCAL id: when the match
             // came from the natural key the two ids differ, and using the
             // remote's would update a different row, or none.
-            await this.updateRecord(model, String(localRecord.id), remoteRecord);
-            result.recordsProcessed++;
+            if (this.isIncomingStale(localRecord, remoteRecord)) {
+              // Same overwrite risk as the receive path — a checksum match
+              // still routes here, but same-server pulls with an older payload
+              // would clobber a fresher local write.
+              console.log(
+                `[SYNC] Skipping stale pull ${tableName}[${localRecord.id}]: local updated_at ${localRecord.updated_at?.toISOString?.() ?? localRecord.updated_at} > remote ${remoteRecord.updated_at}`
+              );
+            } else {
+              await this.updateRecord(model, String(localRecord.id), remoteRecord);
+              result.recordsProcessed++;
+            }
           }
         }
+        // Success either way (insert/update/skipped-as-stale) -- clear any
+        // prior pull-side failure row for this record.
+        await this.recordSuccess(tableName, Number(remoteRecord.id), 'pull');
 
       } catch (error: any) {
         // A missing referenced row is usually a timing problem, not a real
         // failure: the target may belong to a table later in the run, or to
         // another row of this same table (Class -> Class via next_class_id).
         // Hold it back for the retry pass instead of burning it as an error.
+        // The deferred-retry pass in sync-manager will bump SyncFailure only
+        // for records that stay unplaced across MAX_DEFERRED_PASSES.
         if (this.isMissingReferenceError(error)) {
           result.deferred.push({
             table: tableName,
@@ -276,9 +339,38 @@ export class DatabaseSyncer {
           });
         } else {
           result.errors.push(`Pull ${tableName}[${remoteRecord.id}]: ${this.shortError(error)}`);
+          // Non-FK error is not going to fix itself by retrying within this
+          // tick, so strike it cross-tick immediately.
+          await this.recordFailure(tableName, Number(remoteRecord.id), 'pull', this.shortError(error));
         }
       }
     }
+  }
+
+  // Cross-tick strike counter for records that keep failing. Upsert so the
+  // first failure creates the row (strikes=1) and subsequent failures increment.
+  // Returns the post-increment strike count so callers can log or gate on it.
+  //
+  // `direction` distinguishes push failures (local record cannot be sent to
+  // the peer) from pull failures (peer record cannot be applied locally) --
+  // same table+id can legitimately fail on both sides for different reasons.
+  async recordFailure(tableName: string, recordId: number, direction: 'push' | 'pull', error: string): Promise<number> {
+    const row = await prisma.syncFailure.upsert({
+      where: { table_name_record_id_direction: { table_name: tableName, record_id: recordId, direction } },
+      update: { strikes: { increment: 1 }, last_error: error },
+      create: { table_name: tableName, record_id: recordId, direction, strikes: 1, last_error: error }
+    });
+    return row.strikes;
+  }
+
+  // Success clears the counter -- transient failures cannot leave a stuck
+  // strike that eventually quarantines a record that has since started
+  // working. `deleteMany` (not `delete`) so missing rows are a no-op instead
+  // of an error the caller has to swallow.
+  async recordSuccess(tableName: string, recordId: number, direction: 'push' | 'pull'): Promise<void> {
+    await prisma.syncFailure.deleteMany({
+      where: { table_name: tableName, record_id: recordId, direction }
+    });
   }
 
   // P2003 is Prisma's foreign-key constraint failure. P2025 ("required record
@@ -462,27 +554,23 @@ export class DatabaseSyncer {
     }
 
     try {
-      // By id first, then by natural key. Only a record absent under both is
-      // genuinely new; one found the second way is the same row wearing the
-      // peer's id, and belongs under the id this node already gave it.
-      //
-      // pullRemoteChanges has matched this way since the TeacherPeriod
-      // collisions (32 rows dying on the @@unique every single run), but this
-      // path did not — so /sync/receive and the deferred-retry pass kept
-      // rediscovering them. 52 TeacherPeriod slots currently exist on both
-      // nodes under different ids for exactly that reason.
-      let existing = await model.findUnique({
-        where: { id: record.id }
-      });
-
-      if (!existing) {
-        existing = await this.findByNaturalKey(model, tableName, record as RemoteRecord);
-      }
+      // Find the local row this incoming record logically maps to. Natural
+      // key wins over id when the model has an @@unique -- see findLocalMatch
+      // for why. This path used to match by id first, then fall back to
+      // natural key, which is what let ChatChannelMember 291 loop forever on
+      // its @@unique(channel_id, user_id) every sync run.
+      const existing = await this.findLocalMatch(model, tableName, record as RemoteRecord);
 
       if (existing) {
         // Addressed by the LOCAL id: where the match came from the natural key
         // the two ids differ, and writing the peer's would update a different
         // row, or none at all.
+        if (this.isIncomingStale(existing, record)) {
+          console.log(
+            `[SYNC] Skipping stale ${tableName}[${existing.id}] from peer: local updated_at ${existing.updated_at?.toISOString?.() ?? existing.updated_at} > incoming ${record.updated_at}`
+          );
+          return;
+        }
         await this.updateRecord(model, String(existing.id), record);
       } else {
         await this.insertRecord(model, record);

@@ -14,6 +14,7 @@ import { getStudentStatus, getStudentsWithStatus } from '../../../utils/studentS
 import { getAcademicYearId } from '../../../utils/academicYear'; // Import academic year utilities
 import upload, { PhotoType, getFileUrl, deletePhotoFile, isValidPhotoFilename } from '../../../utils/fileUpload';
 import { saveFileMetadata } from '../services/fileService';
+import * as classListDocx from '../services/classListDocxService';
 
 // Define an interface for ParentStudent with the parent relation included
 interface ParentStudentWithParent extends ParentStudent {
@@ -36,7 +37,10 @@ export const getAllStudents = async (req: Request, res: Response) => {
 
 
         // Extract enrollmentStatus separately
-        const enrollment_status_input = req.finalQuery.status as string | undefined; // e.g., 'enrolled', 'not_enrolled', 'all'
+        // The frontend sends `enrollmentStatus` (-> enrollment_status after case conversion);
+        // `status` is the legacy name. Accept both -- reading only `status` meant the
+        // Enrolled / Not-enrolled filter on the Students page was silently ignored.
+        const enrollment_status_input = (req.finalQuery.enrollment_status ?? req.finalQuery.status) as string | undefined; // e.g., 'enrolled', 'not_enrolled', 'all'
         let valid_enrollment_status: 'enrolled' | 'not_enrolled' | 'all' | undefined = 'all';
 
         if (enrollment_status_input) {
@@ -64,13 +68,25 @@ export const getAllStudents = async (req: Request, res: Response) => {
             return;
         }
 
+        // Opt-in only: ?includeWithdrawn=true, e.g. for an admin "view withdrawn" report.
+        // Defaults to excluding withdrawn (soft-deleted) students from ordinary listings.
+        const includeWithdrawn = req.finalQuery.include_withdrawn === 'true' || req.finalQuery.include_withdrawn === true;
+
+        // ?search= : server-side, case-insensitive match on name OR matricule across ALL
+        // students (combined with the other filters, then paginated) -- the Students page
+        // used to filter only the 10 rows of the current page client-side.
+        const searchRaw = req.finalQuery.search ?? req.finalQuery.q;
+        const search = typeof searchRaw === 'string' ? searchRaw.trim() : undefined;
+
         // Call the service function that handles enrollment-based filtering
         const result = await studentService.getAllStudentsWithCurrentEnrollment(
             academic_year_id,
             paginationOptions,
             filterOptions, // Pass the filters extracted (including sub_class_id)
             valid_enrollment_status, // Pass the validated enrollment status filter
-            (req as any).teacherSubClassIds // Pass teacher's accessible subclass IDs if present
+            (req as any).teacherSubClassIds, // Pass teacher's accessible subclass IDs if present
+            includeWithdrawn,
+            search || undefined
         );
 
         res.json({
@@ -189,7 +205,7 @@ export const getStudentFullProfile = async (req: Request, res: Response): Promis
             return res.status(404).json({ success: false, error: 'Student not found' });
         }
 
-        const [fees, controlFees, marksResult, attendanceSummary, discipline] = await Promise.allSettled([
+        const [fees, controlFees, marksResult, attendanceSummary, discipline, disciplineOverview] = await Promise.allSettled([
             feeService.getStudentFees(id, yearId),
             controlFeeService.getStudentControlFees(id, yearId),
             examService.getAllMarks(
@@ -199,6 +215,7 @@ export const getStudentFullProfile = async (req: Request, res: Response): Promis
             ),
             attendanceService.getStudentAttendanceSummary({ student_id: id, academic_year_id: yearId }),
             disciplineService.getDisciplineHistory(id),
+            disciplineService.getStudentDisciplineOverview(id, yearId),
         ]);
 
         const enrollments = (student as any).enrollments ?? [];
@@ -220,6 +237,7 @@ export const getStudentFullProfile = async (req: Request, res: Response): Promis
                 marks: marksResult.status === 'fulfilled' ? marksResult.value.data : [],
                 attendance_summary: attendanceSummary.status === 'fulfilled' ? attendanceSummary.value : null,
                 discipline: discipline.status === 'fulfilled' ? discipline.value : [],
+                discipline_overview: disciplineOverview.status === 'fulfilled' ? disciplineOverview.value : null,
             }
         });
     } catch (error: any) {
@@ -931,6 +949,15 @@ export const exportStudentsBySubclass = async (req: Request, res: Response): Pro
             ? parseInt(req.finalQuery.academic_year_id as string)
             : undefined;
 
+        // ?format=docx -> a real Word document (this endpoint used to ignore
+        // the format and always send Excel, saved by the browser as .docx).
+        if (String(req.finalQuery.format ?? '').toLowerCase() === 'docx') {
+            const doc = await classListDocx.exportSubclassStudentListDocx(subclassId, academicYearId);
+            res.setHeader('Content-Type', classListDocx.DOCX_CONTENT_TYPE);
+            res.setHeader('Content-Disposition', `attachment; filename="${doc.filename}"`);
+            return res.send(doc.buffer);
+        }
+
         const { buffer, filename } = await studentService.exportSubclassStudentListExcel(
             subclassId,
             academicYearId
@@ -1026,6 +1053,13 @@ export const exportStudentsByClass = async (req: Request, res: Response): Promis
         const academicYearId = req.finalQuery.academic_year_id
             ? parseInt(req.finalQuery.academic_year_id as string)
             : undefined;
+
+        if (String(req.finalQuery.format ?? '').toLowerCase() === 'docx') {
+            const doc = await classListDocx.exportClassStudentListDocx(classId, academicYearId);
+            res.setHeader('Content-Type', classListDocx.DOCX_CONTENT_TYPE);
+            res.setHeader('Content-Disposition', `attachment; filename="${doc.filename}"`);
+            return res.send(doc.buffer);
+        }
 
         const { buffer, filename } = await studentService.exportClassStudentListExcel(
             classId,
@@ -1125,25 +1159,29 @@ export const unenrollStudent = async (req: Request, res: Response): Promise<any>
             case 'ACADEMIC_YEAR_NOT_FOUND':
                 return res.status(400).json({ success: false, error: 'No academic year specified and no current academic year is set' });
             case 'ENROLLMENT_HAS_ACADEMIC_RECORDS':
-                return res.status(409).json({ success: false, error: 'Cannot unenroll: student has marks, attendance or discipline records for this year' });
+                return res.status(409).json({ success: false, error: 'Cannot unenroll: student has marks, attendance or discipline records for this year. Use Transfer out (POST /students/:id/transfer-out) to record the departure and keep the records.', code: 'USE_TRANSFER_OUT' });
             case 'ENROLLMENT_HAS_FINANCIAL_RECORDS':
-                return res.status(409).json({ success: false, error: 'Cannot unenroll: student has payment or refund records for this year' });
+                return res.status(409).json({ success: false, error: 'Cannot unenroll: student has payment or refund records for this year. Use Transfer out (POST /students/:id/transfer-out) to record the departure and keep the records.', code: 'USE_TRANSFER_OUT' });
             default:
                 return res.status(500).json({ success: false, error: error.message });
         }
     }
 };
 
-// DELETE /students/:id - Permanently delete a student and all related data
+// DELETE /students/:id - Withdraw a student (soft delete: status -> WITHDRAWN).
+// See studentService.deleteStudent for why this is no longer a hard delete.
 export const deleteStudent = async (req: Request, res: Response): Promise<any> => {
     try {
         const id = parseInt(req.params.id);
         if (isNaN(id)) {
             return res.status(400).json({ success: false, error: 'Invalid student ID format' });
         }
+        if (!req.user || !req.user.id) {
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
 
-        await studentService.deleteStudent(id);
-        return res.json({ success: true, message: 'Student deleted successfully' });
+        await studentService.deleteStudent(id, req.user.id);
+        return res.json({ success: true, message: 'Student withdrawn successfully' });
     } catch (error: any) {
         console.error('Error deleting student:', error);
         if (error.message === 'STUDENT_NOT_FOUND' || error.code === 'P2025') {

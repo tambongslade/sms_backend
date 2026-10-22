@@ -9,6 +9,7 @@ export const createSaturdayPunishment = async (req: any, res: Response): Promise
             student_id: Number(req.body.student_id),
             academic_year_id: req.body.academic_year_id ? Number(req.body.academic_year_id) : undefined,
             reason: req.body.reason,
+            reason_category: req.body.reason_category,
             scheduled_date: req.body.scheduled_date ?? null,
             notes: req.body.notes,
             assigned_by_id: req.user.id,
@@ -58,6 +59,7 @@ export const updateSaturdayPunishment = async (req: Request, res: Response): Pro
         if (isNaN(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
         const updated = await svc.updateSaturdayPunishment(id, {
             reason: req.body.reason,
+            reason_category: req.body.reason_category,
             scheduled_date: req.body.scheduled_date,
             served_date: req.body.served_date,
             status: req.body.status as PunishmentStatus | undefined,

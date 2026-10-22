@@ -11,7 +11,7 @@ const router = Router();
 // separately via /parents/:matricule/health-visits — see parentRoutes.
 const HEALTH_VIEW_ROLES = [
     'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL',
-    'DEAN_OF_DISCIPLINE', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER',
+    'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR', 'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER',
     'NURSE', 'PARENT',
 ];
 // Only the nurse (and admins above her) can log/edit/delete visits.
