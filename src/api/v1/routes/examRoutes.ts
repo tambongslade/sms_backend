@@ -54,7 +54,7 @@ router.patch(
 router.get(
     '/:id/submission-tracking',
     authenticate,
-    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL]),
+    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL, Role.DEAN_OF_STUDIES]),
     examController.getMarkSubmissionTracking
 );
 
@@ -121,7 +121,7 @@ export const marksRouter = Router();
 // TEACHER can only view marks for their assigned subjects/subclasses
 marksRouter.get('/',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
+    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_STUDIES', 'TEACHER']),
     // Add teacher access validation for TEACHER role only
     (req: any, res: any, next: any) => {
         // Check if user has TEACHER role

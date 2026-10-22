@@ -1887,15 +1887,20 @@ export async function getMarkSubmissionTracking(examSequenceId: number) {
         marksBySubjectMap.get(mark.sub_class_subject_id)!.push(mark);
     }
 
-    // Get teacher assignments for subjects
-    const subjectTeachers = await prisma.subjectTeacher.findMany({
-        include: { teacher: { select: { id: true, name: true } }, subject: true }
+    // Teachers per (subclass, subject): whoever the timetable gives that subclass for that
+    // subject this year. SubjectTeacher is school-wide, so it would list every teacher of the
+    // subject in every class.
+    const periods = await prisma.teacherPeriod.findMany({
+        where: { academic_year_id: sequence.academic_year_id, teacher_id: { not: null } },
+        select: { sub_class_id: true, subject_id: true, teacher: { select: { id: true, name: true } } },
     });
 
-    const teacherMap = new Map<number, { id: number; name: string }[]>();
-    for (const st of subjectTeachers) {
-        if (!teacherMap.has(st.subject_id)) teacherMap.set(st.subject_id, []);
-        teacherMap.get(st.subject_id)!.push(st.teacher);
+    const teacherMap = new Map<string, Map<number, { id: number; name: string }>>();
+    for (const p of periods) {
+        if (!p.teacher) continue;
+        const key = `${p.sub_class_id}:${p.subject_id}`;
+        if (!teacherMap.has(key)) teacherMap.set(key, new Map());
+        teacherMap.get(key)!.set(p.teacher.id, p.teacher);
     }
 
     // Build tracking data
@@ -1909,7 +1914,7 @@ export async function getMarkSubmissionTracking(examSequenceId: number) {
         const subjects = sc.sub_class_subjects.map(scs => {
             const subjectMarks = marksBySubjectMap.get(scs.id) || [];
             const submittedCount = subjectMarks.filter(m => enrollmentIds.has(m.enrollment_id)).length;
-            const assignedTeachers = teacherMap.get(scs.subject_id) || [];
+            const assignedTeachers = Array.from(teacherMap.get(`${sc.id}:${scs.subject_id}`)?.values() ?? []);
 
             // Find who actually submitted marks
             const submittedByTeachers = new Map<number, { id: number; name: string; count: number }>();
