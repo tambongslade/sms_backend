@@ -3,6 +3,7 @@ import * as systemService from '../services/systemService';
 import prisma from '../../../config/db';
 import { SyncManager } from '../../../sync/sync-manager';
 import { NetworkChecker } from '../../../sync/network-checker';
+import { getReconcileStatus, reconcileDifferingTables } from '../../../sync/reconcile';
 
 // Module-scope singletons. SyncManager is stateless with respect to a single
 // performSync() call, so re-using one instance across requests is safe and
@@ -462,6 +463,27 @@ export async function getSyncStatus(req: Request, res: Response): Promise<void> 
             error: 'Failed to fetch sync status'
         });
     }
+}
+
+/**
+ * Start the one-off repair of tables whose row counts differ from the peer's, in the
+ * background. Poll getReconcile for progress.
+ */
+export async function startReconcile(req: Request, res: Response): Promise<void> {
+    if (!process.env.REMOTE_SYNC_URL) {
+        res.status(409).json({ success: false, error: 'REMOTE_SYNC_URL is not configured on this server' });
+        return;
+    }
+    if (getReconcileStatus()?.running || syncInFlight) {
+        res.status(409).json({ success: false, error: 'A sync or repair is already running' });
+        return;
+    }
+    void reconcileDifferingTables();
+    res.status(202).json({ success: true, message: 'Repair started' });
+}
+
+export async function getReconcile(req: Request, res: Response): Promise<void> {
+    res.status(200).json({ success: true, data: getReconcileStatus() });
 }
 
 /**

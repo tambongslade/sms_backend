@@ -108,4 +108,12 @@ router.post('/sync/trigger', systemController.triggerSync);
  */
 router.post('/sync/start', systemController.startSync);
 
+/**
+ * @route POST /api/v1/system/sync/reconcile  (GET for progress)
+ * @desc Re-send/re-read the tables whose row counts differ from the peer's; adds and updates only
+ * @access SUPER_MANAGER only
+ */
+router.post('/sync/reconcile', systemController.startReconcile);
+router.get('/sync/reconcile', systemController.getReconcile);
+
 export default router;
