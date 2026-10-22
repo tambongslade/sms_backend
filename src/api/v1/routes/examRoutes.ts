@@ -138,22 +138,6 @@ reportCardsRouter.post(
 // Marks router (will be mounted at /marks)
 export const marksRouter = Router();
 
-// GET /marks/entry-sheet - Whole-class roster with saved marks for one sequence/subclass/subject
-// TEACHER limited to subjects they teach in that subclass (checked in the controller)
-marksRouter.get('/entry-sheet',
-    authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
-    examController.getMarkEntrySheet
-);
-
-// POST /marks/bulk - Save many marks for one sequence/subclass/subject in one transaction
-marksRouter.post('/bulk',
-    authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
-    examController.saveMarkEntrySheet
-);
-
-
 // GET /marks - List all marks (with filters)
 // SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL can view all marks
 // TEACHER can only view marks for their assigned subjects/subclasses
