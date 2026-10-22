@@ -1866,8 +1866,9 @@ export async function getMarkSubmissionTracking(examSequenceId: number) {
     });
 
     // Get all marks for this exam sequence
+    // A mark row with a null score is a placeholder, not a submission.
     const marks = await prisma.mark.findMany({
-        where: { exam_sequence_id: examSequenceId },
+        where: { exam_sequence_id: examSequenceId, score: { not: null } },
         select: {
             enrollment_id: true,
             sub_class_subject_id: true,
