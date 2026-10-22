@@ -101,4 +101,11 @@ router.get('/sync/logs', systemController.getSyncLogs);
  */
 router.post('/sync/trigger', systemController.triggerSync);
 
+/**
+ * @route POST /api/v1/system/sync/start
+ * @desc Start a sync run in the background and return immediately (poll /sync/status)
+ * @access SUPER_MANAGER only
+ */
+router.post('/sync/start', systemController.startSync);
+
 export default router;

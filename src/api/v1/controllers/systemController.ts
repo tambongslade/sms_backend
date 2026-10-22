@@ -465,6 +465,30 @@ export async function getSyncStatus(req: Request, res: Response): Promise<void> 
 }
 
 /**
+ * Start a sync run in the background and answer straight away. A full run can take
+ * far longer than an HTTP request may stay open, so callers poll /sync/status
+ * (syncInFlight) instead of waiting. Shares the in-flight guard with triggerSync.
+ */
+export async function startSync(req: Request, res: Response): Promise<void> {
+    if (!process.env.REMOTE_SYNC_URL) {
+        res.status(409).json({ success: false, error: 'REMOTE_SYNC_URL is not configured on this server' });
+        return;
+    }
+    const alreadyRunning = syncInFlight !== null;
+    if (!syncInFlight) {
+        syncInFlight = adminSyncManager.performSync().finally(() => {
+            syncInFlight = null;
+        });
+        syncInFlight.catch((error: any) => console.error('Background sync failed:', error?.message || error));
+    }
+    res.status(202).json({
+        success: true,
+        message: alreadyRunning ? 'A sync is already running' : 'Sync started',
+        data: { alreadyRunning }
+    });
+}
+
+/**
  * Manually trigger a bidirectional sync run with the remote peer.
  * Coalesces overlapping requests so a double-click does not fire two passes.
  */
