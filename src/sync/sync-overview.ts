@@ -1,7 +1,7 @@
-import prisma from '../config/db';
 import { SYNC_TABLES } from './sync-manager';
+import { getTableStats, TableStat } from './sync-stats';
 
-export type TableStat = { count: number | null; latest: string | null };
+export type { TableStat };
 
 // Business areas shown on the Sync Status page. Every table in SYNC_TABLES that is
 // not listed here lands in "Other", so a newly synced table is never invisible.
@@ -19,39 +19,8 @@ export const SYNC_CATEGORIES: { key: string; label: string; tables: string[] }[]
     { key: 'inventory', label: 'Inventory & Tasks', tables: ['InventoryItem', 'InventoryHolding', 'InventoryTransfer', 'InventoryLedger', 'Task'] },
 ];
 
-const readTable = async (table: string): Promise<TableStat> => {
-    // `table` only ever comes from SYNC_TABLES (a constant list), never from user input.
-    for (const column of ['updated_at', 'created_at']) {
-        try {
-            const rows = await prisma.$queryRawUnsafe<{ count: number; latest: Date | null }[]>(
-                `SELECT COUNT(*)::int AS count, MAX("${column}") AS latest FROM "${table}"`
-            );
-            return { count: rows[0].count, latest: rows[0].latest ? new Date(rows[0].latest).toISOString() : null };
-        } catch {
-            // column or table missing: try the next column
-        }
-    }
-    try {
-        const rows = await prisma.$queryRawUnsafe<{ count: number }[]>(`SELECT COUNT(*)::int AS count FROM "${table}"`);
-        return { count: rows[0].count, latest: null };
-    } catch {
-        return { count: null, latest: null };
-    }
-};
-
 // Row count and newest change time for every synced table of THIS server.
-export async function getLocalTableStats(): Promise<Record<string, TableStat>> {
-    const stats: Record<string, TableStat> = {};
-    const queue = [...SYNC_TABLES];
-    const workers = Array.from({ length: 6 }, async () => {
-        while (queue.length > 0) {
-            const table = queue.shift()!;
-            stats[table] = await readTable(table);
-        }
-    });
-    await Promise.all(workers);
-    return stats;
-}
+export const getLocalTableStats = () => getTableStats(SYNC_TABLES);
 
 export type TableStatus = 'in_sync' | 'local_ahead' | 'online_ahead' | 'unknown';
 

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { Role } from '@prisma/client';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 import { ApiClient } from '../../../sync/api-client';
+import { SYNC_TABLES } from '../../../sync/sync-manager';
 import { buildComparison, getLocalTableStats, TableStat } from '../../../sync/sync-overview';
 
 const router = Router();
@@ -19,7 +20,7 @@ router.get('/', authenticate, authorize([Role.SUPER_MANAGER]), async (_req: Requ
             remoteError = 'No online server is configured on this server (REMOTE_SYNC_URL).';
         } else {
             try {
-                const remote = await client.getStats();
+                const remote = await client.getStats(SYNC_TABLES);
                 online = remote.stats;
                 remoteServerId = remote.serverId;
             } catch (error: any) {

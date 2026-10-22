@@ -51,9 +51,9 @@ export class ApiClient {
 
   // Row counts per synced table on the peer. Throws on any failure so callers can tell
   // "peer unreachable" (network code) from "peer too old" (404).
-  async getStats(): Promise<{ serverId: string | null; stats: Record<string, { count: number | null; latest: string | null }> }> {
+  async getStats(tables?: string[]): Promise<{ serverId: string | null; stats: Record<string, { count: number | null; latest: string | null }> }> {
     if (!this.isConfigured()) throw new Error('REMOTE_SYNC_URL is not configured');
-    const response = await this.client.get('/stats', { timeout: 20000 });
+    const response = await this.client.get('/stats', { timeout: 20000, params: tables ? { tables: tables.join(',') } : undefined });
     return { serverId: response.data?.server_id ?? null, stats: response.data?.stats ?? {} };
   }
 
