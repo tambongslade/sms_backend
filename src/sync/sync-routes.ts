@@ -3,6 +3,7 @@ import { SyncManager } from './sync-manager';
 import { DatabaseSyncer } from './database-syncer';
 import prisma from '../config/db';
 import { getTableStats } from './sync-stats';
+import { getOutboxStatus, isOutboxEnabled, pruneOutbox } from './outbox';
 
 const router = Router();
 const syncManager = new SyncManager();
@@ -178,6 +179,59 @@ router.get('/sync/stats', requireSyncAuth, async (req: Request, res: Response) =
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+// Queued changes for the peer, oldest first. Holds the request open up to `wait` seconds
+// when there is nothing yet, so the peer hears about a change within about a second.
+router.get('/sync/outbox', requireSyncAuth, async (req: Request, res: Response) => {
+  try {
+    if (!isOutboxEnabled()) {
+      return res.status(503).json({ success: false, error: 'Push-on-write is not enabled on this server (SYNC_OUTBOX)' });
+    }
+    const after = Math.max(0, parseInt(String(req.query.after ?? '0'), 10) || 0);
+    const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit ?? '200'), 10) || 200));
+    const wait = Math.min(30, Math.max(0, parseInt(String(req.query.wait ?? '0'), 10) || 0));
+    const deadline = Date.now() + wait * 1000;
+    const toNumber = (v: any) => Number(v);
+
+    let rows: { id: any; table_name: string; record_id: number }[] = [];
+    for (;;) {
+      rows = await prisma.$queryRawUnsafe(
+        `SELECT id, table_name, record_id FROM "SyncOutbox" WHERE id > $1 ORDER BY id LIMIT $2`, after, limit
+      );
+      if (rows.length > 0 || Date.now() >= deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    const idsByTable = new Map<string, Set<number>>();
+    for (const row of rows) {
+      if (!idsByTable.has(row.table_name)) idsByTable.set(row.table_name, new Set());
+      idsByTable.get(row.table_name)!.add(row.record_id);
+    }
+    const loaded = new Map<string, any>();
+    for (const [table, ids] of idsByTable) {
+      const delegate = (prisma as any)[table.charAt(0).toLowerCase() + table.slice(1)];
+      if (!delegate) continue;
+      for (const record of await delegate.findMany({ where: { id: { in: [...ids] } } })) {
+        loaded.set(`${table}:${record.id}`, record);
+      }
+    }
+
+    const entries = rows.map(row => ({
+      id: toNumber(row.id),
+      table: row.table_name,
+      recordId: row.record_id,
+      record: loaded.get(`${row.table_name}:${row.record_id}`) ?? null,
+    }));
+    void pruneOutbox(prisma as any);
+    res.json({ entries, maxId: rows.length ? toNumber(rows[rows.length - 1].id) : after });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/sync/outbox/status', requireSyncAuth, async (_req: Request, res: Response) => {
+  res.json(await getOutboxStatus(prisma as any));
 });
 
 // Per-table cursor snapshot. Ops uses this to see which tables are stuck and

@@ -3,6 +3,8 @@ import { Role } from '@prisma/client';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 import { ApiClient } from '../../../sync/api-client';
 import { SYNC_TABLES } from '../../../sync/sync-manager';
+import { getOutboxStatus } from '../../../sync/outbox';
+import prisma from '../../../config/db';
 import { buildComparison, getLocalTableStats, TableStat } from '../../../sync/sync-overview';
 
 const router = Router();
@@ -43,6 +45,7 @@ router.get('/', authenticate, authorize([Role.SUPER_MANAGER]), async (_req: Requ
                     outOfSync: categories.filter(c => c.status === 'out_of_sync').length,
                     unknown: categories.filter(c => c.status === 'unknown').length,
                 },
+                queue: await getOutboxStatus(prisma as any),
                 categories,
             },
         });

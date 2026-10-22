@@ -51,6 +51,25 @@ export class ApiClient {
 
   // Row counts per synced table on the peer. Throws on any failure so callers can tell
   // "peer unreachable" (network code) from "peer too old" (404).
+  // Like pushBatch, but a failure is thrown so the outbox can retry the rows.
+  async pushRecordsStrict(tableName: string, records: any[]): Promise<void> {
+    if (!this.isConfigured()) throw new Error('REMOTE_SYNC_URL is not configured — refusing to push');
+    await this.client.post(`/receive/${tableName}`, { records, timestamp: new Date().toISOString() });
+  }
+
+  // Long-poll for the peer's queued changes after `after`; answers within `waitSeconds`.
+  async pullOutbox(after: number, limit: number, waitSeconds: number): Promise<{
+    entries: { id: number; table: string; recordId: number; record: any | null }[];
+    maxId: number;
+  }> {
+    if (!this.isConfigured()) throw new Error('REMOTE_SYNC_URL is not configured');
+    const response = await this.client.get('/outbox', {
+      params: { after, limit, wait: waitSeconds },
+      timeout: (waitSeconds + 20) * 1000,
+    });
+    return { entries: response.data?.entries ?? [], maxId: response.data?.maxId ?? after };
+  }
+
   async getStats(tables?: string[]): Promise<{ serverId: string | null; stats: Record<string, { count: number | null; latest: string | null }> }> {
     if (!this.isConfigured()) throw new Error('REMOTE_SYNC_URL is not configured');
     const response = await this.client.get('/stats', { timeout: 20000, params: tables ? { tables: tables.join(',') } : undefined });

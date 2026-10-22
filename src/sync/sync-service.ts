@@ -1,8 +1,10 @@
 import { SyncManager } from './sync-manager';
 import { NetworkChecker } from './network-checker';
+import { OutboxWorker } from './outbox-worker';
 
 export class SyncService {
   private syncManager: SyncManager;
+  private outbox = new OutboxWorker();
   private networkChecker: NetworkChecker;
   private isInitialized: boolean = false;
 
@@ -27,6 +29,9 @@ export class SyncService {
     // Start auto sync if configured
     const autoSyncInterval = parseInt(process.env.AUTO_SYNC_INTERVAL || '5');
     await this.syncManager.startAutoSync(autoSyncInterval);
+
+    // Push-on-write queue (SYNC_OUTBOX=on); a no-op otherwise
+    await this.outbox.start();
 
     // Monitor network changes
     this.networkChecker.startNetworkMonitoring(async (isOnline) => {
@@ -74,6 +79,7 @@ export class SyncService {
   async shutdown() {
     console.log('Shutting down Sync Service...');
     this.syncManager.stopAutoSync();
+    this.outbox.stop();
     this.isInitialized = false;
   }
 
