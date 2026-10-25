@@ -6,6 +6,7 @@ import { AddressInfo } from 'net';
 // import { scheduleAverageCalculations } from './scripts/scheduledTasks';
 import { SyncService } from './sync/sync-service';
 import { initRealtime } from './realtime/socket';
+import { attachRelayServer, startRelayClient } from './filemanagement/relay';
 import { seedChatChannels } from './scripts/seedChatChannels';
 import { warmUp } from './api/v1/services/aiAssistant/ollamaClient';
 
@@ -42,6 +43,8 @@ const SYNC_INSTANCE = isSyncInstance();
 function startServer(port: number) {
     const httpServer = http.createServer(app);
     initRealtime(httpServer);
+    // File Management relay: the online server accepts the school server's socket here (FILE_RELAY_SERVER=on)
+    if (process.env.FILE_RELAY_SERVER === 'on') attachRelayServer(httpServer);
 
     const server = httpServer.listen(port, () => {
         const addressInfo = server.address() as AddressInfo;
@@ -60,6 +63,8 @@ function startServer(port: number) {
         // Initialize sync service — primary worker only (see isSyncInstance)
         if (SYNC_INSTANCE) {
             syncService.initialize().catch(console.error);
+            // School server: keep the outbound socket to the online server for File Management (FILE_RELAY_CLIENT=on)
+            startRelayClient();
             // Seed department / subject chat channels (idempotent, but there is
             // no reason for every worker to race on it)
             seedChatChannels().catch(err => console.error('seedChatChannels failed:', err));

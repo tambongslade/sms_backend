@@ -13,14 +13,14 @@
  * An iframe cannot send an Authorization header, which is why the cookie exists. It is mounted BEFORE express.json()
  * and the case-conversion middleware (see app.ts) so uploads stream through untouched.
  *
- * Two ways to run the file app, chosen by FILE_APP_URL:
- *   - FILE_APP_URL set   -> proxy to that separate process (the school server: the standalone app that the LAN PCs also use).
- *   - FILE_APP_URL empty -> EMBEDDED: the same file app runs inside this backend (src/filemanagement), storing its files on
- *                           this server's disk. No second process and no tunnel (the online server).
+ * FILE_APP_MODE says where the file app lives (files are only ever stored where it runs):
+ *   - proxy (default when FILE_APP_URL is set): this backend is on the school server; forward to that process.
+ *   - relay: this backend is the ONLINE server. Nothing is stored here: requests are streamed over the WebSocket the school
+ *            server keeps open to us (see src/filemanagement/relay.ts) and answered by the school server's file app.
+ *   - embedded: run the file app inside this backend and store files on this server's disk (not used in production).
  *
- * Env: FILE_APP_SECRET (signs the identity this router hands to the file app; in proxy mode it must equal the file app's
- * sms-secret.txt). Embedded mode also reads FILE_APP_DIR (data root, default <cwd>/data/file-management),
- * FILE_APP_ARCHIVE_DIR, FILE_APP_TEMP_DIR, FILE_APP_MAX_MB (default 32) and FILE_APP_RETENTION_DAYS (default 7).
+ * Env: FILE_APP_SECRET (signs the identity this router hands to the file app; it must equal the file app's sms-secret.txt).
+ * Embedded mode also reads FILE_APP_DIR, FILE_APP_ARCHIVE_DIR, FILE_APP_TEMP_DIR, FILE_APP_MAX_MB, FILE_APP_RETENTION_DAYS.
  */
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
@@ -28,6 +28,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { authenticate } from '../middleware/auth.middleware';
+import { relayConnected, relayForward } from '../../../filemanagement/relay';
 import prisma from '../../../config/db';
 
 const router = Router();
@@ -38,7 +39,11 @@ const TICKET_MS = 60 * 1000;
 const SESSION_MS = 8 * 60 * 60 * 1000;
 
 const secret = () => process.env.FILE_APP_SECRET || '';
-const embedded = () => !process.env.FILE_APP_URL;
+const mode = (): 'proxy' | 'relay' | 'embedded' => {
+    const m = String(process.env.FILE_APP_MODE || '').toLowerCase();
+    if (m === 'relay' || m === 'embedded' || m === 'proxy') return m;
+    return 'proxy';
+};
 const fileAppUrl = () => new URL(process.env.FILE_APP_URL || 'http://127.0.0.1:8080');
 
 // SMS role -> file profile. PARENT (and STUDENT) are absent on purpose: no access.
@@ -127,6 +132,10 @@ router.post('/session', authenticate, async (req: Request, res: Response) => {
         return;
     }
     try {
+        if (mode() === 'relay' && !relayConnected()) {
+            res.status(503).json({ success: false, error: 'File Management is not available right now: the school server is not connected.' });
+            return;
+        }
         const roles = ((req.user as any)?.role as string[]) || [];
         const profile = profileForRoles(roles);
         if (!profile) {
@@ -203,7 +212,18 @@ router.use('/app', (req: Request, res: Response) => {
 
     const identity = Buffer.from(JSON.stringify({ uid: who.uid, name: who.name, profile: who.profile, mgr: !!who.mgr, ts: Date.now() })).toString('base64url');
 
-    if (embedded()) {
+    if (mode() === 'relay') {
+        const headers: http.OutgoingHttpHeaders = {};
+        for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k) && !DROP_REQ.has(k) && v !== undefined) headers[k] = v;
+        headers['x-forwarded-for'] = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',').pop()!.trim();
+        headers['x-forwarded-proto'] = isHttps(req) ? 'https' : 'http';
+        headers['x-sms-identity'] = identity;
+        headers['x-sms-signature'] = sign(identity);
+        relayForward(req, res, { path: rest, headers });
+        return;
+    }
+
+    if (mode() === 'embedded') {
         try {
             const r: any = req;
             r.headers['x-forwarded-for'] = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',').pop()!.trim();
