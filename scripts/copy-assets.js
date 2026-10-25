@@ -41,6 +41,13 @@ try {
     const srcReportsDir = path.join(__dirname, '..', 'src', 'reports');
     const destReportsDir = path.join(__dirname, '..', 'dist', 'reports');
 
+    // File Management (the embedded file app): plain JS and static pages that tsc does not emit
+    const srcFmDir = path.join(__dirname, '..', 'src', 'filemanagement');
+    if (fs.existsSync(srcFmDir)) {
+        console.log('Copying filemanagement directory...');
+        copyDir(srcFmDir, path.join(__dirname, '..', 'dist', 'filemanagement'));
+    }
+
     // Copy view directory
     if (fs.existsSync(srcViewDir)) {
         console.log('Copying view directory...');

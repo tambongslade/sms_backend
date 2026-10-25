@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SSIC File Sharing</title>
+<link rel="manifest" href="manifest.webmanifest"><link rel="icon" type="image/png" href="logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topwrap">
+  <header class="top"><div class="in">
+    <div class="brand"><img src="logo.png" alt="SSIC logo"><span class="school">St. Stephen's International College</span></div>
+    <div class="me">This PC: <b id="meName">…</b> <button id="renameMe">Rename</button></div>
+  </div></header>
+  <nav class="tabs"><div class="in">
+    <a class="tab on" href="./"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h12M15 3l4 4-4 4M17 17H5M9 13l-4 4 4 4"/></svg>File Sharing</a>
+    <a class="tab" href="archives"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18v4H3zM5 8v12h14V8M10 12h4"/></svg>ARCHIVES</a>
+  </div></nav>
+</div>
+<main>
+  <div id="install">
+    <div class="txt"><b>Receive files even when LAN Share is closed</b>
+      <div class="sub" id="installSub">Install LAN Share on this PC: a desktop icon, plus a small receiver that starts with Windows and asks you before accepting a file.</div></div>
+    <button class="primary" id="installBtn">Install</button>
+    <button id="installNo">Not now</button>
+  </div>
+
+  <h2>Send to</h2>
+  <div id="targets"></div>
+  <div id="drop"><span id="dropText">Drop files here (or click to choose). They are added to a list below, and nothing is sent until you press Send.</span><input id="pick" type="file" multiple hidden></div>
+  <div id="queue"></div>
+  <div id="uploads"></div>
+
+  <div class="cols">
+    <section><h2 id="hIn">Received</h2><div id="listIn"></div></section>
+    <section><h2 id="hOut">Sent</h2><div id="listOut"></div></section>
+  </div>
+
+  <h2>Computers</h2>
+  <div id="devices"></div>
+
+  <section id="logPanel" hidden>
+    <h2>Activity log <span class="meta" style="text-transform:none;letter-spacing:0">who sent files and when. Only visible on the server PC</span></h2>
+    <div class="logbar">
+      <span class="meta" id="logMac"></span>
+      <input id="logQ" class="grow" type="search" placeholder="Search by person or file..." autocomplete="off">
+      <select id="logType"><option value="">All events</option><option value="sent">Files sent</option><option value="downloaded">Downloads</option><option value="accepted">Accepted</option><option value="declined">Declined</option><option value="send-cancelled">Cancelled / failed sends</option><option value="send-refused">Refused sends</option><option value="delete-refused">Refused deletes</option><option value="deleted">Deleted</option><option value="admin-password-failed">Wrong admin password</option></select>
+      <a class="btn" id="logCsv" href="#">Download CSV</a>
+    </div>
+    <div class="logwrap"><table id="logTable"><thead><tr><th>When</th><th>Who</th><th>Event</th><th>File</th><th>Details</th></tr></thead><tbody id="logBody"></tbody></table></div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="dlgForm">
+    <div id="dlgTitle"></div>
+    <div class="meta" id="dlgMsg"></div>
+    <input id="dlgInput" maxlength="40" autocomplete="off" placeholder="Computer name">
+    <input id="dlgPass" type="password" autocomplete="off" placeholder="Admin password">
+    <div class="err" id="dlgErr"></div>
+    <div class="btns"><button type="button" id="dlgCancel">Cancel</button><button class="primary" id="dlgOk">Save</button></div>
+  </form>
+</dialog>
+<div id="toasts"></div>
+
+<script src="common.js"></script>
+<script>
+// ---- File Sharing page: send to chosen computers, see what you received and sent ----
+
+function renderTargets() {
+  const others = devices.filter((d) => d.id !== me.id);
+  for (const id of [...selected]) if (!others.some((d) => d.id === id)) selected.delete(id); // PC was removed
+  const all = others.length > 0 && others.every((d) => selected.has(d.id));
+  $('#targets').innerHTML = others.length
+    ? '<label class="pick all"><input type="checkbox" data-all' + (all ? ' checked' : '') + '> <b>Everyone</b> <span class="meta">(' + others.length + ' computers)</span></label>' +
+      others.map((d) => '<label class="pick"><input type="checkbox" data-t="' + d.id + '"' + (selected.has(d.id) ? ' checked' : '') + '> <span class="dot' + (d.online ? ' on' : '') + '"></span> ' + esc(d.name) + '</label>').join('')
+    : '<div class="empty">No other computers have joined yet.</div>';
+  const ae = $('#targets').querySelector('[data-all]');
+  if (ae) ae.indeterminate = selected.size > 0 && !all;
+  renderQueue();
+}
+
+function renderRow(t, side) {
+  const who = side === 'in' ? 'From ' + esc(nameOf(t.from)) : 'To ' + esc(destLabel(t));
+  if (t.status === 'sending') { // only recipients see in-flight transfers; the sender has an upload row
+    const known = t.size > 0, pct = known ? Math.min(100, Math.round(100 * (t.received || 0) / t.size)) : 0;
+    return '<div class="row"><div class="main"><div class="name">' + esc(t.name) + ' <span class="new">RECEIVING</span></div>' +
+      '<div class="meta">' + who + ' · ' + (known ? fmt(t.size) + ' · ' : '') + '<span data-pct="' + t.id + '">' + pctLine(t) + '</span></div>' +
+      '<progress style="width:100%;margin-top:6px" max="1" data-prog="' + t.id + '"' + (known ? ' value="' + pct / 100 + '"' : '') + '></progress></div></div>';
+  }
+  const got = side === 'out' && t.downloadedBy.length ? ' · <span class="badge">downloaded by ' + t.downloadedBy.map((i) => esc(nameOf(i))).join(', ') + '</span>' : '';
+  const declined = Object.entries(t.responses || {}).filter(([, v]) => v === 'declined').map(([i]) => esc(nameOf(i)));
+  const decl = side === 'out' && declined.length ? ' · <span class="badge" style="color:var(--bad)">declined by ' + declined.join(', ') + '</span>' : '';
+  const isNew = side === 'in' && !t.downloadedBy.includes(me.id) && !(t.responses || {})[me.id] ? ' <span class="new">NEW</span>' : '';
+  return '<div class="row"><div class="main"><div class="name">' + esc(t.name) + isNew + '</div><div class="meta">' + who + ' · ' + fmt(t.size) + ' · ' + new Date(t.time).toLocaleString() + got + decl + '</div></div>' +
+    (side === 'in' ? '<a class="btn" href="' + BASE + 'api/download/' + t.id + '?device=' + me.id + '" data-dl="' + t.id + '">Download</a>' : '') +
+    (t.archive ? '<span class="lock" title="Files in ARCHIVES can only be deleted on the server PC">Permanent</span>' : '<button data-del="' + t.id + '">Delete</button>') + '</div>';
+}
+
+// Received and Sent are always both on screen.
+function renderList() {
+  const inRows = transfers.filter((t) => t.from !== me.id && isToMe(t)); // archive-only files are not 'received'
+  const outRows = transfers.filter((t) => t.from === me.id && t.status !== 'sending');
+  const incoming = inRows.filter((t) => t.status === 'sending').length;
+  $('#hIn').textContent = 'Received' + (incoming ? ' · ' + incoming + ' receiving' : '');
+  $('#hOut').textContent = 'Sent';
+  $('#listIn').innerHTML = inRows.length ? inRows.map((t) => renderRow(t, 'in')).join('') : '<div class="empty">Nothing received yet</div>';
+  $('#listOut').innerHTML = outRows.length ? outRows.map((t) => renderRow(t, 'out')).join('') : '<div class="empty">Nothing sent yet</div>';
+}
+
+function renderDevices() {
+  $('#meName').textContent = me.name;
+  $('#devices').innerHTML = devices.map((d) =>
+    '<div class="row devrow"><span class="dot' + (d.online ? ' on' : '') + '"></span><span class="nm">' + esc(d.name) + (d.id === me.id ? ' <span class="meta">(this PC)</span>' : '') + '</span>' +
+    '<span class="meta">' + (d.macs && d.macs[0] ? esc(d.macs[0].toUpperCase()) + ' · ' : '') + (d.online ? 'online' : 'offline') + '</span><button data-ren="' + d.id + '">Rename</button>' +
+    (d.id === me.id || d.online ? '' : '<button data-rm="' + d.id + '">Remove</button>') + '</div>').join('');
+}
+
+// ---- events ----
+$('#targets').onchange = (e) => {
+  const others = devices.filter((d) => d.id !== me.id);
+  if (e.target.dataset.all !== undefined) others.forEach((d) => (e.target.checked ? selected.add(d.id) : selected.delete(d.id)));
+  else if (e.target.dataset.t) (e.target.checked ? selected.add(e.target.dataset.t) : selected.delete(e.target.dataset.t));
+  renderTargets();
+};
+$('#renameMe').onclick = () => rename(me);
+$('#devices').onclick = async (e) => {
+  const ren = e.target.dataset.ren, rm = e.target.dataset.rm;
+  if (ren) rename(devices.find((d) => d.id === ren));
+  if (rm) removeDevice(devices.find((d) => d.id === rm));
+};
+async function deleteTransfer(id) {
+  const t = transfers.find((x) => x.id === id);
+  if (t && t.archive) return; // files in ARCHIVES can never be deleted from the app (only on the server PC)
+  if (!confirm('Delete this file for everyone?')) return;
+  try { await api('transfers/' + id, { method: 'DELETE' }); } catch (e) { toast(e.message); }
+  loadTransfers();
+}
+document.querySelector('.cols').onclick = (e) => {
+  if (e.target.dataset.del) deleteTransfer(e.target.dataset.del);
+  if (e.target.dataset.dl) setTimeout(loadTransfers, 800);
+};
+
+// ---- send queue ----
+// Dropped or chosen files wait in a list; nothing is sent yet, so recipients can be ticked afterwards.
+// "Send" uploads them one after another to whoever is ticked at that moment.
+const queue = []; // { key, file }
+const keyOf = (f) => f.name + '|' + f.size + '|' + f.lastModified;
+
+function addFiles(files) {
+  let dup = 0;
+  for (const f of files) {
+    if (queue.some((q) => q.key === keyOf(f))) { dup++; continue; }
+    queue.push({ key: keyOf(f), file: f });
+  }
+  if (dup) toast(dup + ' file' + (dup > 1 ? 's were' : ' was') + ' already in the list');
+  renderQueue();
+}
+
+function renderQueue() {
+  const el = $('#queue');
+  if (!queue.length) { el.innerHTML = ''; return; }
+  const total = queue.reduce((n, q) => n + q.file.size, 0), ready = selected.size > 0;
+  el.innerHTML = '<div class="qhead"><b>Ready to send</b> <span class="meta">' + queue.length + ' file' + (queue.length > 1 ? 's' : '') + ' · ' + fmt(total) + '</span></div>' +
+    queue.map((q, i) => '<div class="row"><span class="name">' + esc(q.file.name) + '</span><span class="meta">' + fmt(q.file.size) + '</span><button type="button" data-qrm="' + i + '" title="Remove from list">✕</button></div>').join('') +
+    '<div class="qbar"><button type="button" class="primary" id="qSend"' + (ready ? '' : ' disabled') + '>' + (ready ? 'Send to ' + esc(toLabel([...selected])) : 'Tick who to send to above') + '</button><button type="button" id="qClear">Clear list</button></div>';
+}
+
+$('#queue').onclick = (e) => {
+  if (e.target.dataset.qrm !== undefined) { queue.splice(Number(e.target.dataset.qrm), 1); renderQueue(); }
+  else if (e.target.id === 'qClear') { queue.length = 0; renderQueue(); }
+  else if (e.target.id === 'qSend' && selected.size) {
+    const to = [...selected];
+    queue.splice(0).forEach((q) => enqueueSend(q.file, to));
+    renderQueue();
+  }
+};
+
+const drop = $('#drop');
+drop.onclick = () => $('#pick').click();
+$('#pick').onchange = (e) => { addFiles([...e.target.files]); e.target.value = ''; };
+// Dropping anywhere on the page works; the box just highlights while a file is dragged over the window.
+window.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+window.addEventListener('dragleave', (e) => { if (!e.relatedTarget) drop.classList.remove('over'); });
+window.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles(filesFromDrop(e.dataTransfer)); });
+
+// ---- install prompt ----
+// Shown while this PC has no background receiver running (the server tells us via me.agent), so it also
+// appears for PCs that only added the desktop icon. The button downloads a small setup file that creates
+// the icon AND installs the receiver, which starts with Windows and prompts when someone sends you a file.
+function updateInstallBanner() {
+  const show = !embed && me && !me.agent && !store.get('lanshare.installDismissed2');
+  $('#install').style.display = show ? 'flex' : 'none';
+}
+$('#installNo').onclick = () => { store.set('lanshare.installDismissed2', '1'); $('#install').style.display = 'none'; };
+$('#installBtn').onclick = () => {
+  location.href = BASE + 'install.cmd?url=' + encodeURIComponent(location.origin + BASE);
+  $('#installSub').textContent = 'Now open the downloaded file "LAN-Share-Setup.cmd" (check your Downloads). If Windows asks, choose Run anyway. This banner disappears once the receiver is running.';
+  $('#installBtn').style.display = 'none';
+  $('#installNo').textContent = 'Close';
+};
+
+// ---- activity log (the server answers 403 to every other PC, so this panel only ever appears on the server) ----
+const LOG_LABEL = { sent: ['Sent a file', 'ok'], downloaded: ['Downloaded', ''], accepted: ['Accepted a file', 'ok'], declined: ['Declined a file', 'warn'],
+  'send-cancelled': ['Send cancelled / failed', 'warn'], 'send-refused': ['Send refused', 'bad'], 'delete-refused': ['Delete refused', 'bad'], deleted: ['Deleted a file', 'warn'],
+  renamed: ['Renamed a PC', ''], named: ['Named its PC', ''], 'device-removed': ['Removed a PC', 'warn'], 'admin-password-failed': ['Wrong admin password', 'bad'] };
+function logRow(e) {
+  const [label, kind] = LOG_LABEL[e.type] || [e.type, ''];
+  const who = e.by ? '<b>' + esc(e.by.name) + '</b><div class="meta">' + esc((e.by.mac || '').toUpperCase()) + (e.ip ? ' · ' + esc(e.ip) : '') + '</div>' : '<span class="meta">' + esc(e.ip || 'unknown') + '</span>';
+  const bits = [];
+  if (e.to && e.to.length) bits.push('to ' + e.to.map(esc).join(', '));
+  if (e.from) bits.push('from ' + esc(e.from));
+  if (e.seconds != null) bits.push(e.seconds + 's');
+  if (e.detail) bits.push(esc(e.detail));
+  return '<tr><td style="white-space:nowrap">' + new Date(e.ts).toLocaleString() + '</td><td>' + who + '</td><td><span class="tag ' + kind + '">' + esc(label) + '</span></td>' +
+    '<td>' + (e.file ? esc(e.file) + (e.size != null ? ' <span class="meta">(' + fmt(e.size) + ')</span>' : '') : '') + (e.archive ? ' <span class="tag">ARCHIVES</span>' : '') + '</td><td class="meta">' + bits.join(' · ') + '</td></tr>';
+}
+async function loadLog() {
+  if (!isServer) return;
+  const q = $('#logQ').value.trim(), type = $('#logType').value;
+  try {
+    const r = await fetch(BASE + 'api/log?limit=300' + (q ? '&q=' + encodeURIComponent(q) : '') + (type ? '&type=' + encodeURIComponent(type) : ''));
+    if (!r.ok) { $('#logPanel').hidden = true; return; }
+    const d = await r.json();
+    $('#logPanel').hidden = false;
+    $('#logMac').textContent = d.server.length ? 'Server PC MAC: ' + d.server[0].mac.toUpperCase() + ' (' + d.server[0].ip + ')' : '';
+    $('#logCsv').href = BASE + 'api/log.csv?limit=20000' + (q ? '&q=' + encodeURIComponent(q) : '') + (type ? '&type=' + encodeURIComponent(type) : '');
+    $('#logBody').innerHTML = d.entries.length ? d.entries.map(logRow).join('') : '<tr><td colspan="5" class="empty">No activity yet.</td></tr>';
+  } catch {}
+}
+let logDebounce = null;
+$('#logQ').oninput = () => { clearTimeout(logDebounce); logDebounce = setTimeout(loadLog, 250); };
+$('#logType').onchange = loadLog;
+
+// ---- plug into the shared start-up (common.js) ----
+hooks.renderAll = () => { me = devices.find((d) => d.id === me.id) || me; renderTargets(); renderList(); renderDevices(); updateInstallBanner(); };
+hooks.renderList = renderList;
+hooks.afterRefresh = loadLog;
+hooks.afterBoot = () => { if (isServer) { loadLog(); logTimer = setInterval(loadLog, 10000); } };
+boot();
+</script></body></html>

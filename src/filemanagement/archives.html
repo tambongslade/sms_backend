@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SSIC ARCHIVES</title>
+<link rel="manifest" href="manifest.webmanifest"><link rel="icon" type="image/png" href="logo.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topwrap">
+  <header class="top"><div class="in">
+    <div class="brand"><img src="logo.png" alt="SSIC logo"><span class="school">St. Stephen's International College</span></div>
+    <div class="me">This PC: <b id="meName">…</b></div>
+  </div></header>
+  <nav class="tabs"><div class="in">
+    <a class="tab" href="./"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h12M15 3l4 4-4 4M17 17H5M9 13l-4 4 4 4"/></svg>File Sharing</a>
+    <a class="tab on" href="archives"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18v4H3zM5 8v12h14V8M10 12h4"/></svg>ARCHIVES</a>
+  </div></nav>
+</div>
+<main>
+  <div class="note"><b>ARCHIVES</b> is permanent storage shared by every computer. Anyone can add files and download them. Files can never be replaced. Some folders are only open to certain profiles. Folders, renames and deletions are done on the server PC only; changes made there appear here instantly.</div>
+
+  <div class="explorer">
+    <div class="xbar">
+      <button id="xUp" title="Up one level" disabled>↑ Up</button>
+      <button class="primary" id="xUpload">Upload files</button>
+      <button id="xDownload" disabled>Download</button>
+      <button id="xNew" hidden title="Create a folder here">New folder</button>
+      <button id="xMove" hidden disabled title="Move the selected files to another folder">Move to…</button>
+      <button id="xCopy" hidden disabled title="Copy the selected files to another folder">Copy to…</button>
+      <span class="grow"></span>
+      <span class="chip" id="accChip" title="Which ARCHIVES folders this PC can open"></span>
+      <button id="xPerm" hidden>Permissions</button>
+      <div class="seg" id="xView"><button data-view="details" class="on">Details</button><button data-view="icons">Icons</button></div>
+      <input id="archFilter" type="search" placeholder="Search ARCHIVES" autocomplete="off">
+    </div>
+    <div class="xpath" id="xpath"></div>
+    <div id="uploads"></div>
+    <div class="xbody" id="listArch" tabindex="0"></div>
+    <div class="xstatus"><span id="count"></span><span id="selInfo"></span></div>
+  </div>
+  <input id="pick" type="file" multiple hidden>
+</main>
+<div id="dropOverlay">Drop files to add them to this folder</div>
+
+<dialog id="dlg">
+  <form method="dialog" id="dlgForm">
+    <div id="dlgTitle"></div>
+    <div class="meta" id="dlgMsg"></div>
+    <input id="dlgInput" maxlength="40" autocomplete="off" placeholder="Computer name">
+    <input id="dlgPass" type="password" autocomplete="off" placeholder="Admin password">
+    <div class="err" id="dlgErr"></div>
+    <div class="btns"><button type="button" id="dlgCancel">Cancel</button><button class="primary" id="dlgOk">Save</button></div>
+  </form>
+</dialog>
+<dialog id="pickDlg">
+  <form method="dialog" id="pickForm">
+    <div id="pickTitle"></div>
+    <div class="meta" id="pickMsg"></div>
+    <div id="pickList"></div>
+    <div class="btns"><button type="button" id="pickCancel">Cancel</button><button class="primary" id="pickOk">Choose this folder</button></div>
+  </form>
+</dialog>
+<dialog id="permDlg" class="wide">
+  <div id="permTitle">Permissions</div>
+  <div class="meta">Every PC starts with the <b>Default</b> profile. Choose a profile for each PC; it takes effect immediately.</div>
+  <ul class="profnotes">
+    <li><b>Default</b>: everything except the three restricted folders</li>
+    <li><b>Discipline</b>: Default + DISCIPLINE</li>
+    <li><b>Administration</b>: everything except MANAGEMENT DOCUMENTS</li>
+    <li><b>Management</b>: everything</li>
+  </ul>
+  <div id="permBody"></div>
+  <div class="err" id="permErr"></div>
+  <div class="btns"><button type="button" class="primary" id="permClose">Close</button></div>
+</dialog>
+<div id="toasts"></div>
+
+<script src="common.js"></script>
+<script>
+// ---- ARCHIVES page: a file-explorer view of the shared archive ----
+
+// file type -> icon colour + friendly type name
+const FILETYPES = [
+  [/^pdf$/, 'pdf', 'PDF document'], [/^(docx?|odt|rtf)$/, 'doc', 'Word document'], [/^(xlsx?|ods)$/, 'xls', 'Excel spreadsheet'], [/^csv$/, 'xls', 'CSV file'],
+  [/^(pptx?|odp)$/, 'ppt', 'PowerPoint presentation'], [/^(png|jpe?g|gif|webp|bmp|svg|tiff?)$/, 'img', 'Image'], [/^(zip|rar|7z|tar|gz)$/, 'zip', 'Compressed archive'],
+  [/^(mp4|mov|avi|mkv|wmv|webm)$/, 'vid', 'Video'], [/^(mp3|wav|m4a|ogg|flac)$/, 'aud', 'Audio'], [/^(txt|log|md)$/, 'txt', 'Text document'],
+];
+function ftype(name) {
+  const ext = (name.match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
+  const hit = FILETYPES.find(([re]) => re.test(ext));
+  return { ext: (ext || 'file').slice(0, 4).toUpperCase(), cls: hit ? 'c-' + hit[1] : '', kind: hit ? hit[2] : ext ? ext.toUpperCase() + ' file' : 'File' };
+}
+
+let view = store.get('lanshare.archView') === 'icons' ? 'icons' : 'details';
+let sort = (() => { try { return JSON.parse(store.get('lanshare.archSort')) || null; } catch { return null; } })() || { key: 'time', dir: -1 };
+const sel = new Set();      // selected transfer ids
+let anchor = null;          // for shift-click ranges
+let visible = [];           // items currently shown, in display order (folders first, then files)
+let folders = [];           // [{ path, time }] every folder in ARCHIVES, mirrored from the server PC
+let cur = decodeURIComponent((location.hash || '').slice(1)).replace(/^\/+|\/+$/g, '');   // open folder, '' = top level
+const dirOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
+const fileDir = (t) => dirOf(t.archivePath || t.archiveName || t.name);
+const baseOf = (p) => p.slice(p.lastIndexOf('/') + 1);
+const folderExists = (p) => !p || folders.some((f) => f.path.toLowerCase() === p.toLowerCase());
+const dirItem = (f) => ({ id: 'dir:' + f.path, isDir: true, path: f.path, name: baseOf(f.path), time: f.time, size: 0, from: '' });
+const PROFILE_LABEL = { default: 'Default', management: 'Management', administration: 'Administration', discipline: 'Discipline' };
+let acc = { profile: 'default', manager: false, server: false };   // what the server says this PC may do
+async function loadFolders() {
+  try {
+    const r = await api('archive/folders');
+    folders = r.folders || [];
+    acc = { profile: r.profile || 'default', manager: !!r.manager, server: !!r.server };
+  } catch {}
+}
+
+const SORTERS = {
+  name: (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }),
+  time: (a, b) => a.time - b.time,
+  kind: (a, b) => ftype(a.name).kind.localeCompare(ftype(b.name).kind) || a.name.localeCompare(b.name),
+  size: (a, b) => a.size - b.size,
+  by: (a, b) => nameOf(a.from).localeCompare(nameOf(b.from)) || a.name.localeCompare(b.name),
+};
+
+function renderArchives() {
+  const bodyEl = $('#listArch'), keepScroll = bodyEl.scrollTop; // a refresh must not jump back to the top
+  const q = $('#archFilter').value.trim().toLowerCase();
+  if (!folderLoaded) { /* first paint before the folder list arrives: show the top level only */ }
+  else if (!folderExists(cur)) { while (!folderExists(cur)) cur = dirOf(cur); setHash(); }   // the open folder was removed on the server PC
+  const everything = transfers.filter((t) => t.archive && t.status !== 'sending');
+  // searching looks through every folder; otherwise only the open one is shown
+  const match = (t) => t.name.toLowerCase().includes(q) || (!t.isDir && (nameOf(t.from).toLowerCase().includes(q) || ftype(t.name).kind.toLowerCase().includes(q) || fileDir(t).toLowerCase().includes(q)));
+  const dirs = (q ? folders : folders.filter((f) => dirOf(f.path) === cur)).map(dirItem).filter((t) => !q || match(t));
+  const files = (q ? everything : everything.filter((t) => fileDir(t) === cur)).filter((t) => !q || match(t));
+  dirs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) * (sort.key === 'name' ? sort.dir : 1));
+  files.sort((a, b) => sort.dir * SORTERS[sort.key](a, b));
+  visible = [...dirs, ...files];
+  for (const id of [...sel]) if (!visible.some((t) => t.id === id)) sel.delete(id);
+
+  const crumbs = cur ? cur.split('/') : [];
+  $('#xpath').innerHTML = '<img src="logo.png" alt=""><a href="#" class="crumb" data-go=""><b>ARCHIVES</b></a>' +
+    crumbs.map((c, i) => '<span>›</span><a href="#" class="crumb" data-go="' + esc(crumbs.slice(0, i + 1).join('/')) + '">' + esc(c) + '</a>').join('') +
+    (q ? '<span>›</span><span>Search results for "' + esc($('#archFilter').value.trim()) + '" in all folders</span>' : '');
+  $('#xUp').disabled = !cur;
+  $('#count').textContent = (dirs.length ? dirs.length + ' folder' + (dirs.length === 1 ? '' : 's') + ', ' : '') + files.length + ' file' + (files.length === 1 ? '' : 's') + ' · ' + fmt(files.reduce((n, t) => n + t.size, 0));
+
+  const icon = (t) => { if (t.isDir) return '<span class="dicon"></span>'; const f = ftype(t.name); return '<span class="ficon ' + f.cls + '">' + esc(f.ext) + '</span>'; };
+  const sel_ = (t) => (sel.has(t.id) ? ' sel' : '');
+  if (!visible.length) {
+    $('#listArch').innerHTML = '<div class="xempty">' + (q ? 'Nothing in ARCHIVES matches your search.' : cur ? 'This folder is empty.<br>Drag files here or press <b>Upload files</b> to add one.' : 'ARCHIVES is empty.<br>Drag files here or press <b>Upload files</b> to add the first one.') + '</div>';
+  } else if (view === 'icons') {
+    $('#listArch').innerHTML = '<div class="xicons">' + visible.map((t) =>
+      '<div class="xtile' + sel_(t) + '" data-id="' + t.id + '" title="' + esc(t.name) + '">' + icon(t) + '<div class="fname">' + esc(t.name) + '</div><div class="xcell">' + (t.isDir ? 'Folder' : fmt(t.size)) + '</div></div>').join('') + '</div>';
+  } else {
+    const arrow = (k) => (sort.key === k ? '<span class="arrow">' + (sort.dir > 0 ? '▲' : '▼') + '</span>' : '');
+    $('#listArch').innerHTML =
+      '<div class="xhead"><div data-sort="name">Name' + arrow('name') + '</div><div data-sort="time">Date added' + arrow('time') + '</div><div class="c-type" data-sort="kind">Type' + arrow('kind') + '</div>' +
+      '<div class="num" data-sort="size">Size' + arrow('size') + '</div><div class="c-by" data-sort="by">Added by' + arrow('by') + '</div><div></div></div>' +
+      visible.map((t) => '<div class="xrow' + sel_(t) + '" data-id="' + t.id + '"><div class="xname">' + icon(t) + '<span class="fname" title="' + esc(t.name) + '">' + esc(t.name) + '</span>' + (q && (t.isDir ? dirOf(t.path) : fileDir(t)) ? '<span class="xloc">in ' + esc((t.isDir ? dirOf(t.path) : fileDir(t)).split('/').join(' › ')) + '</span>' : '') + '</div>' +
+        '<div class="xcell">' + new Date(t.time).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + '</div><div class="xcell c-type">' + (t.isDir ? 'File folder' : esc(ftype(t.name).kind)) + '</div>' +
+        '<div class="xcell num">' + (t.isDir ? '' : fmt(t.size)) + '</div><div class="xcell c-by">' + (t.isDir ? '' : esc(nameOf(t.from))) + '</div>' +
+        '<div>' + (t.isDir ? '' : '<button class="xdl" data-getid="' + t.id + '">Download</button>') + '</div></div>').join('');
+  }
+  const picked = visible.filter((t) => sel.has(t.id) && !t.isDir);
+  $('#selInfo').textContent = picked.length ? picked.length + ' selected · ' + fmt(picked.reduce((n, t) => n + t.size, 0)) : '';
+  $('#xDownload').disabled = !picked.length;
+  $('#xMove').hidden = $('#xCopy').hidden = $('#xPerm').hidden = $('#xNew').hidden = !acc.manager;
+  $('#xMove').disabled = $('#xCopy').disabled = !picked.length;
+  $('#accChip').textContent = 'Your access: ' + (PROFILE_LABEL[acc.profile] || acc.profile) + (acc.manager ? ' · manager' : '');
+  document.querySelectorAll('#xView button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
+  bodyEl.scrollTop = keepScroll;
+}
+$('#archFilter').oninput = renderArchives;
+
+// ---- selection, like a file explorer: click, Ctrl/Cmd+click toggles, Shift+click selects a range ----
+function select(id, e) {
+  if (e && e.shiftKey && anchor) {
+    const a = visible.findIndex((t) => t.id === anchor), b = visible.findIndex((t) => t.id === id);
+    if (a >= 0 && b >= 0) { if (!e.ctrlKey && !e.metaKey) sel.clear(); visible.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((t) => sel.add(t.id)); }
+  } else if (e && (e.ctrlKey || e.metaKey)) { sel.has(id) ? sel.delete(id) : sel.add(id); anchor = id; }
+  else { sel.clear(); sel.add(id); anchor = id; }
+  renderArchives();
+}
+function setHash() { try { history.replaceState(null, '', cur ? '#' + encodeURIComponent(cur) : location.pathname + location.search); } catch {} }
+function openFolder(p) { cur = p; sel.clear(); anchor = null; $('#archFilter').value = ''; setHash(); renderArchives(); $('#listArch').scrollTop = 0; }
+$('#xpath').onclick = (e) => { const a = e.target.closest('[data-go]'); if (a) { e.preventDefault(); openFolder(a.dataset.go); } };
+$('#xUp').onclick = () => openFolder(dirOf(cur));
+window.addEventListener('hashchange', () => { const h = decodeURIComponent(location.hash.slice(1)).replace(/^\/+|\/+$/g, ''); if (h !== cur) openFolder(h); });
+function downloadIds(ids) {
+  ids = ids.filter((id) => !String(id).startsWith('dir:'));
+  ids.forEach((id, i) => setTimeout(() => {
+    const a = document.createElement('a');
+    a.href = BASE + 'api/download/' + id + '?device=' + me.id; a.download = '';
+    document.body.appendChild(a); a.click(); a.remove();
+  }, i * 500));
+  setTimeout(loadTransfers, ids.length * 500 + 800);
+}
+$('#listArch').onclick = (e) => {
+  const sortBy = e.target.closest('[data-sort]');
+  if (sortBy) {
+    const k = sortBy.dataset.sort;
+    sort = { key: k, dir: sort.key === k ? -sort.dir : (k === 'time' || k === 'size' ? -1 : 1) };
+    store.set('lanshare.archSort', JSON.stringify(sort));
+    return renderArchives();
+  }
+  const dl = e.target.closest('[data-getid]');
+  if (dl) { e.stopPropagation(); return downloadIds([dl.dataset.getid]); }
+  const item = e.target.closest('[data-id]');
+  if (item) select(item.dataset.id, e);
+  else { sel.clear(); renderArchives(); } // click on empty space clears the selection
+};
+$('#listArch').ondblclick = (e) => {
+  const item = e.target.closest('[data-id]'); if (!item || e.target.closest('[data-getid]')) return;
+  const t = visible.find((x) => x.id === item.dataset.id);
+  if (t && t.isDir) openFolder(t.path); else downloadIds([item.dataset.id]);
+};
+$('#listArch').onkeydown = (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); visible.forEach((t) => sel.add(t.id)); return renderArchives(); }
+  if (e.key === 'Enter' && sel.size) {
+    const d = visible.find((t) => sel.has(t.id) && t.isDir);
+    return d ? openFolder(d.path) : downloadIds(visible.filter((t) => sel.has(t.id)).map((t) => t.id));
+  }
+  if (e.key === 'Backspace' && cur) { e.preventDefault(); return openFolder(dirOf(cur)); }
+  if (e.key === 'Escape') { sel.clear(); return renderArchives(); }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const cur = visible.findIndex((t) => t.id === anchor);
+    const next = visible[Math.max(0, Math.min(visible.length - 1, cur < 0 ? 0 : cur + (e.key === 'ArrowDown' ? 1 : -1)))];
+    if (next) { select(next.id, e.shiftKey ? { shiftKey: true } : null); const el = document.querySelector('[data-id="' + next.id + '"]'); if (el) el.scrollIntoView({ block: 'nearest' }); }
+  }
+};
+$('#xDownload').onclick = () => downloadIds(visible.filter((t) => sel.has(t.id)).map((t) => t.id));
+$('#xView').onclick = (e) => { const b = e.target.closest('[data-view]'); if (b) { view = b.dataset.view; store.set('lanshare.archView', view); renderArchives(); } };
+
+// ---- move / copy (server PC and manager PCs only; nothing is ever replaced) ----
+const pathCmp = (a, b) => { const x = a.split('/'), y = b.split('/'); for (let i = 0; i < Math.min(x.length, y.length); i++) { const c = x[i].localeCompare(y[i], undefined, { numeric: true, sensitivity: 'base' }); if (c) return c; } return x.length - y.length; };
+const placeLabel = (p) => (p ? 'ARCHIVES / ' + p.split('/').join(' / ') : 'ARCHIVES');
+function pickFolder(title, message) {
+  return new Promise((resolve) => {
+    const dlg = $('#pickDlg'); let chosen = cur;
+    $('#pickTitle').textContent = title; $('#pickMsg').textContent = message;
+    const draw = () => {
+      $('#pickList').innerHTML = ['', ...folders.map((f) => f.path).sort(pathCmp)].map((p) =>
+        '<div class="pickrow' + (p === chosen ? ' on' : '') + '" data-p="' + esc(p) + '" style="padding-left:' + (10 + (p ? p.split('/').length : 0) * 18) + 'px"><span class="dicon sm"></span>' + esc(p ? baseOf(p) : 'ARCHIVES (top level)') + (p === cur ? ' <i>(open now)</i>' : '') + '</div>').join('');
+    };
+    draw();
+    const done = (v) => { dlg.close(); resolve(v); };
+    $('#pickList').onclick = (e) => { const r = e.target.closest('[data-p]'); if (r) { chosen = r.dataset.p; draw(); } };
+    $('#pickList').ondblclick = (e) => { const r = e.target.closest('[data-p]'); if (r) done(r.dataset.p); };
+    $('#pickForm').onsubmit = (e) => { e.preventDefault(); done(chosen); };
+    $('#pickCancel').onclick = () => done(null);
+    dlg.oncancel = () => resolve(null);
+    dlg.showModal();
+  });
+}
+async function transferFiles(mode) {
+  const items = visible.filter((t) => sel.has(t.id) && !t.isDir);
+  if (!items.length) return;
+  const verb = mode === 'move' ? 'Move' : 'Copy';
+  const dest = await pickFolder(verb + ' ' + items.length + ' file' + (items.length === 1 ? '' : 's') + ' to…', 'Choose the destination folder. A file is never replaced: if the name is taken you will be asked for another one.');
+  if (dest === null) return;
+  const names = {}; let pending = items.map((t) => t.id), done = 0, skipped = 0, failed = 0;
+  try {
+    for (let round = 0; round < 25 && pending.length; round++) {
+      const r = await send('POST', 'archive/' + mode, { ids: pending, to: dest, names });
+      const again = [];
+      for (const x of r.results) {
+        const t = transfers.find((y) => y.id === x.id) || { name: 'file' };
+        if (x.status === 'ok') done++;
+        else if (x.status === 'same') skipped++;
+        else if (x.status === 'exists') {
+          const a = await ask({
+            title: 'This file name already exists there',
+            message: '"' + (names[x.id] || t.name) + '" is already in ' + placeLabel(dest) + ', and files are never replaced. Type a different name for this file, or cancel to skip it.',
+            value: (names[x.id] || t.name).replace(/(\.[^.\\/]*)?$/, ' (2)$1'), okLabel: 'Use this name', maxLength: 200, placeholder: 'File name',
+          });
+          if (a) { names[x.id] = a.name; again.push(x.id); } else skipped++;
+        } else { failed++; toast('Could not ' + mode + ' ' + t.name + (x.error ? ': ' + x.error : ''), 7000); }
+      }
+      pending = again;
+    }
+  } catch (e) { toast(e.message, 7000); }
+  sel.clear();
+  toast((done ? '✓ ' + done + ' file' + (done === 1 ? '' : 's') + (mode === 'move' ? ' moved' : ' copied') + ' to ' + placeLabel(dest) : 'Nothing was ' + (mode === 'move' ? 'moved' : 'copied')) + (skipped ? ' · ' + skipped + ' skipped' : '') + (failed ? ' · ' + failed + ' failed' : ''), 7000, done && !failed ? 'ok' : '');
+  await loadTransfers();
+}
+$('#xNew').onclick = async () => {
+  const a = await ask({ title: 'New folder', message: 'Create a folder in ' + placeLabel(cur) + '.', okLabel: 'Create', maxLength: 100, placeholder: 'Folder name' });
+  if (!a) return;
+  try { await send('POST', 'archive/folder', { parent: cur, name: a.name }); toast('✓ Folder created', 3000, 'ok'); await loadFolders(); await loadTransfers(); }
+  catch (e) { toast(e.message, 7000); }
+};
+$('#xMove').onclick = () => transferFiles('move');
+$('#xCopy').onclick = () => transferFiles('copy');
+
+// ---- permissions: who has which profile ----
+let permSig = '';
+function renderPerm(force) {
+  const list = [...devices].sort((a, b) => a.name.localeCompare(b.name));
+  const sig = JSON.stringify(list.map((d) => [d.id, d.name, d.profile, d.canManage])) + acc.server;
+  if (!force && sig === permSig) return;           // 'devices' events arrive constantly; only redraw on a real change
+  permSig = sig;
+  $('#permBody').innerHTML = '<table class="perm"><thead><tr><th>Computer</th><th>Profile</th>' + (acc.server ? '<th title="A manager PC can also give profiles and move/copy files">Manager</th>' : '') + '</tr></thead><tbody>' +
+    list.map((d) => {
+      const locked = !acc.server && d.canManage;   // only the server PC can change a manager PC
+      return '<tr><td>' + esc(d.name) + (d.id === me.id ? ' <i>(this PC)</i>' : '') + (d.canManage && !acc.server ? ' <i>(manager)</i>' : '') + '</td><td><select data-prof="' + esc(d.id) + '"' + (locked ? ' disabled' : '') + '>' +
+        Object.keys(PROFILE_LABEL).map((k) => '<option value="' + k + '"' + (d.profile === k ? ' selected' : '') + '>' + PROFILE_LABEL[k] + '</option>').join('') + '</select></td>' +
+        (acc.server ? '<td><input type="checkbox" data-mgr="' + esc(d.id) + '"' + (d.canManage ? ' checked' : '') + '></td>' : '') + '</tr>';
+    }).join('') + '</tbody></table>';
+}
+$('#permBody').onchange = async (e) => {
+  const sl = e.target.closest('[data-prof]'), cb = e.target.closest('[data-mgr]');
+  const id = (sl || cb || {}).dataset && (sl ? sl.dataset.prof : cb && cb.dataset.mgr);
+  if (!id) return;
+  const d = devices.find((x) => x.id === id); if (!d) return;
+  $('#permErr').textContent = '';
+  try {
+    await send('PUT', 'devices/' + id + '/profile', sl ? { profile: sl.value } : { profile: d.profile, canManage: cb.checked });
+    toast('✓ ' + d.name + (sl ? ' is now ' + PROFILE_LABEL[sl.value] : cb.checked ? ' is now a manager' : ' is no longer a manager'), 4000, 'ok');
+  } catch (err) { $('#permErr').textContent = err.message; renderPerm(true); }
+};
+$('#xPerm').onclick = () => { $('#permErr').textContent = ''; renderPerm(true); $('#permDlg').showModal(); };
+$('#permClose').onclick = () => $('#permDlg').close();
+
+// ---- adding files ----
+// Files in ARCHIVES are never replaced or overwritten. If a name is already taken the person is asked for a different
+// one BEFORE the upload starts; if they cancel, that file is skipped. Dialogs run one at a time.
+let addChain = Promise.resolve();
+const addToArchives = (files) => (addChain = addChain.then(() => doAdd(files)).catch(() => {}));
+async function doAdd(files) {
+  const used = new Set(), dest = cur;   // files go into the folder that was open when they were added
+  if (!folderExists(dest)) { toast('That folder no longer exists. Only the server PC can create folders.', 8000); return; }
+  for (const f of files) {
+    let name = f.name, error = '';
+    for (;;) {
+      let taken = used.has(name.toLowerCase());
+      if (!taken) { try { taken = (await api('archive/exists?name=' + encodeURIComponent(name) + '&folder=' + encodeURIComponent(dest))).exists; } catch { taken = false; } }
+      if (!taken) break;
+      const r = await ask({
+        title: 'This file name already exists in ARCHIVES',
+        message: '"' + name + '" is already in ' + (dest ? 'ARCHIVES / ' + dest.split('/').join(' / ') : 'ARCHIVES') + ', and files there are never replaced. Type a different name for this file, or cancel to skip it.',
+        value: name.replace(/(\.[^.\\/]*)?$/, ' (2)$1'), okLabel: 'Use this name', maxLength: 200, placeholder: 'File name', error,
+      });
+      if (!r) { name = null; break; }
+      name = r.name;
+    }
+    if (name === null) { toast('Skipped ' + f.name + ' (not added to ARCHIVES)'); continue; }
+    used.add(name.toLowerCase());
+    enqueueSend(f, ['archives'], name, dest); // one upload at a time, each with progress, speed and a Cancel button
+  }
+}
+$('#xUpload').onclick = () => $('#pick').click();
+$('#pick').onchange = (e) => { addToArchives([...e.target.files]); e.target.value = ''; };
+// Drop anywhere on the page; a full-page overlay shows while files are dragged over the window.
+window.addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dragging'); });
+window.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
+window.addEventListener('drop', (e) => { e.preventDefault(); document.body.classList.remove('dragging'); const files = filesFromDrop(e.dataTransfer); if (files.length) addToArchives(files); });
+
+// ---- plug into the shared start-up (common.js) ----
+hooks.renderAll = () => { me = devices.find((d) => d.id === me.id) || me; $('#meName').textContent = me.name; renderArchives(); if ($('#permDlg').open) renderPerm(); };
+let folderLoaded = false;
+// every 'refresh' from the server (its folder watcher, uploads, deletions) lands here, so the page follows D:\ARCHIVES live
+hooks.renderList = () => { renderArchives(); loadFolders().then(() => { folderLoaded = true; renderArchives(); }); };
+boot();
+</script></body></html>

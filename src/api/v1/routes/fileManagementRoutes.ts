@@ -13,12 +13,20 @@
  * An iframe cannot send an Authorization header, which is why the cookie exists. It is mounted BEFORE express.json()
  * and the case-conversion middleware (see app.ts) so uploads stream through untouched.
  *
- * Env: FILE_APP_SECRET (same value as the file app's sms-secret.txt), FILE_APP_URL (default http://127.0.0.1:8080; on
- * the VPS it is the far end of the reverse tunnel to the school server).
+ * Two ways to run the file app, chosen by FILE_APP_URL:
+ *   - FILE_APP_URL set   -> proxy to that separate process (the school server: the standalone app that the LAN PCs also use).
+ *   - FILE_APP_URL empty -> EMBEDDED: the same file app runs inside this backend (src/filemanagement), storing its files on
+ *                           this server's disk. No second process and no tunnel (the online server).
+ *
+ * Env: FILE_APP_SECRET (signs the identity this router hands to the file app; in proxy mode it must equal the file app's
+ * sms-secret.txt). Embedded mode also reads FILE_APP_DIR (data root, default <cwd>/data/file-management),
+ * FILE_APP_ARCHIVE_DIR, FILE_APP_TEMP_DIR, FILE_APP_MAX_MB (default 32) and FILE_APP_RETENTION_DAYS (default 7).
  */
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import http from 'http';
+import fs from 'fs';
+import path from 'path';
 import { authenticate } from '../middleware/auth.middleware';
 import prisma from '../../../config/db';
 
@@ -30,6 +38,7 @@ const TICKET_MS = 60 * 1000;
 const SESSION_MS = 8 * 60 * 60 * 1000;
 
 const secret = () => process.env.FILE_APP_SECRET || '';
+const embedded = () => !process.env.FILE_APP_URL;
 const fileAppUrl = () => new URL(process.env.FILE_APP_URL || 'http://127.0.0.1:8080');
 
 // SMS role -> file profile. PARENT (and STUDENT) are absent on purpose: no access.
@@ -53,6 +62,8 @@ const ROLE_PROFILE: Record<string, string> = {
     TEACHER: 'default',
 };
 const RANK = ['default', 'discipline', 'administration', 'management'];
+// SMS roles that manage ARCHIVES (move/copy files, create folders). On the school server this is decided by the server PC.
+const MANAGER_ROLES = new Set(['SUPER_MANAGER', 'MANAGER']);
 
 /**
  * The file profile for a set of SMS roles, or null when the person gets no access (parents/students only).
@@ -72,7 +83,7 @@ const seal = (obj: object) => {
     const data = Buffer.from(JSON.stringify(obj)).toString('base64url');
     return `${data}.${sign(data)}`;
 };
-function unseal(token: string, type: 't' | 's'): { uid: number; name: string; profile: string; page?: string } | null {
+function unseal(token: string, type: 't' | 's'): { uid: number; name: string; profile: string; page?: string; mgr?: boolean } | null {
     if (!secret() || !token) return null;
     const [data, sig] = String(token).split('.');
     if (!data || !sig) return null;
@@ -125,7 +136,8 @@ router.post('/session', authenticate, async (req: Request, res: Response) => {
         const user = await prisma.user.findUnique({ where: { id: (req.user as any).id }, select: { name: true } });
         // ?page=archives opens the ARCHIVES explorer directly (the "Archives" menu entry); anything else opens file sharing
         const page = String((req as any).query?.page || '') === 'archives' ? 'archives' : 'files';
-        const ticket = seal({ typ: 't', uid: (req.user as any).id, name: user?.name || 'User', profile, page, exp: Date.now() + TICKET_MS });
+        const mgr = roles.some((r) => MANAGER_ROLES.has(r));
+        const ticket = seal({ typ: 't', uid: (req.user as any).id, name: user?.name || 'User', profile, page, mgr, exp: Date.now() + TICKET_MS });
         res.json({ success: true, data: { url: `${MOUNT}/open?t=${encodeURIComponent(ticket)}` } });
     } catch (e) {
         console.error('File Management session error:', e);
@@ -140,7 +152,7 @@ router.get('/open', (req: Request, res: Response) => {
         html(res, 401, NOTE('This link has expired. Close this page and open File Management again.'));
         return;
     }
-    const session = seal({ typ: 's', uid: who.uid, name: who.name, profile: who.profile, exp: Date.now() + SESSION_MS });
+    const session = seal({ typ: 's', uid: who.uid, name: who.name, profile: who.profile, mgr: !!who.mgr, exp: Date.now() + SESSION_MS });
     res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(session)}; Path=${MOUNT}; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MS / 1000}${isHttps(req) ? '; Secure' : ''}`);
     redirect(res, 302, `${MOUNT}/app/${who.page === 'archives' ? 'archives' : ''}?embed=1`);
 });
@@ -148,6 +160,34 @@ router.get('/open', (req: Request, res: Response) => {
 // ---- 3. proxy to the file app ----
 const HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
 const DROP_REQ = new Set(['host', 'cookie', 'authorization', 'x-forwarded-for', 'x-sms-identity', 'x-sms-signature']);
+
+// ---- embedded file app (no separate process, no tunnel) ----
+let embeddedShare: any = null;
+function getEmbedded() {
+    if (embeddedShare) return embeddedShare;
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createLanShare } = require('../../../filemanagement/lanShare');
+    const root = path.resolve(process.env.FILE_APP_DIR || path.join(process.cwd(), 'data', 'file-management'));
+    const archiveDir = path.resolve(process.env.FILE_APP_ARCHIVE_DIR || path.join(root, 'archives'));
+    fs.mkdirSync(archiveDir, { recursive: true });
+    // First start: the same top-level ARCHIVES folders the school server has. Folders with a rule (MANAGEMENT DOCUMENTS,
+    // ADMINISTRATIVE DOCUMENTS, DISCIPLINE) are only visible to the matching profiles.
+    if (fs.readdirSync(archiveDir).length === 0) {
+        for (const f of ['ADMINISTRATIVE DOCUMENTS', 'DISCIPLINE', 'MANAGEMENT DOCUMENTS', 'PICTURES', 'VIDEOS']) fs.mkdirSync(path.join(archiveDir, f), { recursive: true });
+    }
+    embeddedShare = createLanShare({
+        dir: path.join(root, 'data'),
+        archiveDir,
+        tempDir: path.resolve(process.env.FILE_APP_TEMP_DIR || path.join(root, 'transfers')),
+        maxBytes: (Number(process.env.FILE_APP_MAX_MB) || 32) * 1024 * 1024,
+        retentionDays: process.env.FILE_APP_RETENTION_DAYS === undefined ? 7 : Number(process.env.FILE_APP_RETENTION_DAYS),
+        trustProxy: true,
+        smsSecret: secret(),
+        smsOnly: true,        // nothing here ever acts as the "server PC": every request carries a signed SMS identity
+        adminPassword: '',
+    });
+    return embeddedShare;
+}
 
 router.use('/app', (req: Request, res: Response) => {
     const rest = String((req as any).originalUrl).slice((MOUNT + '/app').length);   // '', '?x', '/', '/api/events?device=..'
@@ -161,8 +201,29 @@ router.use('/app', (req: Request, res: Response) => {
         return;
     }
 
+    const identity = Buffer.from(JSON.stringify({ uid: who.uid, name: who.name, profile: who.profile, mgr: !!who.mgr, ts: Date.now() })).toString('base64url');
+
+    if (embedded()) {
+        try {
+            const r: any = req;
+            r.headers['x-forwarded-for'] = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',').pop()!.trim();
+            r.headers['x-forwarded-proto'] = isHttps(req) ? 'https' : 'http';
+            r.headers['x-sms-identity'] = identity;
+            r.headers['x-sms-signature'] = sign(identity);
+            r.url = rest;
+            Promise.resolve(getEmbedded()(r, res, () => { if (!res.headersSent) html(res, 404, NOTE('Not found.')); })).catch((e: any) => {
+                console.error('File Management (embedded) error:', e);
+                if (!res.headersSent) html(res, 500, NOTE('File Management hit a problem. Try again in a moment.'));
+                else res.end();
+            });
+        } catch (e) {
+            console.error('File Management (embedded) could not start:', e);
+            html(res, 503, NOTE('File Management is not available right now. Try again in a moment.'));
+        }
+        return;
+    }
+
     const target = fileAppUrl();
-    const identity = Buffer.from(JSON.stringify({ uid: who.uid, name: who.name, profile: who.profile, ts: Date.now() })).toString('base64url');
     const headers: http.OutgoingHttpHeaders = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k) && !DROP_REQ.has(k) && v !== undefined) headers[k] = v;
     headers.host = target.host;
