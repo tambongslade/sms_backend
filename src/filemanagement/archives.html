@@ -254,21 +254,24 @@ function renderArchives() {
     $('#listArch').innerHTML =
       '<div class="xhead"><div data-sort="name">Name' + arrow('name') + '</div><div data-sort="time">Date added' + arrow('time') + '</div><div class="c-type" data-sort="kind">Type' + arrow('kind') + '</div>' +
       '<div class="num" data-sort="size">Size' + arrow('size') + '</div><div class="c-by" data-sort="by">Added by' + arrow('by') + '</div><div></div></div>' +
-      visible.map((t) => '<div class="xrow' + sel_(t) + '" data-id="' + t.id + '">' + (t.isDir ? '' : '<div class="xchk"><i></i></div>') + '<div class="xname">' + icon(t) + '<span class="xtext"><span class="fname" title="' + esc(t.name) + '">' + esc(t.name) + '</span><span class="xmeta">' + esc(metaOf(t)) + '</span></span>' + (q && (t.isDir ? dirOf(t.path) : fileDir(t)) ? '<span class="xloc">in ' + esc((t.isDir ? dirOf(t.path) : fileDir(t)).split('/').join(' › ')) + '</span>' : '') + '</div>' +
+      visible.map((t) => '<div class="xrow' + sel_(t) + '" data-id="' + t.id + '">' + (t.isDir && !acc.manager ? '' : '<div class="xchk"><i></i></div>') + '<div class="xname">' + icon(t) + '<span class="xtext"><span class="fname" title="' + esc(t.name) + '">' + esc(t.name) + '</span><span class="xmeta">' + esc(metaOf(t)) + '</span></span>' + (q && (t.isDir ? dirOf(t.path) : fileDir(t)) ? '<span class="xloc">in ' + esc((t.isDir ? dirOf(t.path) : fileDir(t)).split('/').join(' › ')) + '</span>' : '') + '</div>' +
         '<div class="xcell">' + new Date(t.time).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + '</div><div class="xcell c-type">' + (t.isDir ? 'File folder' : esc(ftype(t.name).kind)) + '</div>' +
         '<div class="xcell num">' + (t.isDir ? '' : fmt(t.size)) + '</div><div class="xcell c-by">' + (t.isDir ? '' : esc(nameOf(t.from))) + '</div>' +
         '<div class="xact">' + (t.isDir ? '<span class="xgo">›</span>' : '<button class="xdl" data-getid="' + t.id + '" aria-label="Download ' + esc(t.name) + '">Download</button>') + '</div></div>').join('');
   }
   const picked = visible.filter((t) => sel.has(t.id) && !t.isDir);
-  $('#selInfo').textContent = picked.length ? picked.length + ' selected · ' + fmt(picked.reduce((n, t) => n + t.size, 0)) : '';
+  const pickedAll = acc.manager ? visible.filter((t) => sel.has(t.id)) : picked;   // managers can also pick folders to move or copy
+  const nFold = pickedAll.length - picked.length;
+  $('#selInfo').textContent = pickedAll.length ? pickedAll.length + ' selected' + (picked.length ? ' · ' + fmt(picked.reduce((n, t) => n + t.size, 0)) : '') : '';
   $('#xDownload').disabled = !picked.length;
   $('#xMove').hidden = $('#xCopy').hidden = $('#xPerm').hidden = $('#xNew').hidden = !acc.manager;
-  $('#xMove').disabled = $('#xCopy').disabled = !picked.length;
+  $('#xMove').disabled = $('#xCopy').disabled = !pickedAll.length;
   $('#accChip').textContent = 'Your access: ' + (PROFILE_LABEL[acc.profile] || acc.profile) + (acc.manager ? ' · manager' : '');
   document.querySelectorAll('#xView button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
   // phone extras: bottom bar while files are selected, floating buttons otherwise, sort dropdown
-  document.body.classList.toggle('selmode', isMobile() && picked.length > 0);
-  $('#selN').textContent = picked.length + (picked.length === 1 ? ' file selected' : ' files selected');
+  document.body.classList.toggle('selmode', isMobile() && pickedAll.length > 0);
+  $('#selN').textContent = pickedAll.length + (nFold ? (pickedAll.length === 1 ? ' folder selected' : ' items selected') : (pickedAll.length === 1 ? ' file selected' : ' files selected'));
+  $('#sbDl').disabled = !picked.length;
   $('#sbMove').hidden = $('#sbCopy').hidden = $('#fabNew').hidden = !acc.manager;
   $('#xSortM').value = sort.key + ':' + sort.dir;
   if (!['time:-1', 'time:1', 'name:1', 'name:-1', 'size:-1', 'size:1'].includes($('#xSortM').value)) $('#xSortM').selectedIndex = -1;
@@ -324,7 +327,7 @@ $('#listArch').onkeydown = (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); visible.forEach((t) => sel.add(t.id)); return renderArchives(); }
   if (e.key === 'Enter' && sel.size) {
     const d = visible.find((t) => sel.has(t.id) && t.isDir);
-    return d ? openFolder(d.path) : downloadIds(visible.filter((t) => sel.has(t.id)).map((t) => t.id));
+    return d ? openFolder(d.path) : downloadIds(visible.filter((t) => sel.has(t.id) && !t.isDir).map((t) => t.id));
   }
   if (e.key === 'Backspace' && cur) { e.preventDefault(); return openFolder(dirOf(cur)); }
   if (e.key === 'Escape') { sel.clear(); return renderArchives(); }
@@ -342,7 +345,7 @@ function mobileTap(item, e) {
   if (longPressFired) { longPressFired = false; return; }
   const t = visible.find((x) => x.id === item.dataset.id); if (!t) return;
   if (e.target.closest('.xchk')) return toggleSel(t.id);
-  if (t.isDir) return openFolder(t.path);
+  if (t.isDir) return (sel.size && acc.manager) ? toggleSel(t.id) : openFolder(t.path);   // a manager who is already picking adds folders too
   if (sel.size) return toggleSel(t.id);          // already picking: a tap adds or removes
   openSheet(t);
 }
@@ -373,14 +376,14 @@ $('#xSortM').onchange = () => { const [k, d] = $('#xSortM').value.split(':'); so
 $('#listArch').addEventListener('touchstart', (e) => {
   if (!isMobile()) return;
   const el = e.target.closest('[data-id]'); if (!el || e.target.closest('[data-getid]')) return;
-  const t = visible.find((x) => x.id === el.dataset.id); if (!t || t.isDir) return;
+  const t = visible.find((x) => x.id === el.dataset.id); if (!t || (t.isDir && !acc.manager)) return;
   longPressTimer = setTimeout(() => { longPressFired = true; toggleSel(t.id); if (navigator.vibrate) navigator.vibrate(15); setTimeout(() => { longPressFired = false; }, 700); }, 450);
 }, { passive: true });
 for (const ev of ['touchend', 'touchmove', 'touchcancel']) $('#listArch').addEventListener(ev, () => clearTimeout(longPressTimer), { passive: true });
 // keep the current folder visible at the end of the scrolling breadcrumb
 const scrollCrumbs = () => { const x = $('#xpath'); if (x) x.scrollLeft = x.scrollWidth; };
 
-$('#xDownload').onclick = () => downloadIds(visible.filter((t) => sel.has(t.id)).map((t) => t.id));
+$('#xDownload').onclick = () => downloadIds(visible.filter((t) => sel.has(t.id) && !t.isDir).map((t) => t.id));
 $('#xView').onclick = (e) => { const b = e.target.closest('[data-view]'); if (b) { view = b.dataset.view; store.set('lanshare.archView', view); renderArchives(); } };
 
 // ---- move / copy (server PC and manager PCs only; nothing is ever replaced) ----
@@ -405,17 +408,20 @@ function pickFolder(title, message) {
   });
 }
 async function transferFiles(mode) {
-  const items = visible.filter((t) => sel.has(t.id) && !t.isDir);
-  if (!items.length) return;
+  const picked = visible.filter((t) => sel.has(t.id));
+  const files = picked.filter((t) => !t.isDir), dirs = picked.filter((t) => t.isDir);
+  if (!files.length && !dirs.length) return;
   const verb = mode === 'move' ? 'Move' : 'Copy';
-  const dest = await pickFolder(verb + ' ' + items.length + ' file' + (items.length === 1 ? '' : 's') + ' to…', 'Choose the destination folder. A file is never replaced: if the name is taken you will be asked for another one.');
+  const what = [files.length && files.length + ' file' + (files.length === 1 ? '' : 's'), dirs.length && dirs.length + ' folder' + (dirs.length === 1 ? '' : 's')].filter(Boolean).join(' and ');
+  const dest = await pickFolder(verb + ' ' + what + ' to…', 'Choose the destination folder. Nothing is ever replaced: if the name is taken you will be asked for another one.');
   if (dest === null) return;
-  const names = {}; let pending = items.map((t) => t.id), done = 0, skipped = 0, failed = 0;
+  const names = {}, folderNames = {};
+  let pending = files.map((t) => t.id), pendingDirs = dirs.map((t) => t.path), done = 0, skipped = 0, failed = 0;
   try {
-    for (let round = 0; round < 25 && pending.length; round++) {
-      const r = await send('POST', 'archive/' + mode, { ids: pending, to: dest, names });
-      const again = [];
-      for (const x of r.results) {
+    for (let round = 0; round < 25 && (pending.length || pendingDirs.length); round++) {
+      const r = await send('POST', 'archive/' + mode, { ids: pending, folders: pendingDirs, to: dest, names, folderNames });
+      const again = [], againDirs = [];
+      for (const x of r.results || []) {
         const t = transfers.find((y) => y.id === x.id) || { name: 'file' };
         if (x.status === 'ok') done++;
         else if (x.status === 'same') skipped++;
@@ -428,11 +434,26 @@ async function transferFiles(mode) {
           if (a) { names[x.id] = a.name; again.push(x.id); } else skipped++;
         } else { failed++; toast('Could not ' + mode + ' ' + t.name + (x.error ? ': ' + x.error : ''), 7000); }
       }
-      pending = again;
+      for (const x of r.folderResults || []) {
+        const nm = folderNames[x.path] || baseOf(x.path);
+        if (x.status === 'ok') done++;
+        else if (x.status === 'same') skipped++;
+        else if (x.status === 'exists') {
+          const a = await ask({
+            title: 'This folder name already exists there',
+            message: 'A folder named "' + nm + '" is already in ' + placeLabel(dest) + '. Type a different name for this folder, or cancel to skip it.',
+            value: nm + ' (2)', okLabel: 'Use this name', maxLength: 100, placeholder: 'Folder name',
+          });
+          if (a) { folderNames[x.path] = a.name; againDirs.push(x.path); } else skipped++;
+        } else { failed++; toast('Could not ' + mode + ' the folder ' + nm + (x.error ? ': ' + x.error : ''), 7000); }
+      }
+      pending = again; pendingDirs = againDirs;
     }
   } catch (e) { toast(e.message, 7000); }
   sel.clear();
-  toast((done ? '✓ ' + done + ' file' + (done === 1 ? '' : 's') + (mode === 'move' ? ' moved' : ' copied') + ' to ' + placeLabel(dest) : 'Nothing was ' + (mode === 'move' ? 'moved' : 'copied')) + (skipped ? ' · ' + skipped + ' skipped' : '') + (failed ? ' · ' + failed + ' failed' : ''), 7000, done && !failed ? 'ok' : '');
+  const n = (done === 1 ? '1 item' : done + ' items');
+  toast((done ? '✓ ' + n + (mode === 'move' ? ' moved' : ' copied') + ' to ' + placeLabel(dest) : 'Nothing was ' + (mode === 'move' ? 'moved' : 'copied')) + (skipped ? ' · ' + skipped + ' skipped' : '') + (failed ? ' · ' + failed + ' failed' : ''), 7000, done && !failed ? 'ok' : '');
+  await loadFolders();
   await loadTransfers();
 }
 $('#xNew').onclick = async () => {

@@ -693,9 +693,44 @@ function createLanShare(opts = {}) {
           results.push({ id, status: e.code === 'EEXIST' ? 'exists' : 'error', error: e.message });
         }
       }
+      // Folders (with everything inside them): {folders: [path], folderNames: {path: newName}}. Never replaces anything.
+      const fnames = b.folderNames && typeof b.folderNames === 'object' ? b.folderNames : {};
+      const folderResults = [];
+      for (const fp of (Array.isArray(b.folders) ? b.folders : []).slice(0, 50)) {
+        const src = resolveArchiveFolder(fp);
+        if (!src || !src.rel || !profileOk(ac.profile, src.rel)) { folderResults.push({ path: fp, status: 'missing' }); continue; }
+        const nm = safeName(fnames[fp] || path.basename(src.abs)).trim();
+        if (!nm || nm === '.' || nm === '..' || nm.startsWith('.') || nm.startsWith('$')) { folderResults.push({ path: fp, status: 'error', error: 'bad folder name' }); continue; }
+        const srcLow = src.rel.toLowerCase(), destLow = dest.rel.toLowerCase();
+        if (destLow === srcLow || (destLow + '/').startsWith(srcLow + '/')) { folderResults.push({ path: fp, status: 'error', error: 'a folder cannot be moved or copied into itself' }); continue; }
+        if (move && !src.rel.includes('/') && db.archiveRules[srcLow]) { folderResults.push({ path: fp, status: 'error', error: 'this folder is protected and cannot be moved' }); continue; }
+        const toRel = (dest.rel ? dest.rel + '/' : '') + nm, dstAbs = path.join(dest.abs, nm);
+        if (move && toRel.toLowerCase() === srcLow) { folderResults.push({ path: fp, status: 'same' }); continue; }
+        if (fs.existsSync(dstAbs)) { folderResults.push({ path: fp, status: 'exists' }); continue; }
+        const prefix = src.rel + '/';
+        const inside = db.transfers.filter((t) => t.archive && t.status !== 'sending' && archivePathOf(t).startsWith(prefix));
+        try {
+          if (move) {
+            await fs.promises.rename(src.abs, dstAbs);   // same drive: instant, files keep their identity on disk
+            for (const t of inside) { t.archivePath = toRel + '/' + archivePathOf(t).slice(prefix.length); delete t.archiveName; }
+          } else {
+            await fs.promises.cp(src.abs, dstAbs, { recursive: true, errorOnExist: true, force: false });
+            for (const t of inside) {
+              const rel = toRel + '/' + archivePathOf(t).slice(prefix.length);
+              let st; try { st = fs.statSync(path.join(archiveDir, ...rel.split('/')), { bigint: true }); } catch { continue; }
+              db.transfers.push({ id: crypto.randomBytes(8).toString('hex'), name: t.name, size: Number(st.size), from: t.from, to: [], archive: true, archivePath: rel, fileKey: String(st.ino), time: Date.now(), downloadedBy: [], status: 'done', received: Number(st.size) });
+            }
+          }
+          logEvent(move ? 'archive-moved' : 'archive-copied', db.devices[me] || null, { ip: clientIp(req), file: nm, archive: true, detail: 'folder ' + src.rel + ' -> ' + toRel });
+          folderResults.push({ path: fp, status: 'ok' });
+        } catch (e) {
+          folderResults.push({ path: fp, status: e.code === 'EEXIST' ? 'exists' : 'error', error: e.message });
+        }
+      }
       save();
+      if (folderResults.length) syncArchive(true);
       emit('refresh', {});
-      return json(res, 200, { results });
+      return json(res, 200, { results, folderResults });
     }
 
     // POST api/archive/folder {parent, name}  -> create a folder in ARCHIVES (server PC or a manager). Never replaces anything.
