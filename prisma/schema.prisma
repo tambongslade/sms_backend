@@ -2927,3 +2927,34 @@ model LeaveRequest {
   @@index([requester_id])
   @@index([status])
 }
+
+// Text messages (SMS) sent to parents/staff through the bulk-SMS provider (Orange for now).
+// Kept per server: only the online server has the internet connection to send.
+enum SmsStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+model SmsMessage {
+  id             Int       @id @default(autoincrement())
+  batch_id       String
+  phone          String
+  recipient_name String?
+  user_id        Int?
+  student_id     Int?
+  body           String
+  segments       Int       @default(1)
+  status         SmsStatus @default(QUEUED)
+  provider       String    @default("ORANGE")
+  provider_ref   String?
+  error          String?
+  purpose        String?
+  sent_by        Int
+  created_at     DateTime  @default(now())
+  sent_at        DateTime?
+
+  @@index([batch_id])
+  @@index([created_at])
+  @@index([phone, created_at])
+}
