@@ -211,6 +211,7 @@ router.use('/app', (req: Request, res: Response) => {
             r.headers['x-sms-identity'] = identity;
             r.headers['x-sms-signature'] = sign(identity);
             r.url = rest;
+            res.setHeader('X-Accel-Buffering', 'no');   // nginx: do not buffer the live-update stream or downloads
             Promise.resolve(getEmbedded()(r, res, () => { if (!res.headersSent) html(res, 404, NOTE('Not found.')); })).catch((e: any) => {
                 console.error('File Management (embedded) error:', e);
                 if (!res.headersSent) html(res, 500, NOTE('File Management hit a problem. Try again in a moment.'));
