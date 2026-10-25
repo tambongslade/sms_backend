@@ -22,7 +22,7 @@
  * Env: FILE_APP_SECRET (signs the identity this router hands to the file app; it must equal the file app's sms-secret.txt).
  * Embedded mode also reads FILE_APP_DIR, FILE_APP_ARCHIVE_DIR, FILE_APP_TEMP_DIR, FILE_APP_MAX_MB, FILE_APP_RETENTION_DAYS.
  */
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import http from 'http';
 import fs from 'fs';
@@ -32,6 +32,15 @@ import { relayConnected, relayForward } from '../../../filemanagement/relay';
 import prisma from '../../../config/db';
 
 const router = Router();
+
+// The online SMS page (ssiccmr.com) frames this app, which is served from the API address (api.ssiccmr.com): a different
+// origin, so the proxy's X-Frame-Options: SAMEORIGIN would block it. A CSP frame-ancestors rule takes precedence over
+// X-Frame-Options in browsers, so name exactly who may frame it. FILE_APP_FRAME_ORIGINS adds more (comma-separated).
+router.use((_req: Request, res: Response, next: NextFunction) => {
+    const extra = String(process.env.FILE_APP_FRAME_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+    res.setHeader('Content-Security-Policy', ["frame-ancestors 'self' https://ssiccmr.com https://www.ssiccmr.com", ...extra].join(' '));
+    next();
+});
 
 const MOUNT = '/api/v1/file-management';
 const COOKIE = 'fm_session';
