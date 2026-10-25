@@ -53,7 +53,7 @@ function windowState(sequence: { status: string; submission_deadline: Date | nul
  * Full roster of a subclass for one exam sequence + subject, with the saved mark
  * (if any) on each row. Withdrawn students are left out. Sorted by name.
  */
-export async function getEntrySheet(examSequenceId: number, subClassId: number, subjectId: number) {
+export async function getEntrySheet(examSequenceId: number, subClassId: number, subjectId: number, isAdmin: boolean = false) {
     const { sequence, subClassSubject } = await resolveContext(examSequenceId, subClassId, subjectId);
 
     const enrollments = await prisma.enrollment.findMany({
@@ -91,6 +91,10 @@ export async function getEntrySheet(examSequenceId: number, subClassId: number, 
                 mark_id: m?.id ?? null,
                 score: m?.score ?? null,
                 updated_at: m?.updated_at ?? null,
+                // A teacher who already submitted this student's mark can no longer
+                // change it; admins (who bypass per-subject assignment checks above)
+                // can still correct it.
+                locked: !isAdmin && m?.score != null,
             };
         })
         .sort((a, b) => a.name.localeCompare(b.name));
@@ -107,6 +111,7 @@ export async function getEntrySheet(examSequenceId: number, subClassId: number, 
             submission_deadline: sequence.submission_deadline,
             is_open,
             closed_reason,
+            can_edit_submitted: isAdmin,
         },
         sub_class: {
             id: subClassSubject.sub_class.id,
@@ -134,6 +139,7 @@ export async function saveEntrySheet(params: {
     subject_id: number;
     teacher_id: number;
     marks: { student_id: number; score: number | null }[];
+    is_admin?: boolean;
 }) {
     const { sequence, subClassSubject } = await resolveContext(params.exam_sequence_id, params.sub_class_id, params.subject_id);
 
@@ -185,6 +191,34 @@ export async function saveEntrySheet(params: {
         );
     }
 
+    // Once a teacher has submitted a student's mark, it is locked: only an
+    // admin (SUPER_MANAGER / PRINCIPAL / VICE_PRINCIPAL) can change it after that.
+    if (!params.is_admin) {
+        const existingMarks = await prisma.mark.findMany({
+            where: {
+                exam_sequence_id: params.exam_sequence_id,
+                sub_class_subject_id: subClassSubject.id,
+                enrollment_id: { in: [...enrollmentByStudent.values()] },
+                score: { not: null },
+            },
+            select: { enrollment_id: true, score: true },
+        });
+        const lockedScoreByEnrollment = new Map(existingMarks.map(m => [m.enrollment_id, m.score]));
+        const locked: { student_id: any; score: any; reason: string }[] = [];
+        for (const row of params.marks) {
+            const enrollment_id = enrollmentByStudent.get(Number(row.student_id));
+            if (enrollment_id === undefined || !lockedScoreByEnrollment.has(enrollment_id)) continue;
+            const existingScore = lockedScoreByEnrollment.get(enrollment_id)!;
+            const incoming = row.score === null || row.score === undefined ? null : Number(row.score);
+            if (incoming !== existingScore) {
+                locked.push({ student_id: row.student_id, score: row.score, reason: 'This mark has already been submitted and can no longer be changed. Ask an administrator to correct it.' });
+            }
+        }
+        if (locked.length) {
+            throw new MarkEntryError(403, `${locked.length} mark(s) have already been submitted and can no longer be changed.`, locked);
+        }
+    }
+
     const ops: any[] = [];
     let saved = 0;
     let cleared = 0;
@@ -218,6 +252,6 @@ export async function saveEntrySheet(params: {
         console.warn(`[markEntry] averages refresh failed for sequence ${params.exam_sequence_id}, subclass ${params.sub_class_id}: ${e?.message}`);
     }
 
-    const sheet = await getEntrySheet(params.exam_sequence_id, params.sub_class_id, params.subject_id);
+    const sheet = await getEntrySheet(params.exam_sequence_id, params.sub_class_id, params.subject_id, params.is_admin);
     return { saved_count: saved, cleared_count: cleared, sheet };
 }

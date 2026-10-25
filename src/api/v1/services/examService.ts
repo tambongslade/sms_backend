@@ -1327,11 +1327,18 @@ export async function getMarkSubmissionTracking(examSequenceId: number) {
         throw new Error('Exam sequence not found.');
     }
 
-    // Get all subclasses with enrolled students for this academic year
+    // Get all subclasses with enrolled students for this academic year. Withdrawn
+    // students are excluded: markEntryService's entry sheet (what teachers actually
+    // fill in) leaves them off the roster, so counting them here would show
+    // subjects as "missing"/"partial" marks that no teacher is ever asked to enter.
+    const activeEnrollment = {
+        academic_year_id: sequence.academic_year_id,
+        student: { status: { not: 'WITHDRAWN' as const } },
+    };
     const subClasses = await prisma.subClass.findMany({
         where: {
             enrollments: {
-                some: { academic_year_id: sequence.academic_year_id }
+                some: activeEnrollment
             }
         },
         include: {
@@ -1342,7 +1349,7 @@ export async function getMarkSubmissionTracking(examSequenceId: number) {
                 }
             },
             enrollments: {
-                where: { academic_year_id: sequence.academic_year_id },
+                where: activeEnrollment,
                 select: { id: true }
             }
         },

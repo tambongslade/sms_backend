@@ -13178,15 +13178,18 @@ All averages, ranks and class statistics (Results screen, CSV export, sequence/t
 ```json
 { "success": true, "data": {
   "examSequence": { "id": 7, "sequenceNumber": 1, "termName": "First Term", "academicYearId": 2, "status": "OPEN",
-                    "submissionDeadline": null, "isOpen": true, "closedReason": null },
+                    "submissionDeadline": null, "isOpen": true, "closedReason": null, "canEditSubmitted": false },
   "subClass": { "id": 29, "name": "FORM 3 M", "className": "FORM 3" },
   "subject": { "id": 18, "name": "Geography" }, "coefficient": 2,
   "minScore": 0, "maxScore": 20, "totalStudents": 61, "markedCount": 13,
   "students": [ { "studentId": 812, "enrollmentId": 901, "name": "ABOUANG …", "matricule": "SS25CL0393",
-                  "markId": 5512, "score": 14.5, "updatedAt": "2026-10-20T08:00:00.000Z" } ]
+                  "markId": 5512, "score": 14.5, "updatedAt": "2026-10-20T08:00:00.000Z", "locked": true } ]
 } }
 ```
   Whole class (no paging), sorted by name, withdrawn students excluded. `score: null` / `markId: null` = no mark yet.
+  `canEditSubmitted` is `true` for SUPER_MANAGER/PRINCIPAL/VICE_PRINCIPAL, always `false` for TEACHER. A student row's
+  `locked` is `true` when a TEACHER caller already submitted that mark (`score` already saved) — once a teacher
+  saves a mark it can no longer be changed by that teacher; only an admin can correct it afterwards.
 - **Errors:** 400 missing/invalid ids · 403 not assigned to this subject/class · 404 sequence not found / subject not taught in the class.
 
 ### `POST /api/v1/marks/bulk` (new) — save the whole class in one request
@@ -13194,7 +13197,7 @@ All averages, ranks and class statistics (Results screen, CSV export, sequence/t
 - **Body:** `{ "examSequenceId": 7, "subClassId": 29, "subjectId": 18, "marks": [ { "studentId": 812, "score": 14.5 }, { "studentId": 813, "score": null } ] }`
   `score: null` clears (deletes) a saved mark. Send only changed rows.
 - **200:** `{ "success": true, "data": { "savedCount": 1, "clearedCount": 1, "sheet": { …same shape as entry-sheet… } } }`
-- **Errors:** 400 `"N mark(s) are invalid. Marks must be between 0 and 20."` with `details: [{ studentId, score, reason }]` — nothing is saved if any row is invalid · 400 student not enrolled in this class · 403 `"Mark submission is closed for this exam sequence."` / deadline passed / not assigned · 404 as above.
+- **Errors:** 400 `"N mark(s) are invalid. Marks must be between 0 and 20."` with `details: [{ studentId, score, reason }]` — nothing is saved if any row is invalid · 400 student not enrolled in this class · 403 `"Mark submission is closed for this exam sequence."` / deadline passed / not assigned · 404 as above · **403** `"N mark(s) have already been submitted and can no longer be changed."` with `details: [{ studentId, score, reason }]` when a TEACHER tries to change or clear a mark it already saved (SUPER_MANAGER/PRINCIPAL/VICE_PRINCIPAL are exempt from this check) — nothing is saved if any row in the batch is locked.
 - Saving also refreshes the stored sequence averages/ranks for that class.
 
 ### `POST /api/v1/marks`, `PUT /api/v1/marks/:id` (changed)
@@ -13211,6 +13214,7 @@ All averages, ranks and class statistics (Results screen, CSV export, sequence/t
 - Teachers are now taken from the timetable (who teaches that subject in that subclass this year), not the global subject list.
 - Each subject: `{ subjectId, subjectName, totalStudents, marksSubmitted, marksMissing, percentage, status: "complete"|"partial"|"missing", assignedTeachers: [{ id, name, email, phone }], assignedTeacherNames: "A, B", submittedBy: [{ id, name, count }], submittedByNames: "A" }`.
 - `summary` now also has `totalClasses, totalSubjectPairs, completePairs, partialPairs, missingPairs` (plus `totalMarksExpected, totalMarksSubmitted, totalMarksMissing, overallPercentage`). `examSequence.name` added. Withdrawn students excluded.
+- **Fix, 2026-10-25:** this endpoint's `totalStudents`/`totalMarksExpected` counted withdrawn students even though the text above says otherwise — it used a different (unfiltered) enrollment query than `getEntrySheet` (the teacher's actual Submit Marks roster) and `pending-teachers`. A subject could show as "partial"/"missing" here while the teacher's own sheet was 100% complete, because the roster sizes didn't match. Now filtered the same way everywhere: `student.status != WITHDRAWN`.
 
 ### `GET /api/v1/exams/:id/pending-teachers` (changed)
 - `data.teachers[]`: `{ teacher: { id, name, email, phone }, pendingSubjects: [{ subjectId, subjectName, subClassId, subClassName, className, totalStudents, marksSubmitted, marksMissing }], totalMissing, totalSubmitted }`.
@@ -13275,3 +13279,12 @@ All averages, ranks and class statistics (Results screen, CSV export, sequence/t
 ### `POST /api/v1/exams/papers`, `DELETE /api/v1/exams/papers/:id` (changed)
 - **Auth:** SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL, TEACHER. A TEACHER may only create/delete papers for a subject they teach this year (403 `"You can only create exam papers for subjects you teach"` / `"You can only delete exam papers for subjects you teach"`).
 - Deleting a paper that has questions now works (question links are removed; the questions stay in the bank). 404 when the paper does not exist.
+
+## Marks submission lock for teachers, 2026-10-25
+
+A TEACHER can no longer change or clear a mark once they have saved it via `POST /api/v1/marks/bulk` — see that
+endpoint's updated entry above for the request/response shape. SUPER_MANAGER, PRINCIPAL and VICE_PRINCIPAL are
+unaffected and can still correct a submitted mark at any time while the sequence is open. This is enforced
+server-side in `markEntryService.saveEntrySheet`/`getEntrySheet` (per student mark, not per whole sheet — a
+teacher can still enter marks for students they haven't gotten to yet); the teacher's Submit Marks screen
+(`/dashboard/teacher/submit-marks`) disables the input and shows a "Submitted" badge for each locked row.

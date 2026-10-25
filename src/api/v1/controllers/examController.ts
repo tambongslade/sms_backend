@@ -1267,7 +1267,9 @@ export const getMarkEntrySheet = async (req: Request, res: Response): Promise<an
         const denied = await assertMarkEntryAccess(req, examSequenceId, subClassId, subjectId);
         if (denied) return res.status(denied.status).json({ success: false, error: denied.error });
 
-        const data = await markEntryService.getEntrySheet(examSequenceId, subClassId, subjectId);
+        const roles: string[] = (req as any).user?.role ?? [];
+        const isAdmin = roles.some(r => MARK_ENTRY_ADMIN_ROLES.includes(r));
+        const data = await markEntryService.getEntrySheet(examSequenceId, subClassId, subjectId, isAdmin);
         res.json({ success: true, data });
     } catch (error: any) {
         if (error instanceof markEntryService.MarkEntryError) {
@@ -1297,12 +1299,15 @@ export const saveMarkEntrySheet = async (req: Request, res: Response): Promise<a
         const denied = await assertMarkEntryAccess(req, examSequenceId, subClassId, subjectId);
         if (denied) return res.status(denied.status).json({ success: false, error: denied.error });
 
+        const roles: string[] = user?.role ?? [];
+        const isAdmin = roles.some(r => MARK_ENTRY_ADMIN_ROLES.includes(r));
         const data = await markEntryService.saveEntrySheet({
             exam_sequence_id: examSequenceId,
             sub_class_id: subClassId,
             subject_id: subjectId,
             teacher_id: user.id,
             marks,
+            is_admin: isAdmin,
         });
         res.json({ success: true, data });
     } catch (error: any) {
