@@ -613,6 +613,9 @@ export async function getStudentFullProfileBase(id: number): Promise<any> {
                     class: true,
                     sub_class: { include: { class: true } },
                     student_sequence_averages: {
+                        // Averages and ranks are only meaningful once the sequence is
+                        // closed; while it is OPEN teachers are still submitting marks.
+                        where: { exam_sequence: { status: { not: 'OPEN' } } },
                         include: { exam_sequence: true },
                         orderBy: { exam_sequence_id: 'asc' },
                     },
