@@ -3,6 +3,83 @@
 <title>SSIC ARCHIVES</title>
 <link rel="manifest" href="manifest.webmanifest"><link rel="icon" type="image/png" href="logo.png">
 <link rel="stylesheet" href="style.css">
+<style>
+  /* Mobile-only parts are hidden on larger screens, so the desktop layout is unchanged. */
+  .only-m, .xmeta, .xchk, .xgo, #fab, #selBar, #xSortM { display:none; }
+  .xtext { display:contents; }
+  #fileSheet .sheetHead { display:flex; align-items:center; gap:14px; margin-bottom:12px; }
+  #fileSheet #shName { font-weight:600; color:var(--navy); word-break:break-word; }
+  #fileSheet #shMeta { font-size:13px; color:var(--mute); margin-top:2px; }
+  #fileSheet .sheetBtns { display:flex; flex-direction:column; gap:8px; }
+  #fileSheet .sheetBtns button { min-height:48px; font-size:16px; }
+
+  @media (max-width:700px) {
+    .only-m { display:inline; } .hide-m { display:none; }
+    body { padding-bottom:96px; -webkit-text-size-adjust:100%; }
+    .note { display:none; }
+    .explorer { margin-top:8px; border-radius:10px; }
+
+    /* toolbar: search on its own row, then Up / sort / view */
+    .xbar { padding:8px; gap:8px; }
+    #archFilter { order:1; flex:1 1 100%; width:100% !important; min-height:44px; font-size:16px; }
+    #xUp { order:2; min-height:44px; min-width:64px; }
+    #xSortM { display:block; order:3; flex:1 1 0; min-width:0; min-height:44px; font-size:15px; padding:0 8px; border:1px solid var(--line2); border-radius:6px; background:#fff; color:var(--fg); }
+    #xView { order:4; } #xView button { min-height:44px; padding:0 12px; }
+    #accChip { order:5; flex:1 1 100%; text-align:center; font-size:12px; }
+    .xbar .grow, #xUpload, #xDownload, #xMove, #xCopy, #xPerm, #xNew { display:none !important; }
+
+    /* breadcrumb: one scrollable line */
+    .xpath { flex-wrap:nowrap; overflow-x:auto; white-space:nowrap; padding:4px 8px; gap:2px; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+    .xpath::-webkit-scrollbar { display:none; }
+    .xpath img { display:none; }
+    .xpath .crumb { display:inline-flex; align-items:center; min-height:40px; padding:0 8px; font-size:15px; }
+    .xpath .crumb b { font-size:15px; }
+    .xpath span { flex:none; }
+
+    .xbody { max-height:none; min-height:46vh; }
+    .xhead { display:none; }
+    .xrow { display:flex; align-items:center; gap:10px; min-height:68px; padding:8px 10px; touch-action:manipulation; -webkit-tap-highlight-color:rgba(37,99,235,.15); -webkit-touch-callout:none; }
+    .xrow .xcell { display:none; }
+    .xrow .xchk { display:flex; flex:none; width:44px; height:44px; align-items:center; justify-content:center; margin-left:-6px; }
+    .xchk i { width:24px; height:24px; border:2px solid #9ca3af; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#fff; font-size:14px; font-style:normal; font-weight:700; }
+    .xrow.sel .xchk i { background:var(--accent); border-color:var(--accent); }
+    .xrow.sel .xchk i::after { content:"✓"; }
+    .xrow .xname { flex:1; min-width:0; gap:12px; }
+    .xtext { display:flex; flex-direction:column; min-width:0; gap:3px; }
+    .xtext .fname { white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word; font-size:15.5px; line-height:1.25; }
+    .xmeta { display:block; font-size:12.5px; color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .xrow .xloc { display:none; }
+    .xrow .xact { flex:none; }
+    .xrow .xdl { min-width:44px; min-height:44px; padding:0; font-size:0; border-radius:22px; }
+    .xrow .xdl::before { content:"⬇"; font-size:19px; }
+    .xgo { display:block; flex:none; color:#9ca3af; font-size:26px; padding:0 6px; }
+    .xicons { grid-template-columns:repeat(auto-fill, minmax(104px,1fr)); gap:6px; padding:8px; }
+    .xtile { touch-action:manipulation; -webkit-touch-callout:none; padding:12px 6px 10px; }
+    .xempty { padding:36px 20px; font-size:15px; line-height:1.5; }
+    .xstatus { padding:8px 12px; }
+
+    /* floating actions */
+    #fab { display:flex; flex-direction:column; align-items:flex-end; gap:10px; position:fixed; right:14px; bottom:calc(14px + env(safe-area-inset-bottom)); z-index:15; }
+    #fab button { min-height:54px; padding:0 22px; border-radius:27px; font-size:16px; font-weight:600; box-shadow:0 6px 14px rgb(0 0 0 / .22); }
+    #fab button.mini { min-height:46px; font-size:14px; background:#fff; }
+    body.selmode #fab { display:none; }
+    #selBar { position:fixed; left:0; right:0; bottom:0; z-index:16; background:#fff; border-top:1px solid var(--line2); box-shadow:0 -6px 16px rgb(0 0 0 / .12); padding:8px 10px calc(8px + env(safe-area-inset-bottom)); align-items:center; gap:8px; }
+    body.selmode #selBar { display:flex; }
+    #selBar .selN { flex:1; min-width:0; font-size:13px; font-weight:600; color:var(--navy); }
+    #selBar button { min-height:46px; padding:0 14px; font-size:15px; }
+    #selBar #sbClear { min-width:46px; padding:0; }
+
+    /* dialogs become bottom sheets, inputs never trigger the iOS zoom */
+    dialog { width:100vw; max-width:100vw; margin:auto 0 0 0; border-radius:16px 16px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom)); }
+    dialog input, dialog select { font-size:16px; min-height:44px; }
+    dialog .btns button { min-height:46px; padding:0 18px; }
+    dialog.wide { width:100vw; }
+    #pickList { max-height:50vh; }
+    .pickrow { min-height:48px; padding:10px 12px; }
+    table.perm { font-size:13px; } table.perm th, table.perm td { padding:6px 4px; }
+    #uploads .row { flex-wrap:wrap; }
+  }
+</style>
 </head>
 <body>
 <div class="topwrap">
@@ -29,6 +106,11 @@
       <span class="grow"></span>
       <span class="chip" id="accChip" title="Which ARCHIVES folders this PC can open"></span>
       <button id="xPerm" hidden>Permissions</button>
+      <select id="xSortM" aria-label="Sort files">
+        <option value="time:-1">Newest first</option><option value="time:1">Oldest first</option>
+        <option value="name:1">Name A–Z</option><option value="name:-1">Name Z–A</option>
+        <option value="size:-1">Largest first</option><option value="size:1">Smallest first</option>
+      </select>
       <div class="seg" id="xView"><button data-view="details" class="on">Details</button><button data-view="icons">Icons</button></div>
       <input id="archFilter" type="search" placeholder="Search ARCHIVES" autocomplete="off">
     </div>
@@ -39,6 +121,12 @@
   </div>
   <input id="pick" type="file" multiple hidden>
 </main>
+<div id="fab"><button class="mini" id="fabNew" hidden>＋ New folder</button><button class="primary" id="fabUp">⬆ Upload</button></div>
+<div id="selBar"><span class="selN" id="selN"></span><button class="primary" id="sbDl">Download</button><button id="sbMove" hidden>Move</button><button id="sbCopy" hidden>Copy</button><button id="sbClear" aria-label="Clear selection">✕</button></div>
+<dialog id="fileSheet">
+  <div class="sheetHead"><span id="shIcon"></span><div><div id="shName"></div><div id="shMeta"></div></div></div>
+  <div class="sheetBtns"><button class="primary" id="shDl">Download</button><button id="shSel">Select</button><button id="shMove" hidden>Move to…</button><button id="shCopy" hidden>Copy to…</button><button id="shClose">Close</button></div>
+</dialog>
 <div id="dropOverlay">Drop files to add them to this folder</div>
 
 <dialog id="dlg">
@@ -120,6 +208,16 @@ const SORTERS = {
   by: (a, b) => nameOf(a.from).localeCompare(nameOf(b.from)) || a.name.localeCompare(b.name),
 };
 
+// one-line summary shown under the name on phones
+const metaOf = (t) => {
+  const d = new Date(t.time).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+  const where = $('#archFilter').value.trim() && (t.isDir ? dirOf(t.path) : fileDir(t)) ? 'in ' + (t.isDir ? dirOf(t.path) : fileDir(t)).split('/').join(' › ') + ' · ' : '';
+  return where + (t.isDir ? 'Folder · ' + d : fmt(t.size) + ' · ' + d + (nameOf(t.from) ? ' · ' + nameOf(t.from) : ''));
+};
+const mqM = window.matchMedia('(max-width: 700px)');
+const isMobile = () => mqM.matches;
+if (mqM.addEventListener) mqM.addEventListener('change', () => renderArchives());
+
 function renderArchives() {
   const bodyEl = $('#listArch'), keepScroll = bodyEl.scrollTop; // a refresh must not jump back to the top
   const q = $('#archFilter').value.trim().toLowerCase();
@@ -136,16 +234,16 @@ function renderArchives() {
   for (const id of [...sel]) if (!visible.some((t) => t.id === id)) sel.delete(id);
 
   const crumbs = cur ? cur.split('/') : [];
-  $('#xpath').innerHTML = '<img src="logo.png" alt=""><a href="#" class="crumb" data-go=""><b>ARCHIVES</b></a>' +
-    crumbs.map((c, i) => '<span>›</span><a href="#" class="crumb" data-go="' + esc(crumbs.slice(0, i + 1).join('/')) + '">' + esc(c) + '</a>').join('') +
-    (q ? '<span>›</span><span>Search results for "' + esc($('#archFilter').value.trim()) + '" in all folders</span>' : '');
+  $('#xpath').innerHTML = (isMobile() && q ? '' : '<img src="logo.png" alt=""><a href="#" class="crumb" data-go=""><b>ARCHIVES</b></a>') +
+    (isMobile() && q ? [] : crumbs).map((c, i) => '<span>›</span><a href="#" class="crumb" data-go="' + esc(crumbs.slice(0, i + 1).join('/')) + '">' + esc(c) + '</a>').join('') +
+    (q ? (isMobile() ? '' : '<span>›</span>') + '<span>' + (isMobile() ? 'Results for "' + esc($('#archFilter').value.trim()) + '" in all folders' : 'Search results for "' + esc($('#archFilter').value.trim()) + '" in all folders') + '</span>' : '');
   $('#xUp').disabled = !cur;
   $('#count').textContent = (dirs.length ? dirs.length + ' folder' + (dirs.length === 1 ? '' : 's') + ', ' : '') + files.length + ' file' + (files.length === 1 ? '' : 's') + ' · ' + fmt(files.reduce((n, t) => n + t.size, 0));
 
   const icon = (t) => { if (t.isDir) return '<span class="dicon"></span>'; const f = ftype(t.name); return '<span class="ficon ' + f.cls + '">' + esc(f.ext) + '</span>'; };
   const sel_ = (t) => (sel.has(t.id) ? ' sel' : '');
   if (!visible.length) {
-    $('#listArch').innerHTML = '<div class="xempty">' + (q ? 'Nothing in ARCHIVES matches your search.' : cur ? 'This folder is empty.<br>Drag files here or press <b>Upload files</b> to add one.' : 'ARCHIVES is empty.<br>Drag files here or press <b>Upload files</b> to add the first one.') + '</div>';
+    $('#listArch').innerHTML = '<div class="xempty">' + (q ? 'Nothing in ARCHIVES matches your search.' : cur ? 'This folder is empty.<br><span class="hide-m">Drag files here or press <b>Upload files</b> to add one.</span><span class="only-m">Tap <b>Upload</b> to add a file.</span>' : 'ARCHIVES is empty.<br><span class="hide-m">Drag files here or press <b>Upload files</b> to add the first one.</span><span class="only-m">Tap <b>Upload</b> to add the first file.</span>') + '</div>';
   } else if (view === 'icons') {
     $('#listArch').innerHTML = '<div class="xicons">' + visible.map((t) =>
       '<div class="xtile' + sel_(t) + '" data-id="' + t.id + '" title="' + esc(t.name) + '">' + icon(t) + '<div class="fname">' + esc(t.name) + '</div><div class="xcell">' + (t.isDir ? 'Folder' : fmt(t.size)) + '</div></div>').join('') + '</div>';
@@ -154,10 +252,10 @@ function renderArchives() {
     $('#listArch').innerHTML =
       '<div class="xhead"><div data-sort="name">Name' + arrow('name') + '</div><div data-sort="time">Date added' + arrow('time') + '</div><div class="c-type" data-sort="kind">Type' + arrow('kind') + '</div>' +
       '<div class="num" data-sort="size">Size' + arrow('size') + '</div><div class="c-by" data-sort="by">Added by' + arrow('by') + '</div><div></div></div>' +
-      visible.map((t) => '<div class="xrow' + sel_(t) + '" data-id="' + t.id + '"><div class="xname">' + icon(t) + '<span class="fname" title="' + esc(t.name) + '">' + esc(t.name) + '</span>' + (q && (t.isDir ? dirOf(t.path) : fileDir(t)) ? '<span class="xloc">in ' + esc((t.isDir ? dirOf(t.path) : fileDir(t)).split('/').join(' › ')) + '</span>' : '') + '</div>' +
+      visible.map((t) => '<div class="xrow' + sel_(t) + '" data-id="' + t.id + '">' + (t.isDir ? '' : '<div class="xchk"><i></i></div>') + '<div class="xname">' + icon(t) + '<span class="xtext"><span class="fname" title="' + esc(t.name) + '">' + esc(t.name) + '</span><span class="xmeta">' + esc(metaOf(t)) + '</span></span>' + (q && (t.isDir ? dirOf(t.path) : fileDir(t)) ? '<span class="xloc">in ' + esc((t.isDir ? dirOf(t.path) : fileDir(t)).split('/').join(' › ')) + '</span>' : '') + '</div>' +
         '<div class="xcell">' + new Date(t.time).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + '</div><div class="xcell c-type">' + (t.isDir ? 'File folder' : esc(ftype(t.name).kind)) + '</div>' +
         '<div class="xcell num">' + (t.isDir ? '' : fmt(t.size)) + '</div><div class="xcell c-by">' + (t.isDir ? '' : esc(nameOf(t.from))) + '</div>' +
-        '<div>' + (t.isDir ? '' : '<button class="xdl" data-getid="' + t.id + '">Download</button>') + '</div></div>').join('');
+        '<div class="xact">' + (t.isDir ? '<span class="xgo">›</span>' : '<button class="xdl" data-getid="' + t.id + '" aria-label="Download ' + esc(t.name) + '">Download</button>') + '</div></div>').join('');
   }
   const picked = visible.filter((t) => sel.has(t.id) && !t.isDir);
   $('#selInfo').textContent = picked.length ? picked.length + ' selected · ' + fmt(picked.reduce((n, t) => n + t.size, 0)) : '';
@@ -166,6 +264,13 @@ function renderArchives() {
   $('#xMove').disabled = $('#xCopy').disabled = !picked.length;
   $('#accChip').textContent = 'Your access: ' + (PROFILE_LABEL[acc.profile] || acc.profile) + (acc.manager ? ' · manager' : '');
   document.querySelectorAll('#xView button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
+  // phone extras: bottom bar while files are selected, floating buttons otherwise, sort dropdown
+  document.body.classList.toggle('selmode', isMobile() && picked.length > 0);
+  $('#selN').textContent = picked.length + (picked.length === 1 ? ' file selected' : ' files selected');
+  $('#sbMove').hidden = $('#sbCopy').hidden = $('#fabNew').hidden = !acc.manager;
+  $('#xSortM').value = sort.key + ':' + sort.dir;
+  if (!['time:-1', 'time:1', 'name:1', 'name:-1', 'size:-1', 'size:1'].includes($('#xSortM').value)) $('#xSortM').selectedIndex = -1;
+  if (isMobile()) scrollCrumbs();
   bodyEl.scrollTop = keepScroll;
 }
 $('#archFilter').oninput = renderArchives;
@@ -204,6 +309,7 @@ $('#listArch').onclick = (e) => {
   const dl = e.target.closest('[data-getid]');
   if (dl) { e.stopPropagation(); return downloadIds([dl.dataset.getid]); }
   const item = e.target.closest('[data-id]');
+  if (item && isMobile()) return mobileTap(item, e);
   if (item) select(item.dataset.id, e);
   else { sel.clear(); renderArchives(); } // click on empty space clears the selection
 };
@@ -227,6 +333,51 @@ $('#listArch').onkeydown = (e) => {
     if (next) { select(next.id, e.shiftKey ? { shiftKey: true } : null); const el = document.querySelector('[data-id="' + next.id + '"]'); if (el) el.scrollIntoView({ block: 'nearest' }); }
   }
 };
+// ---- phones: tap to open, tap a file for its actions, long-press (or the circle) to select several ----
+let longPressTimer = null, longPressFired = false;
+function toggleSel(id) { sel.has(id) ? sel.delete(id) : sel.add(id); renderArchives(); }
+function mobileTap(item, e) {
+  if (longPressFired) { longPressFired = false; return; }
+  const t = visible.find((x) => x.id === item.dataset.id); if (!t) return;
+  if (e.target.closest('.xchk')) return toggleSel(t.id);
+  if (t.isDir) return openFolder(t.path);
+  if (sel.size) return toggleSel(t.id);          // already picking: a tap adds or removes
+  openSheet(t);
+}
+let sheetItem = null;
+function openSheet(t) {
+  sheetItem = t;
+  const f = ftype(t.name);
+  $('#shIcon').innerHTML = '<span class="ficon ' + f.cls + '">' + esc(f.ext) + '</span>';
+  $('#shName').textContent = t.name;
+  $('#shMeta').textContent = f.kind + ' · ' + metaOf(t) + (q_() && fileDir(t) ? ' · in ' + fileDir(t).split('/').join(' › ') : '');
+  $('#shMove').hidden = $('#shCopy').hidden = !acc.manager;
+  $('#fileSheet').showModal();
+}
+const q_ = () => $('#archFilter').value.trim();
+$('#fileSheet').addEventListener('click', (e) => { if (e.target === $('#fileSheet')) $('#fileSheet').close(); });   // tap outside closes
+$('#shClose').onclick = () => $('#fileSheet').close();
+$('#shDl').onclick = () => { $('#fileSheet').close(); if (sheetItem) downloadIds([sheetItem.id]); };
+$('#shSel').onclick = () => { $('#fileSheet').close(); if (sheetItem) { sel.clear(); sel.add(sheetItem.id); renderArchives(); } };
+$('#shMove').onclick = () => { $('#fileSheet').close(); if (sheetItem) { sel.clear(); sel.add(sheetItem.id); renderArchives(); transferFiles('move'); } };
+$('#shCopy').onclick = () => { $('#fileSheet').close(); if (sheetItem) { sel.clear(); sel.add(sheetItem.id); renderArchives(); transferFiles('copy'); } };
+$('#sbDl').onclick = () => downloadIds(visible.filter((t) => sel.has(t.id) && !t.isDir).map((t) => t.id));
+$('#sbMove').onclick = () => transferFiles('move');
+$('#sbCopy').onclick = () => transferFiles('copy');
+$('#sbClear').onclick = () => { sel.clear(); renderArchives(); };
+$('#fabUp').onclick = () => $('#pick').click();
+$('#fabNew').onclick = () => $('#xNew').click();
+$('#xSortM').onchange = () => { const [k, d] = $('#xSortM').value.split(':'); sort = { key: k, dir: Number(d) }; store.set('lanshare.archSort', JSON.stringify(sort)); renderArchives(); };
+$('#listArch').addEventListener('touchstart', (e) => {
+  if (!isMobile()) return;
+  const el = e.target.closest('[data-id]'); if (!el || e.target.closest('[data-getid]')) return;
+  const t = visible.find((x) => x.id === el.dataset.id); if (!t || t.isDir) return;
+  longPressTimer = setTimeout(() => { longPressFired = true; toggleSel(t.id); if (navigator.vibrate) navigator.vibrate(15); setTimeout(() => { longPressFired = false; }, 700); }, 450);
+}, { passive: true });
+for (const ev of ['touchend', 'touchmove', 'touchcancel']) $('#listArch').addEventListener(ev, () => clearTimeout(longPressTimer), { passive: true });
+// keep the current folder visible at the end of the scrolling breadcrumb
+const scrollCrumbs = () => { const x = $('#xpath'); if (x) x.scrollLeft = x.scrollWidth; };
+
 $('#xDownload').onclick = () => downloadIds(visible.filter((t) => sel.has(t.id)).map((t) => t.id));
 $('#xView').onclick = (e) => { const b = e.target.closest('[data-view]'); if (b) { view = b.dataset.view; store.set('lanshare.archView', view); renderArchives(); } };
 
