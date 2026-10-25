@@ -55,25 +55,18 @@ const mode = (): 'proxy' | 'relay' | 'embedded' => {
 };
 const fileAppUrl = () => new URL(process.env.FILE_APP_URL || 'http://127.0.0.1:8080');
 
-// SMS role -> file profile. PARENT (and STUDENT) are absent on purpose: no access.
+// SMS role -> file profile. management: every folder; administration: every folder except MANAGEMENT DOCUMENTS;
+// any other staff role gets 'default' (below): every folder except MANAGEMENT and ADMINISTRATIVE DOCUMENTS.
+// PARENT (and STUDENT) get no access at all.
 const ROLE_PROFILE: Record<string, string> = {
     SUPER_MANAGER: 'management',
     MANAGER: 'management',
     PRINCIPAL: 'administration',
     VICE_PRINCIPAL: 'administration',
     DEAN_OF_STUDIES: 'administration',
-    HOD: 'administration',
-    FEE_AUDITOR: 'administration',
-    GUIDANCE_COUNSELOR: 'administration',
+    DEAN_OF_DISCIPLINE: 'administration',
     SECRETARY: 'administration',
-    CONTROLLER: 'administration',
-    BURSAR: 'administration',
-    NURSE: 'administration',
-    DISCIPLINE_MASTER: 'discipline',
-    SENIOR_DISCIPLINE_MASTER: 'discipline',
-    DEAN_OF_DISCIPLINE: 'discipline',
-    DISCIPLINE_COORDINATOR: 'discipline',
-    TEACHER: 'default',
+    SENIOR_DISCIPLINE_MASTER: 'administration',
 };
 const RANK = ['default', 'discipline', 'administration', 'management'];
 // SMS roles that manage ARCHIVES (move/copy files, create folders). On the school server this is decided by the server PC.

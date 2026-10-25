@@ -256,10 +256,14 @@ function createLanShare(opts = {}) {
   // any PC the server PC marks as a manager (PEREZ's laptop), can give other PCs a profile. A restricted folder
   // is matched by its top-level name (sub-folders inherit); the rules live in db.archiveRules.
   const PROFILES = ['default', 'management', 'administration', 'discipline'];
-  if (!db.archiveRules) db.archiveRules = {
+  // Always these two rules (older databases also had a DISCIPLINE rule, now open to everyone):
+  //   MANAGEMENT DOCUMENTS     -> management only (Super Manager, Manager)
+  //   ADMINISTRATIVE DOCUMENTS -> management + administration (Principal, Vice Principal, Dean of Studies/Discipline,
+  //                               Secretary, Senior Discipline Master)
+  // Everyone else (except parents, who get no access) sees every other folder.
+  db.archiveRules = {
     'management documents': ['management'],
     'administrative documents': ['management', 'administration'],
-    'discipline': ['management', 'administration', 'discipline'],
   };
   for (const d of Object.values(db.devices)) {       // first start with profiles: the server PC and PEREZ are managers
     if (d.profile === undefined && ((d.keys || []).includes('this-server') || ['ceo', 'perez'].includes(String(d.name).toLowerCase()))) { d.profile = 'management'; d.canManage = true; }

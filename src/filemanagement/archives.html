@@ -214,7 +214,9 @@ const metaOf = (t) => {
   const where = $('#archFilter').value.trim() && (t.isDir ? dirOf(t.path) : fileDir(t)) ? 'in ' + (t.isDir ? dirOf(t.path) : fileDir(t)).split('/').join(' › ') + ' · ' : '';
   return where + (t.isDir ? 'Folder · ' + d : fmt(t.size) + ' · ' + d + (nameOf(t.from) ? ' · ' + nameOf(t.from) : ''));
 };
-const mqM = window.matchMedia('(max-width: 700px)');
+// Phone layout on small screens, and tap behaviour on any touch screen (a tablet, or a phone showing the desktop
+// layout, cannot double-click a folder open).
+const mqM = window.matchMedia('(max-width: 700px), (hover: none) and (pointer: coarse)');
 const isMobile = () => mqM.matches;
 if (mqM.addEventListener) mqM.addEventListener('change', () => renderArchives());
 
