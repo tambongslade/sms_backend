@@ -8,6 +8,14 @@ import { getCurrentAcademicYear } from '../../../utils/academicYear';
 import { getClassMaxStudents, SUBCLASS_MAX_STUDENTS } from '../../../utils/capacity';
 import { activeEnrollmentWhere, INACTIVE_STUDENT_STATUSES, staffUserWhere, teacherUserWhere } from '../../../utils/schoolCounts';
 import { getTeacherWorkloads } from '../../../utils/teacherWorkload';
+import {
+    A_LEVEL_HANDLING_FEE,
+    A_LEVEL_REGISTRATION_FEE,
+    A_LEVEL_STAMPS_FEE,
+    O_LEVEL_HANDLING_FEE,
+    O_LEVEL_REGISTRATION_FEE,
+    O_LEVEL_STAMPS_FEE,
+} from './gceRegistrationService';
 
 // -------- helpers --------
 
@@ -1254,7 +1262,102 @@ export async function getEnrollmentOverview(academicYearId?: number) {
 }
 
 // ============================================================
-// 14. UNIFIED SUPER MANAGER SNAPSHOT
+// 14. GCE REGISTRATION OVERVIEW
+// ============================================================
+export async function getGceRegistrationOverview(academicYearId?: number) {
+    const yearId = await resolveYearId(academicYearId);
+
+    const [registrations, eligibleClasses] = await Promise.all([
+        prisma.gceRegistration.findMany({
+            where: yearId ? { academic_year_id: yearId } : undefined,
+            select: { exam_level: true, amount_expected: true, amount_paid: true },
+        }),
+        prisma.class.findMany({
+            where: { OR: [{ name: 'FORM 5' }, { name: { contains: 'UPPER SIXTH' } }] },
+            select: { id: true },
+        }),
+    ]);
+
+    const eligibleStudents = yearId
+        ? await prisma.enrollment.count({
+              where: {
+                  academic_year_id: yearId,
+                  class_id: { in: eligibleClasses.map(c => c.id) },
+                  student: { status: { not: 'WITHDRAWN' } },
+              },
+          })
+        : 0;
+
+    const registeredStudents = registrations.length;
+    const studentsPaid = registrations.filter(r => r.amount_paid > 0).length;
+    const fullyPaidCount = registrations.filter(r => r.amount_expected > 0 && r.amount_paid >= r.amount_expected).length;
+
+    const totalExpected = registrations.reduce((s, r) => s + r.amount_expected, 0);
+    const totalCollected = registrations.reduce((s, r) => s + r.amount_paid, 0);
+
+    // Stamps/handling/registration charges are fixed per student regardless of
+    // subject count, but a GceRegistrationPayment only records a lump amount,
+    // not which fee component it covers. So actual collection per component is
+    // prorated across each registration's fixed components by how much of
+    // its total fee has been paid.
+    let expectedStamps = 0, collectedStamps = 0;
+    let expectedHandling = 0, collectedHandling = 0;
+    let expectedRegistrationFee = 0, collectedRegistrationFee = 0;
+
+    for (const r of registrations) {
+        const isOLevel = r.exam_level === 'O_LEVEL';
+        const stampsFee = isOLevel ? O_LEVEL_STAMPS_FEE : A_LEVEL_STAMPS_FEE;
+        const handlingFee = isOLevel ? O_LEVEL_HANDLING_FEE : A_LEVEL_HANDLING_FEE;
+        const registrationFee = isOLevel ? O_LEVEL_REGISTRATION_FEE : A_LEVEL_REGISTRATION_FEE;
+        const paidFraction = r.amount_expected > 0 ? Math.min(1, r.amount_paid / r.amount_expected) : 0;
+
+        expectedStamps += stampsFee;
+        expectedHandling += handlingFee;
+        expectedRegistrationFee += registrationFee;
+        collectedStamps += stampsFee * paidFraction;
+        collectedHandling += handlingFee * paidFraction;
+        collectedRegistrationFee += registrationFee * paidFraction;
+    }
+
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+
+    const byExamLevel = (['O_LEVEL', 'A_LEVEL'] as const).map(level => {
+        const rows = registrations.filter(r => r.exam_level === level);
+        return {
+            examLevel: level,
+            registeredCount: rows.length,
+            studentsPaid: rows.filter(r => r.amount_paid > 0).length,
+            totalExpected: rows.reduce((s, r) => s + r.amount_expected, 0),
+            totalCollected: rows.reduce((s, r) => s + r.amount_paid, 0),
+        };
+    });
+
+    return {
+        summary: {
+            eligibleStudents,
+            registeredStudents,
+            studentsPaid,
+            fullyPaidCount,
+            totalExpected,
+            totalCollected,
+            outstanding: totalExpected - totalCollected,
+            collectionRate: toPct(totalCollected, totalExpected),
+            expectedStamps,
+            collectedStamps: round2(collectedStamps),
+            expectedHandling,
+            collectedHandling: round2(collectedHandling),
+            expectedRegistrationFee,
+            collectedRegistrationFee: round2(collectedRegistrationFee),
+            expectedSubjectFees: totalExpected - expectedStamps - expectedHandling - expectedRegistrationFee,
+            collectedSubjectFees: round2(totalCollected - collectedStamps - collectedHandling - collectedRegistrationFee),
+        },
+        byExamLevel,
+        lastUpdated: new Date().toISOString(),
+    };
+}
+
+// ============================================================
+// 15. UNIFIED SUPER MANAGER SNAPSHOT
 // ============================================================
 export async function getSuperManagerSnapshot(academicYearId?: number) {
     const yearId = await resolveYearId(academicYearId);
@@ -1273,6 +1376,7 @@ export async function getSuperManagerSnapshot(academicYearId?: number) {
         inventory,
         audit,
         enrollment,
+        gceRegistration,
     ] = await Promise.all([
         getDisciplineOverview(yearId),
         getAttendanceOverview(yearId),
@@ -1287,6 +1391,7 @@ export async function getSuperManagerSnapshot(academicYearId?: number) {
         getInventoryOverview(),
         getAuditOverview(),
         getEnrollmentOverview(yearId),
+        getGceRegistrationOverview(yearId),
     ]);
 
     return {
@@ -1304,6 +1409,7 @@ export async function getSuperManagerSnapshot(academicYearId?: number) {
         inventory: inventory.summary,
         audit: audit.summary,
         enrollment: enrollment.summary,
+        gceRegistration: gceRegistration.summary,
         lastUpdated: new Date().toISOString(),
     };
 }

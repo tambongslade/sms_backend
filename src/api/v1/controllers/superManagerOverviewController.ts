@@ -60,5 +60,8 @@ export const getAuditOverview = (_req: Request, res: Response) =>
 export const getEnrollmentOverview = (req: Request, res: Response) =>
     handle(res, overviewService.getEnrollmentOverview(parseYearId(req)), 'enrollment overview');
 
+export const getGceRegistrationOverview = (req: Request, res: Response) =>
+    handle(res, overviewService.getGceRegistrationOverview(parseYearId(req)), 'GCE registration overview');
+
 export const getSnapshot = (req: Request, res: Response) =>
     handle(res, overviewService.getSuperManagerSnapshot(parseYearId(req)), 'super manager snapshot');
