@@ -13288,3 +13288,52 @@ unaffected and can still correct a submitted mark at any time while the sequence
 server-side in `markEntryService.saveEntrySheet`/`getEntrySheet` (per student mark, not per whole sheet — a
 teacher can still enter marks for students they haven't gotten to yet); the teacher's Submit Marks screen
 (`/dashboard/teacher/submit-marks`) disables the input and shows a "Submitted" badge for each locked row.
+
+## GCE Registration (`/gce-registrations`), 2026-10-26
+
+Lets the Bursar register FORM 5 students for the O Level and UPPER SIXTH students for the A Level, and collect
+the resulting fee. Only classes named exactly `FORM 5` or containing `UPPER SIXTH` are eligible; any other class
+is rejected with 400. `amount_expected` is always computed server-side from the chosen subjects — the client
+never supplies or can override a total.
+
+**Fee structure** (`sms_backend/src/api/v1/services/gceRegistrationService.ts` is the source of truth):
+- **FORM 5 (O Level)**: exactly 11 subjects required. `11 × 1,000 (per subject) + 8,000 (registration) + 1,500
+  (stamps) + 4,000 (handling) + 5,000 (ICT practicals) = 29,500 FCFA` for every student (fixed, since the subject
+  count never varies).
+- **UPPER SIXTH (A Level)**: 3–5 subjects. `9,000 (registration) + 1,500 (stamps) + 4,000 (handling) +
+  subjectCount × 2,000 + practicalSubjectCount × 5,000`. A subject counts as "practical" (case-insensitive
+  substring match on its name) if it is Physics, Chemistry, Biology, or ICT/Computer Science.
+
+**Authorization**: `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `BURSAR` can write; those roles plus
+`VICE_PRINCIPAL`, `SECRETARY`, `FEE_AUDITOR` can read.
+
+- `GET /gce-registrations?academicYearId=&examLevel=O_LEVEL|A_LEVEL&classId=&subClassId=` — roster of every
+  eligible enrollment for the year (defaults to the current academic year), each with its registration progress:
+  `{ enrollmentId, student: {id,name,matricule}, class: {id,name}, subClass: {id,name}|null, examLevel,
+  registrationId: number|null, subjectCount, amountExpected, amountPaid, balance, isLocked }`.
+- `GET /gce-registrations/enrollment/:enrollmentId` — current state for one enrollment:
+  `{ enrollment, examLevel, minSubjects, maxSubjects, registration: GceRegistration|null, isLocked }`. Returns
+  `minSubjects`/`maxSubjects` even before anything has been saved, so the frontend can render the right picker
+  immediately (`11`/`11` for O Level, `3`/`5` for A Level). 400 if the enrollment's class isn't FORM 5/UPPER SIXTH.
+- `PUT /gce-registrations/enrollment/:enrollmentId/subjects` — body `{ subjectIds: number[] }`. Replaces the
+  subject list, recomputes and stores `amountExpected`, and returns the full `GceRegistration` (with `subjects`
+  and `payments`). 400 if the subject count is out of range for the level, or a subject isn't taught in the
+  student's subclass. 409 if a payment has already been recorded against this registration (subjects are locked
+  once money has been collected against them — change the registration via an admin workflow rather than editing
+  live).
+- `POST /gce-registrations/:id/payments` — body `{ amount, paymentDate, paymentMethod, receiptNumber?, notes? }`.
+  Ledger-style (mirrors `/fee-items/:id/payments`): sums of `GceRegistrationPayment` rows are the source of truth
+  for `amountPaid`, updated atomically with the insert. No overpayment guard — a payment larger than the balance
+  is still recorded (balance just goes negative), same as `/fee-items`.
+- `GET /gce-registrations/:id/payments` — payment history for one registration, newest first, with `recordedBy`.
+
+**`GceRegistration` shape**: `{ id, enrollmentId, academicYearId, examLevel, amountExpected, amountPaid,
+subjects: [{ id, subjectId, isPractical, subject: {id,name,category} }], payments: [GceRegistrationPayment] }`.
+
+**Frontend**: Bursar → GCE Registration (`/dashboard/bursar/gce-registration`). One roster table (filterable by
+exam level/class/subclass) with per-row "Select Subjects" (checkbox picker with a live fee preview, blocked once
+locked) and "Record Payment"/"Payments" actions.
+
+**Not synced** between on-prem and VPS (same as `FeeItem`/`FeeItemPayment`): `GceRegistration`,
+`GceRegistrationSubject` and `GceRegistrationPayment` are intentionally absent from `SYNCED_MODELS` in
+`src/config/db.ts`. Record a given student's GCE registration/payments on one server only.

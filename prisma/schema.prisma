@@ -45,6 +45,7 @@ model AcademicYear {
   pay_periods                  PayPeriod[]
   bursar_cash_injections       BursarCashInjection[]
   period_sets                  PeriodSet[]
+  gce_registrations            GceRegistration[]
 }
 
 model User {
@@ -111,6 +112,8 @@ model User {
   recorded_control_payments           ControlPaymentTransaction[] @relation("RecordedByUserControl")
   created_fee_items                   FeeItem[]                   @relation("FeeItemCreatedBy")
   recorded_fee_item_payments          FeeItemPayment[]            @relation("FeeItemPaymentRecordedBy")
+  created_gce_registrations           GceRegistration[]           @relation("GceRegistrationCreatedBy")
+  recorded_gce_registration_payments  GceRegistrationPayment[]    @relation("GceRegistrationPaymentRecordedBy")
   recorded_refunds                    Refund[]                    @relation("RefundRecordedBy")
   finance_requests_made               FinanceRequest[]            @relation("FinanceRequestRequestedBy")
   finance_requests_acted              FinanceRequest[]            @relation("FinanceRequestActedBy")
@@ -409,6 +412,7 @@ model Enrollment {
   teacher_roll_call_entries    TeacherRollCallEntry[]
   seized_items                 SeizedItem[]
   nurse_visit_logs             NurseVisitLog[]
+  gce_registrations            GceRegistration[]
 
   @@unique([student_id, academic_year_id])
   @@index([sub_class_id, academic_year_id])
@@ -454,24 +458,25 @@ model ControlSchoolFees {
 }
 
 model Subject {
-  id                 Int               @id @unique @default(autoincrement())
-  name               String
-  category           SubjectCategory
-  hod_id             Int? // Head of Department
-  created_at         DateTime          @default(now())
-  updated_at         DateTime          @updatedAt
-  server_id          String?
-  checksum           String?
-  hod                User?             @relation("HODSubject", fields: [hod_id], references: [id])
-  exam_papers        ExamPaper[]
-  questions          Question[]
-  sub_class_subjects SubClassSubject[]
-  subject_teachers   SubjectTeacher[]
-  teacher_periods    TeacherPeriod[]
-  role_assignments   RoleAssignment[]
-  QuizTemplate       QuizTemplate[]
-  subject_schemes    SubjectScheme[]
-  chat_channels      ChatChannel[]
+  id                        Int                      @id @unique @default(autoincrement())
+  name                      String
+  category                  SubjectCategory
+  hod_id                    Int? // Head of Department
+  created_at                DateTime                 @default(now())
+  updated_at                DateTime                 @updatedAt
+  server_id                 String?
+  checksum                  String?
+  hod                       User?                    @relation("HODSubject", fields: [hod_id], references: [id])
+  exam_papers               ExamPaper[]
+  questions                 Question[]
+  sub_class_subjects        SubClassSubject[]
+  subject_teachers          SubjectTeacher[]
+  teacher_periods           TeacherPeriod[]
+  role_assignments          RoleAssignment[]
+  QuizTemplate              QuizTemplate[]
+  subject_schemes           SubjectScheme[]
+  chat_channels             ChatChannel[]
+  gce_registration_subjects GceRegistrationSubject[]
 }
 
 model SubClassSubject {
@@ -1694,6 +1699,77 @@ enum FeeItemScope {
   CLASS
   SUBCLASS
   STUDENT
+}
+
+// GCE registration (O Level for FORM 5, A Level for UPPER SIXTH): the bursar
+// records which subjects a student is registering for and collects the
+// resulting fee. amount_expected is computed server-side from the subject
+// count (and, for A Level, which subjects carry a practical surcharge) —
+// never trust a client-supplied total.
+enum GceExamLevel {
+  O_LEVEL // FORM 5
+  A_LEVEL // UPPER SIXTH
+}
+
+model GceRegistration {
+  id               Int                      @id @default(autoincrement())
+  enrollment_id    Int
+  academic_year_id Int
+  exam_level       GceExamLevel
+  amount_expected  Float                    @default(0)
+  amount_paid      Float                    @default(0)
+  created_by_id    Int
+  created_at       DateTime                 @default(now())
+  updated_at       DateTime                 @updatedAt
+  server_id        String?
+  checksum         String?
+  enrollment       Enrollment               @relation(fields: [enrollment_id], references: [id])
+  academic_year    AcademicYear             @relation(fields: [academic_year_id], references: [id])
+  created_by       User                     @relation("GceRegistrationCreatedBy", fields: [created_by_id], references: [id])
+  subjects         GceRegistrationSubject[]
+  payments         GceRegistrationPayment[]
+
+  @@unique([enrollment_id, academic_year_id])
+}
+
+// One row per subject the student is registering for. is_practical mirrors
+// the backend's practical-subject match at the time of saving (Physics,
+// Chemistry, Biology, Computer Science/ICT), so the fee breakdown stays
+// readable even if the subject's name changes later.
+model GceRegistrationSubject {
+  id                  Int             @id @default(autoincrement())
+  gce_registration_id Int
+  subject_id          Int
+  is_practical        Boolean         @default(false)
+  created_at          DateTime        @default(now())
+  server_id           String?
+  checksum            String?
+  registration        GceRegistration @relation(fields: [gce_registration_id], references: [id], onDelete: Cascade)
+  subject             Subject         @relation(fields: [subject_id], references: [id])
+
+  @@unique([gce_registration_id, subject_id])
+}
+
+// One row per actual payment recorded against a GceRegistration. Ledger,
+// same pattern as FeeItemPayment: sum these for amount_paid rather than
+// trusting a single mutable total.
+model GceRegistrationPayment {
+  id                  Int             @id @default(autoincrement())
+  gce_registration_id Int
+  amount              Float
+  payment_date        DateTime
+  receipt_number      String?
+  payment_method      PaymentMethod
+  recorded_by_id      Int
+  notes               String?
+  created_at          DateTime        @default(now())
+  updated_at          DateTime        @updatedAt
+  server_id           String?
+  checksum            String?
+  registration        GceRegistration @relation(fields: [gce_registration_id], references: [id])
+  recorded_by         User            @relation("GceRegistrationPaymentRecordedBy", fields: [recorded_by_id], references: [id])
+
+  @@index([gce_registration_id])
 }
 
 // Refunds against SchoolFees overpayments. Recording a refund decrements
