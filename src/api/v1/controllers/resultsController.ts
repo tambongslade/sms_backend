@@ -13,6 +13,7 @@ import {
     suggestDecision, ordinal, appreciation,
 } from '../services/resultsService';
 import * as reportCardService from '../services/reportCardService';
+import * as classMarksheet from '../services/classMarksheetService';
 
 const q = (req: Request): any => (req as any).finalQuery ?? {};
 const int = (v: any): number | undefined => {
@@ -50,6 +51,31 @@ export const getClassResults = async (req: Request, res: Response): Promise<any>
         res.json({ success: true, data });
     } catch (error: any) {
         return fail(res, error, 'loading class results');
+    }
+};
+
+/**
+ * GET /results/class/marksheet?...same params as /class...  -> the class mark sheet as data
+ */
+export const getClassMarksheet = async (req: Request, res: Response): Promise<any> => {
+    try {
+        res.json({ success: true, data: await classMarksheet.getClassMarksheet(readScope(req)) });
+    } catch (error: any) {
+        return fail(res, error, 'building the class mark sheet');
+    }
+};
+
+/**
+ * GET /results/class/marksheet/pdf?...same params...  -> the class mark sheet as a landscape PDF
+ */
+export const downloadClassMarksheetPdf = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const sheet = await classMarksheet.getClassMarksheet(readScope(req));
+        if (!sheet.students.length) return res.status(404).json({ success: false, error: 'No students are enrolled in this class.' });
+        const { buffer, filename } = await classMarksheet.renderClassMarksheetPdf(sheet);
+        sendPdf(res, buffer, filename);
+    } catch (error: any) {
+        return fail(res, error, 'generating the class mark sheet PDF');
     }
 };
 

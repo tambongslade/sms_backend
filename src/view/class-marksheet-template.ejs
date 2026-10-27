@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Class Marksheet - <%= sheet.class_name %></title>
+<style>
+    @page { size: A4 landscape; margin: 8mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Helvetica', 'Arial', sans-serif; color: #111827; margin: 0; font-size: 7pt;
+           -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    p { margin: 0; }
+    .letterhead { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #000;
+                  padding-bottom: 3px; margin-bottom: 3px; font-size: 6pt; }
+    .letterhead .col { width: 34%; text-align: center; line-height: 1.15; }
+    .letterhead .bold { font-weight: 700; }
+    .letterhead .logo { width: 14%; text-align: center; }
+    .letterhead .logo img { height: 42px; }
+    .school { text-align: center; line-height: 1.2; }
+    .school h2 { margin: 0; font-size: 12pt; letter-spacing: .5px; }
+    .school .tagline { font-style: italic; font-size: 7pt; }
+    .school .contact { font-size: 7pt; }
+    .title { text-align: center; margin: 3px 0 1px; font-size: 10pt; font-weight: 700; }
+    .period { text-align: center; font-size: 8pt; margin-bottom: 3px; }
+    .stats { display: flex; justify-content: space-between; gap: 10px; font-size: 7pt; margin-bottom: 4px; line-height: 1.35; }
+    .stats > div { flex: 1; }
+    .stats .mid { text-align: center; }
+    .stats .right { text-align: right; }
+    table { border-collapse: collapse; width: 100%; table-layout: auto; }
+    th, td { border: 0.5px solid #6b7280; padding: 1.5px 2px; text-align: center; }
+    thead th { background: #e5e7eb; font-weight: 700; }
+    thead { display: table-header-group; }
+    tr { page-break-inside: avoid; }
+    th.vert { height: 78px; padding: 2px 1px; vertical-align: bottom; font-size: 6.5pt; }
+    th.vert span { display: inline-block; writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; }
+    td.name { text-align: left; white-space: nowrap; }
+    td.num { white-space: nowrap; }
+    tr.meta td { background: #f3f4f6; font-weight: 700; }
+    tr.alt td { background: #f9fafb; }
+    .fail { color: #b91c1c; }
+    .avg { font-weight: 700; }
+    .group { background: #eef2ff; }
+    .foot { margin-top: 4px; display: flex; justify-content: space-between; font-size: 6pt; color: #4b5563; }
+</style>
+</head>
+<body>
+<%
+    const f = (v, d) => (v === null || v === undefined) ? '-' : Number(v).toFixed(d === undefined ? 2 : d);
+    const s = sheet.stats;
+    const pct = (v) => (v === null || v === undefined) ? 'n/a' : Number(v).toFixed(0) + '%';
+%>
+    <div class="letterhead">
+        <div class="col">
+            <p class="bold">REPUBLIC OF CAMEROON</p>
+            <p>MINISTRY OF SECONDARY EDUCATION</p>
+            <p>REGIONAL DELEGATION FOR CENTRE</p>
+            <p>DIVISIONAL DELEGATION OF MFOUNDI</p>
+        </div>
+        <div class="logo"><% if (schoolLogo) { %><img src="<%= schoolLogo %>" alt="" /><% } %></div>
+        <div class="col">
+            <p class="bold">REPUBLIQUE DU CAMEROUN</p>
+            <p>MINISTERE DES ENSEIGNEMENTS SECONDAIRES</p>
+            <p>DELEGATION REGIONALE DU CENTRE</p>
+            <p>DELEGATION DEPARTEMENTALE DU MFOUNDI</p>
+        </div>
+    </div>
+    <div class="school">
+        <h2><%= schoolName %></h2>
+        <div class="tagline"><%= schoolTagline %></div>
+        <div class="contact"><%= schoolAddress %> &middot; Tel: <%= schoolPhone %></div>
+    </div>
+    <div class="title"><%= sheet.title %></div>
+    <div class="period"><%= sheet.period %></div>
+    <div class="period"><strong><%= sheet.class_name %></strong><% if (sheet.class_master) { %> &nbsp;|&nbsp; Class Master: <strong><%= sheet.class_master %></strong><% } %></div>
+
+    <div class="stats">
+        <div>
+            Enrolled learners: <strong><%= s.enrolled %></strong><br>
+            Ranked learners: <strong><%= s.ranked %></strong><br>
+            Ranked females: <strong><%= s.ranked_females %></strong> &nbsp; Ranked males: <strong><%= s.ranked_males %></strong><br>
+            Ranked repeaters: <strong><%= s.ranked_repeaters %></strong>
+        </div>
+        <div class="mid">
+            Overall average: <strong><%= f(s.class_average) %></strong><br>
+            Standard deviation: <strong><%= f(s.standard_deviation) %></strong><br>
+            Best student's average: <strong><%= f(s.best_average) %></strong><br>
+            Last student's average: <strong><%= f(s.last_average) %></strong>
+        </div>
+        <div class="right">
+            Succeeded (average &ge; <%= sheet.pass_mark %>): <strong><%= s.succeeded %></strong> &nbsp; Success rate: <strong><%= pct(s.success_rate) %></strong><br>
+            Females: <strong><%= s.succeeded_females %></strong> (<%= pct(s.females_success_rate) %>) &nbsp; Males: <strong><%= s.succeeded_males %></strong> (<%= pct(s.males_success_rate) %>)<br>
+            Repeaters who succeeded: <strong><%= s.succeeded_repeaters %></strong> (<%= pct(s.repeaters_success_rate) %>)
+        </div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th rowspan="1" style="width:22px">Rank</th>
+                <th style="min-width:130px;text-align:left">Student</th>
+                <th style="width:16px">Sex</th>
+                <% sheet.subjects.forEach(function (sub) { %><th class="vert"><span><%= sub.name %></span></th><% }); %>
+                <% sheet.categories.forEach(function (c) { %><th class="vert group"><span>Avg: <%= c.label %></span></th><% }); %>
+                <th class="vert"><span>General average</span></th>
+            </tr>
+            <tr class="meta">
+                <td></td><td style="text-align:left">SCORED OUT OF</td><td></td>
+                <% sheet.subjects.forEach(function () { %><td>20</td><% }); %>
+                <% sheet.categories.forEach(function () { %><td>20</td><% }); %>
+                <td>20</td>
+            </tr>
+            <tr class="meta">
+                <td></td><td style="text-align:left">COEFFICIENTS</td><td></td>
+                <% sheet.subjects.forEach(function (sub) { %><td><%= sub.coefficient %></td><% }); %>
+                <% sheet.categories.forEach(function () { %><td></td><% }); %>
+                <td></td>
+            </tr>
+        </thead>
+        <tbody>
+            <% sheet.students.forEach(function (st, i) { %>
+            <tr class="<%= i % 2 ? 'alt' : '' %>">
+                <td><%= st.rank === null ? '-' : st.rank %></td>
+                <td class="name"><%= st.name %><%= st.repeater ? ' (R)' : '' %></td>
+                <td><%= String(st.gender).toLowerCase().startsWith('f') ? 'F' : 'M' %></td>
+                <% st.scores.forEach(function (v) { %><td class="num <%= (v !== null && v < sheet.pass_mark) ? 'fail' : '' %>"><%= v === null ? '-' : f(v) %></td><% }); %>
+                <% st.category_averages.forEach(function (v) { %><td class="num group <%= (v !== null && v < sheet.pass_mark) ? 'fail' : '' %>"><%= f(v) %></td><% }); %>
+                <td class="num avg <%= (st.average !== null && st.average < sheet.pass_mark) ? 'fail' : '' %>"><%= f(st.average) %></td>
+            </tr>
+            <% }); %>
+            <tr class="meta">
+                <td></td><td style="text-align:left">CLASS AVERAGE</td><td></td>
+                <% sheet.subject_averages.forEach(function (v) { %><td class="num"><%= f(v) %></td><% }); %>
+                <% sheet.categories.forEach(function () { %><td></td><% }); %>
+                <td class="num"><%= f(s.class_average) %></td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="foot">
+        <span>"-" = no mark entered (not counted in the average). (R) = repeater. Marks below <%= sheet.pass_mark %> in red.</span>
+        <span>Generated <%= generatedAt %></span>
+    </div>
+</body>
+</html>

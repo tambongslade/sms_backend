@@ -10,6 +10,12 @@ const RESULTS_READERS = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPA
 // GET /results/class - Ranked class results for a sequence, term or the whole year
 router.get('/class', authenticate, authorize(RESULTS_READERS), resultsController.getClassResults);
 
+// GET /results/class/marksheet - The class mark sheet (every mark, category averages, general average, rank, class statistics)
+router.get('/class/marksheet', authenticate, authorize(RESULTS_READERS), resultsController.getClassMarksheet);
+
+// GET /results/class/marksheet/pdf - Same sheet as a landscape PDF
+router.get('/class/marksheet/pdf', authenticate, authorize(RESULTS_READERS), resultsController.downloadClassMarksheetPdf);
+
 // GET /results/class/export - Same as /class, as a CSV file (opens in Excel)
 router.get('/class/export', authenticate, authorize(RESULTS_READERS), resultsController.exportClassResults);
 
