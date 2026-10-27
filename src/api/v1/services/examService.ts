@@ -1313,6 +1313,18 @@ function getStatusMessage(status: string): string {
     }
 }
 
+// Subjects that stay on the timetable (so they have TeacherPeriod rows) but are
+// never formally graded — no teacher is ever asked to enter a Mark for them in
+// any sequence. Left in, they show up as permanently "missing"/0% in the
+// submission-tracking, missing-marks and pending-teachers statistics below,
+// which is noise rather than a real gap. Matched by keyword, case-insensitive,
+// since school staff name these subjects slightly differently from year to year.
+const NON_GRADED_SUBJECT_KEYWORDS = ['guidance', 'arts and craft', 'arts & craft', 'drill', 'music', 'moral'];
+function isGradedSubject(subjectName: string): boolean {
+    const name = subjectName.toLowerCase();
+    return !NON_GRADED_SUBJECT_KEYWORDS.some(keyword => name.includes(keyword));
+}
+
 /**
  * Get mark submission tracking overview for an exam sequence.
  * Shows per-subclass, per-subject: how many students, how many marks submitted, which teacher, status.
@@ -1408,7 +1420,9 @@ export async function getMarkSubmissionTracking(examSequenceId: number) {
         const studentCount = sc.enrollments.length;
         const enrollmentIds = new Set(sc.enrollments.map(e => e.id));
 
-        const subjects = sc.sub_class_subjects.filter(scs => timetabled.has(`${sc.id}:${scs.subject_id}`)).map(scs => {
+        const subjects = sc.sub_class_subjects
+            .filter(scs => timetabled.has(`${sc.id}:${scs.subject_id}`) && isGradedSubject(scs.subject.name))
+            .map(scs => {
             const subjectMarks = marksBySubjectMap.get(scs.id) || [];
             const submittedCount = subjectMarks.filter(m => enrollmentIds.has(m.enrollment_id)).length;
             const assignedTeachers = Array.from(teacherMap.get(`${sc.id}:${scs.subject_id}`)?.values() ?? []);
@@ -1571,6 +1585,7 @@ export async function getPendingTeachers(examSequenceId: number) {
         const enrollmentIds = new Set(sc.enrollments.map(e => e.id));
 
         for (const scs of sc.sub_class_subjects) {
+            if (!isGradedSubject(scs.subject.name)) continue;
             const teachers = teachersByPair.get(`${sc.id}_${scs.subject_id}`) || [];
             if (teachers.length === 0) continue;
 
@@ -1764,7 +1779,9 @@ export async function getStudentsMissingMarks(examSequenceId: number) {
     const marked = new Set(marks.map(m => `${m.enrollment_id}:${m.sub_class_subject_id}`));
 
     const classes = subClasses.map(sc => {
-        const subjects = sc.sub_class_subjects.filter(scs => timetabled.has(`${sc.id}:${scs.subject_id}`));
+        const subjects = sc.sub_class_subjects.filter(scs =>
+            timetabled.has(`${sc.id}:${scs.subject_id}`) && isGradedSubject(scs.subject.name)
+        );
         const students = sc.enrollments
             .map(e => ({
                 student_id: e.student.id,
