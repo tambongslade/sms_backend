@@ -115,6 +115,8 @@ model User {
   created_gce_registrations           GceRegistration[]           @relation("GceRegistrationCreatedBy")
   recorded_gce_registration_payments  GceRegistrationPayment[]    @relation("GceRegistrationPaymentRecordedBy")
   recorded_refunds                    Refund[]                    @relation("RefundRecordedBy")
+  fee_deductions_as_personnel         FeeDeduction[]              @relation("FeeDeductionPersonnel")
+  fee_deductions_created              FeeDeduction[]              @relation("FeeDeductionCreatedBy")
   finance_requests_made               FinanceRequest[]            @relation("FinanceRequestRequestedBy")
   finance_requests_acted              FinanceRequest[]            @relation("FinanceRequestActedBy")
   recorded_expenditures               Expenditure[]               @relation("ExpenditureRecordedBy")
@@ -403,6 +405,7 @@ model Enrollment {
   student_sequence_averages    StudentSequenceAverage[]
   fee_item_payments            FeeItemPayment[]
   refunds                      Refund[]
+  fee_deductions               FeeDeduction[]
   saturday_punishments         SaturdayPunishment[]
   broken_properties            BrokenProperty[]
   disciplinary_actions         DisciplinaryAction[]
@@ -432,6 +435,7 @@ model SchoolFees {
   checksum             String?
   payment_transactions PaymentTransaction[]
   refunds              Refund[]
+  fee_deductions       FeeDeduction[]
   academic_year        AcademicYear         @relation(fields: [academic_year_id], references: [id])
   enrollment           Enrollment           @relation(fields: [enrollment_id], references: [id])
 
@@ -1806,6 +1810,38 @@ enum RefundMethod {
   CCA
   F3DC
   AFRILAND_FIRST_BANK
+}
+
+// A reduction applied to a student's expected fees (SchoolFees.amount_expected).
+// Immutable audit trail: the manager either ties the reduction to the student
+// being a staff member's child (personnel_id set, and that staff member is
+// linked via ParentStudent as a GUARDIAN if not already) or must give a reason.
+// Exactly one of personnel_id / reason is expected to be set, enforced in the
+// service layer rather than the DB, since "child of personnel" never writes a
+// reason.
+model FeeDeduction {
+  id                     Int        @id @default(autoincrement())
+  enrollment_id          Int
+  school_fees_id         Int
+  amount                 Float
+  amount_expected_before Float
+  amount_expected_after  Float
+  is_personnel_child     Boolean    @default(false)
+  personnel_id           Int?
+  reason                 String?
+  created_by_id          Int
+  created_at             DateTime   @default(now())
+  updated_at             DateTime   @updatedAt
+  enrollment             Enrollment @relation(fields: [enrollment_id], references: [id])
+  school_fees            SchoolFees @relation(fields: [school_fees_id], references: [id])
+  personnel              User?      @relation("FeeDeductionPersonnel", fields: [personnel_id], references: [id])
+  created_by             User       @relation("FeeDeductionCreatedBy", fields: [created_by_id], references: [id])
+  server_id              String?
+  checksum               String?
+
+  @@index([enrollment_id])
+  @@index([school_fees_id])
+  @@index([created_at])
 }
 
 // Saturday punishment scheduled by the DM, typically after 3 lates in a term.

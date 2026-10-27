@@ -25,6 +25,13 @@ router.post('/refunds', authenticate, authorize(RECORD_REFUNDS_DIRECT), feeContr
 router.get('/refunds', authenticate, authorize(VIEW_REFUNDS), feeController.listRefunds);
 router.get('/refunds/:id', authenticate, authorize(VIEW_REFUNDS), feeController.getRefundById);
 
+// --- Fee deductions (must be registered before /:id to avoid param capture) ---
+// Same authorization as "who can edit a fee record" (PUT /fees/:id) for create/delete;
+// deduction viewing reuses the refund-viewer roster since both are sensitive finance reads.
+const MANAGE_DEDUCTIONS = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR'];
+router.get('/deductions', authenticate, authorize(VIEW_REFUNDS), feeController.listFeeDeductions);
+router.delete('/deductions/:deductionId', authenticate, authorize(MANAGE_DEDUCTIONS), feeController.deleteFeeDeduction);
+
 // PUT /fees/payments/:paymentId - Edit a payment record
 // SUPER_MANAGER/MANAGER/PRINCIPAL can edit anytime; BURSAR restricted to 2 days after creation
 // Registered before /:id so the literal "payments" segment isn't captured as :id
@@ -55,6 +62,9 @@ router.put('/:id', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIP
 // DELETE /fees/:id - Delete a fee record
 // Only SUPER_MANAGER, PRINCIPAL, BURSAR can delete fee records
 router.delete('/:id', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR']), feeController.deleteFee);
+
+// POST /fees/:id/deduction - Reduce amount_expected for a student (personnel-child or reasoned reduction)
+router.post('/:id/deduction', authenticate, authorize(MANAGE_DEDUCTIONS), feeController.applyFeeDeduction);
 
 // GET /fees/student/:studentId - Get all fees for a specific student
 router.get('/student/:studentId', authenticate, feeController.getStudentFees);

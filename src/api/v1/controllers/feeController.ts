@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import prisma from '../../../config/db';
 import * as feeService from '../services/feeService';
 import * as feeRefundService from '../services/feeRefundService';
+import * as feeDeductionService from '../services/feeDeductionService';
 import * as paymentLedger from '../services/paymentLedgerService';
 import * as receiptService from '../services/receiptService';
 import * as feeOutstandingService from '../services/feeOutstandingService';
@@ -624,5 +625,64 @@ export const getRefundById = async (req: Request, res: Response): Promise<any> =
     } catch (err: any) {
         console.error('Error fetching refund:', err);
         return res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+// POST /fees/:id/deduction — reduce amount_expected for a student, either because
+// they're the child of a staff member (personnelId) or with a free-text reason.
+// Returns 409 DEDUCTION_ALREADY_APPLIED (with the existing deduction(s)) unless
+// confirmDuplicate is sent, so the UI can warn before stacking a second one.
+export const applyFeeDeduction = async (req: any, res: Response): Promise<any> => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ success: false, error: 'Unauthorized' });
+        const schoolFeesId = parseInt(req.params.id);
+        if (isNaN(schoolFeesId)) return res.status(400).json({ success: false, error: 'Invalid fee id' });
+
+        const result = await feeDeductionService.applyFeeDeduction({
+            school_fees_id: schoolFeesId,
+            amount: Number(req.body.amount),
+            is_personnel_child: Boolean(req.body.isPersonnelChild ?? req.body.is_personnel_child),
+            personnel_id: req.body.personnelId ?? req.body.personnel_id ? Number(req.body.personnelId ?? req.body.personnel_id) : undefined,
+            reason: req.body.reason,
+            created_by_id: userId,
+            confirm_duplicate: Boolean(req.body.confirmDuplicate ?? req.body.confirm_duplicate),
+        });
+        return res.status(201).json({ success: true, data: result });
+    } catch (err: any) {
+        if (err instanceof feeDeductionService.DuplicateDeductionError) {
+            return res.status(409).json({ success: false, code: err.code, error: err.message, existing: err.existing });
+        }
+        console.error('Error applying fee deduction:', err);
+        return res.status(400).json({ success: false, error: err.message });
+    }
+};
+
+export const listFeeDeductions = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const result = await feeDeductionService.listFeeDeductions({
+            student_id: req.query.studentId ? Number(req.query.studentId) : undefined,
+            enrollment_id: req.query.enrollmentId ? Number(req.query.enrollmentId) : undefined,
+            academic_year_id: req.query.academicYearId ? Number(req.query.academicYearId) : undefined,
+            page: req.query.page ? Number(req.query.page) : undefined,
+            limit: req.query.limit ? Number(req.query.limit) : undefined,
+        });
+        return res.json({ success: true, ...result });
+    } catch (err: any) {
+        console.error('Error listing fee deductions:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+export const deleteFeeDeduction = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const id = parseInt(req.params.deductionId);
+        if (isNaN(id)) return res.status(400).json({ success: false, error: 'Invalid id' });
+        await feeDeductionService.deleteFeeDeduction(id);
+        return res.json({ success: true, message: 'Fee deduction deleted and the amount restored.' });
+    } catch (err: any) {
+        console.error('Error deleting fee deduction:', err);
+        const status = String(err.message).includes('not found') ? 404 : 400;
+        return res.status(status).json({ success: false, error: err.message });
     }
 };
