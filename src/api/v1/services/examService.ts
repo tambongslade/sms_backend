@@ -1748,6 +1748,8 @@ export async function generateMarksheetPdf(params: {
  * they are missing. Same rules as getMarkSubmissionTracking: withdrawn students are left out,
  * only subjects on the subclass's timetable count, and a null score is not a mark.
  */
+const ELECTIVE_LEVELS = /^(FORM 4|FORM 5|LOWER SIXTH|UPPER SIXTH)\b/i;
+
 export async function getStudentsMissingMarks(examSequenceId: number) {
     const sequence = await prisma.examSequence.findUnique({ where: { id: examSequenceId } });
     if (!sequence) throw new Error('Exam sequence not found.');
@@ -1782,16 +1784,24 @@ export async function getStudentsMissingMarks(examSequenceId: number) {
         const subjects = sc.sub_class_subjects.filter(scs =>
             timetabled.has(`${sc.id}:${scs.subject_id}`) && isGradedSubject(scs.subject.name)
         );
+        // From Form 4 upwards students take different subjects, so a subject without a mark means
+        // the student does not take it: there a student is only listed when they have no mark at all.
+        const electives = ELECTIVE_LEVELS.test(sc.class.name);
         const students = sc.enrollments
-            .map(e => ({
-                student_id: e.student.id,
-                name: e.student.name,
-                matricule: e.student.matricule,
-                missing_subjects: subjects
+            .map(e => {
+                const missing = subjects
                     .filter(scs => !marked.has(`${e.id}:${scs.id}`))
                     .map(scs => ({ subject_id: scs.subject_id, subject_name: scs.subject.name.trim() }))
-                    .sort((a, b) => a.subject_name.localeCompare(b.subject_name)),
-            }))
+                    .sort((a, b) => a.subject_name.localeCompare(b.subject_name));
+                const noMarksAtAll = subjects.length > 0 && missing.length === subjects.length;
+                return {
+                    student_id: e.student.id,
+                    name: e.student.name,
+                    matricule: e.student.matricule,
+                    no_marks_at_all: noMarksAtAll,
+                    missing_subjects: electives && !noMarksAtAll ? [] : missing,
+                };
+            })
             .filter(st => st.missing_subjects.length > 0)
             .sort((a, b) => a.name.localeCompare(b.name));
         return {
