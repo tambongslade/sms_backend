@@ -73,6 +73,14 @@ router.get(
     examController.getMarkSubmissionTracking
 );
 
+// GET /exams/:id/missing-marks - Students with no mark in some subject, and which subjects
+router.get(
+    '/:id/missing-marks',
+    authenticate,
+    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL, Role.DEAN_OF_STUDIES]),
+    examController.getStudentsMissingMarks
+);
+
 // GET /exams/:id/pending-teachers - Teachers who haven't completed mark submission
 router.get(
     '/:id/pending-teachers',

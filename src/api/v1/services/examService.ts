@@ -1727,3 +1727,69 @@ export async function generateMarksheetPdf(params: {
         try { await page.close(); } catch { /* noop */ }
     }
 }
+
+/**
+ * Students who have no mark yet in some subject of an exam sequence, with the subjects
+ * they are missing. Same rules as getMarkSubmissionTracking: withdrawn students are left out,
+ * only subjects on the subclass's timetable count, and a null score is not a mark.
+ */
+export async function getStudentsMissingMarks(examSequenceId: number) {
+    const sequence = await prisma.examSequence.findUnique({ where: { id: examSequenceId } });
+    if (!sequence) throw new Error('Exam sequence not found.');
+
+    const activeEnrollment = {
+        academic_year_id: sequence.academic_year_id,
+        student: { status: { not: 'WITHDRAWN' as const } },
+    };
+    const [subClasses, marks, periods] = await Promise.all([
+        prisma.subClass.findMany({
+            where: { enrollments: { some: activeEnrollment } },
+            include: {
+                class: true,
+                sub_class_subjects: { include: { subject: true } },
+                enrollments: { where: activeEnrollment, select: { id: true, student: { select: { id: true, name: true, matricule: true } } } },
+            },
+            orderBy: [{ class: { name: 'asc' } }, { name: 'asc' }],
+        }),
+        prisma.mark.findMany({
+            where: { exam_sequence_id: examSequenceId, score: { not: null } },
+            select: { enrollment_id: true, sub_class_subject_id: true },
+        }),
+        prisma.teacherPeriod.findMany({
+            where: { academic_year_id: sequence.academic_year_id },
+            select: { sub_class_id: true, subject_id: true },
+        }),
+    ]);
+    const timetabled = new Set(periods.map(p => `${p.sub_class_id}:${p.subject_id}`));
+    const marked = new Set(marks.map(m => `${m.enrollment_id}:${m.sub_class_subject_id}`));
+
+    const classes = subClasses.map(sc => {
+        const subjects = sc.sub_class_subjects.filter(scs => timetabled.has(`${sc.id}:${scs.subject_id}`));
+        const students = sc.enrollments
+            .map(e => ({
+                student_id: e.student.id,
+                name: e.student.name,
+                matricule: e.student.matricule,
+                missing_subjects: subjects
+                    .filter(scs => !marked.has(`${e.id}:${scs.id}`))
+                    .map(scs => ({ subject_id: scs.subject_id, subject_name: scs.subject.name.trim() }))
+                    .sort((a, b) => a.subject_name.localeCompare(b.subject_name)),
+            }))
+            .filter(st => st.missing_subjects.length > 0)
+            .sort((a, b) => a.name.localeCompare(b.name));
+        return {
+            sub_class_id: sc.id,
+            sub_class_name: sc.name,
+            class_name: sc.class.name,
+            total_students: sc.enrollments.length,
+            subject_count: subjects.length,
+            students,
+        };
+    }).filter(c => c.students.length > 0);
+
+    return {
+        exam_sequence: { id: sequence.id, sequence_number: sequence.sequence_number, status: sequence.status },
+        total_students_missing: classes.reduce((n, c) => n + c.students.length, 0),
+        classes,
+    };
+}

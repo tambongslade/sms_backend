@@ -1160,6 +1160,25 @@ export const getMarkSubmissionTracking = async (req: Request, res: Response): Pr
 };
 
 /**
+ * Students with no mark in some subject, and which subjects, for an exam sequence.
+ * @route GET /exams/:id/missing-marks
+ */
+export const getStudentsMissingMarks = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const examSequenceId = parseInt(req.params.id);
+        if (isNaN(examSequenceId)) {
+            res.status(400).json({ success: false, error: 'Invalid Exam Sequence ID.' });
+            return;
+        }
+        const data = await examService.getStudentsMissingMarks(examSequenceId);
+        res.json({ success: true, data });
+    } catch (error: any) {
+        console.error('Error fetching students missing marks:', error);
+        res.status(String(error.message).includes('not found') ? 404 : 500).json({ success: false, error: error.message });
+    }
+};
+
+/**
  * Get teachers with pending mark submissions for an exam sequence.
  * @route GET /exams/:id/pending-teachers
  */
