@@ -540,6 +540,7 @@ export const assignRole = async (req: Request, res: Response): Promise<void> => 
 
         const actorRoles = ((req as any).user?.role ?? []) as Role[];
         userService.assertRoleWithinCoordinatorScope(actorRoles, roleData.role);
+        userService.assertManagerCannotGrantPrivilegedRole(actorRoles, roleData.role);
         await userService.assertPersonnelScope(actorRoles, userId);
 
         const newRole = await userService.assignRole(userId, roleData);
@@ -639,6 +640,14 @@ export const createUserWithRole = async (req: Request, res: Response): Promise<v
             res.status(403).json({ success: false, error: 'Only a Super Manager can create a Super Manager account' });
             return;
         }
+        // A MANAGER may create personnel of any other kind, but not a peer MANAGER account.
+        try {
+            const actorRolesForManagerCheck = ((req.user?.role as string[] | undefined) || []) as Role[];
+            requestedRoles.forEach(r => userService.assertManagerCannotGrantPrivilegedRole(actorRolesForManagerCheck, r as Role));
+        } catch (scopeErr: any) {
+            res.status(scopeErr.statusCode || 403).json({ success: false, error: scopeErr.message });
+            return;
+        }
         userData.roles = requestedRoles;
         // Discipline Coordinator may only create DM / SDM / DoD accounts.
         try {
@@ -729,6 +738,8 @@ export const setUserRolesForCurrentAcademicYear = async (req: Request, res: Resp
         // Every role in the incoming set must also be within the coordinator's scope,
         // so a coordinator can't add e.g. HOD to a Discipline Master account.
         for (const role of roles) userService.assertRoleWithinCoordinatorScope(actorRoles, role);
+        // A MANAGER can set any other role set, but not grant MANAGER/SUPER_MANAGER.
+        for (const role of roles) userService.assertManagerCannotGrantPrivilegedRole(actorRoles, role);
 
         const updatedRoles = await userService.setUserRolesForAcademicYear(userId, roles);
         res.json({
@@ -738,7 +749,9 @@ export const setUserRolesForCurrentAcademicYear = async (req: Request, res: Resp
         });
     } catch (error: any) {
         console.error('Error setting user roles for academic year:', error);
-        if (error.message.includes('User with ID') || error.message.includes('not found')) {
+        if (error.statusCode) {
+            res.status(error.statusCode).json({ success: false, error: error.message });
+        } else if (error.message.includes('User with ID') || error.message.includes('not found')) {
             res.status(404).json({ success: false, error: error.message });
         } else if (error.message.includes('No current academic year')) {
             res.status(400).json({ success: false, error: error.message });

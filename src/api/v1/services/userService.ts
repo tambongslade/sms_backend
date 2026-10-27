@@ -175,6 +175,19 @@ export function assertRoleWithinCoordinatorScope(actorRoles: Role[], role: Role)
     }
 }
 
+// A MANAGER has broad personnel-management access (create/edit/delete staff,
+// assign roles), but must never mint a peer or escalate itself/someone else to
+// MANAGER or SUPER_MANAGER. Only SUPER_MANAGER may grant those two roles.
+export function assertManagerCannotGrantPrivilegedRole(actorRoles: Role[], role: Role): void {
+    if (actorRoles.includes('SUPER_MANAGER')) return;
+    if (!actorRoles.includes('MANAGER')) return;
+    if (role === 'MANAGER' || role === 'SUPER_MANAGER') {
+        const err: any = new Error('A Manager cannot create or assign Manager or Super Manager accounts');
+        err.statusCode = 403;
+        throw err;
+    }
+}
+
 const SORTABLE_FIELDS = new Set([
     'id', 'name', 'email', 'matricule', 'phone', 'gender', 'status',
     'created_at', 'updated_at', 'date_of_birth', 'last_seen_at'

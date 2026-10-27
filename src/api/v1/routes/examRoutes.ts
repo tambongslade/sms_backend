@@ -20,12 +20,12 @@ router.get('/papers', authenticate, examController.getAllExamPapers);
 
 // POST /exams - Create a new exam sequence
 // Only SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL can create exam sequences
-router.post('/', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL']), examController.createExam);
+router.post('/', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL']), examController.createExam);
 
 // POST /exams/papers - Create a new exam paper
 // Only SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL can create exam papers
 // TEACHER may create papers only for subjects they teach (checked in the controller)
-router.post('/papers', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']), examController.createExamPaper);
+router.post('/papers', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']), examController.createExamPaper);
 
 // DELETE /exams/papers/:id - Delete an exam paper
 // Only SUPER_MANAGER, PRINCIPAL can delete exam papers
@@ -53,7 +53,7 @@ router.get('/:id', authenticate, examController.getExamById);
 router.patch(
     '/:id/status',
     authenticate,
-    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL]),
+    authorize([Role.SUPER_MANAGER, Role.MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL]),
     examController.updateExamSequenceStatusController
 );
 
@@ -61,7 +61,7 @@ router.patch(
 router.patch(
     '/:id/deadline',
     authenticate,
-    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL]),
+    authorize([Role.SUPER_MANAGER, Role.MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL]),
     examController.setSubmissionDeadline
 );
 
@@ -69,7 +69,7 @@ router.patch(
 router.get(
     '/:id/submission-tracking',
     authenticate,
-    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL, Role.DEAN_OF_STUDIES]),
+    authorize([Role.SUPER_MANAGER, Role.MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL, Role.DEAN_OF_STUDIES]),
     examController.getMarkSubmissionTracking
 );
 
@@ -77,7 +77,7 @@ router.get(
 router.get(
     '/:id/missing-marks',
     authenticate,
-    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL, Role.DEAN_OF_STUDIES]),
+    authorize([Role.SUPER_MANAGER, Role.MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL, Role.DEAN_OF_STUDIES]),
     examController.getStudentsMissingMarks
 );
 
@@ -85,17 +85,17 @@ router.get(
 router.get(
     '/:id/pending-teachers',
     authenticate,
-    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL]),
+    authorize([Role.SUPER_MANAGER, Role.MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL]),
     examController.getPendingTeachers
 );
 
 // PUT /exams/:id - Update an exam sequence
 // Only SUPER_MANAGER, PRINCIPAL, VICE_PRINCIPAL can update exam sequences
-router.put('/:id', authenticate, authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL]), examController.updateExam);
+router.put('/:id', authenticate, authorize([Role.SUPER_MANAGER, Role.MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL]), examController.updateExam);
 
 // DELETE /exams/:id - Delete an exam
 // Only SUPER_MANAGER, PRINCIPAL can delete exams
-router.delete('/:id', authenticate, authorize([Role.SUPER_MANAGER, Role.PRINCIPAL]), examController.deleteExam);
+router.delete('/:id', authenticate, authorize([Role.SUPER_MANAGER, Role.MANAGER, Role.PRINCIPAL]), examController.deleteExam);
 
 // GET /exams/papers/:examId/with-questions - Get a specific exam paper with its questions
 router.get('/papers/:examId/with-questions', authenticate, examController.getExamPaperWithQuestions);
@@ -151,14 +151,14 @@ export const marksRouter = Router();
 // TEACHER can only view marks for their assigned subjects/subclasses
 marksRouter.get('/',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_STUDIES', 'TEACHER']),
+    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_STUDIES', 'TEACHER']),
     // Add teacher access validation for TEACHER role only
     (req: any, res: any, next: any) => {
         // Check if user has TEACHER role
         const userRoles: string[] = req.user?.role || req.user?.roles || [];
         const isTeacher = userRoles.includes('TEACHER');
         const hasHigherRole = userRoles.some((role: string) =>
-            ['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL'].includes(role)
+            ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL'].includes(role)
         );
 
         // If user is TEACHER only (no higher roles), apply subject access validation
@@ -175,14 +175,14 @@ marksRouter.get('/',
 // TEACHER limited to subjects they teach in that subclass (checked in the controller)
 marksRouter.get('/entry-sheet',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
+    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
     examController.getMarkEntrySheet
 );
 
 // POST /marks/bulk - Save many marks for one sequence/subclass/subject in one transaction
 marksRouter.post('/bulk',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
+    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
     examController.saveMarkEntrySheet
 );
 
@@ -191,7 +191,7 @@ marksRouter.post('/bulk',
 // TEACHER can only create marks for their assigned subjects/subclasses
 marksRouter.post('/',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
+    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
     // Add teacher marks access validation for TEACHER role
     (req: any, res: any, next: any) => {
         const userRoles: string[] = req.user?.role || req.user?.roles || [];
@@ -214,7 +214,7 @@ marksRouter.post('/',
 // TEACHER can only update marks for their assigned subjects/subclasses
 marksRouter.put('/:id',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
+    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
     // Add teacher marks access validation for TEACHER role
     (req: any, res: any, next: any) => {
         const userRoles: string[] = req.user?.role || req.user?.roles || [];
@@ -237,7 +237,7 @@ marksRouter.put('/:id',
 // TEACHER can only delete marks for their assigned subjects/subclasses
 marksRouter.delete('/:id',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
+    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'TEACHER']),
     // Add teacher marks access validation for TEACHER role
     (req: any, res: any, next: any) => {
         const userRoles: string[] = req.user?.role || req.user?.roles || [];

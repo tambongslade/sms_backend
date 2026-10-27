@@ -98,24 +98,27 @@ router.get('/:parentId/students', authenticate, authorize(['SUPER_MANAGER', 'PRI
 // enforces that when the actor's highest role is DISCIPLINE_COORDINATOR, the target user's
 // roles must be strictly within { DISCIPLINE_MASTER, SENIOR_DISCIPLINE_MASTER, DEAN_OF_DISCIPLINE } —
 // route-level authorize is not enough because the target's roles are only known at service time.
-router.get('/:id', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY', 'DISCIPLINE_COORDINATOR']), getUserById);
-router.put('/:id', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY', 'DISCIPLINE_COORDINATOR']), auditTrailMiddleware('User', 'UPDATE_USER'), updateUser);
-router.delete('/:id', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR']), auditTrailMiddleware('User', 'DELETE_USER'), deleteUser); // Only SUPER_MANAGER can delete
+router.get('/:id', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY', 'DISCIPLINE_COORDINATOR']), getUserById);
+router.put('/:id', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY', 'DISCIPLINE_COORDINATOR']), auditTrailMiddleware('User', 'UPDATE_USER'), updateUser);
+router.delete('/:id', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR']), auditTrailMiddleware('User', 'DELETE_USER'), deleteUser); // Only SUPER_MANAGER can delete
 
 // POST /users/:id/reset-password — admin reset of a personnel account's password.
 // Body: { newPassword?: string }. Omit newPassword to reset to the default and force change on next sign-in.
 // Parent accounts must go through POST /bursar/parents/:parentId/reset-password instead.
 router.post('/:id/reset-password',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_COORDINATOR']),
+    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DISCIPLINE_COORDINATOR']),
     resetPersonnelPassword,
 );
 
 // Role management
-router.post('/:id/roles', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'DISCIPLINE_COORDINATOR']), roleChangeAuditMiddleware, assignRole); // Single role assignment
-router.delete('/:id/roles', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'DISCIPLINE_COORDINATOR']), roleChangeAuditMiddleware, removeRole); // Remove role (specify role in body)
-router.put('/:id/roles/academic-year', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'DISCIPLINE_COORDINATOR']), roleChangeAuditMiddleware, setUserRolesForCurrentAcademicYear); // New route for setting roles
-router.delete('/:id/roles/:roleId', authenticate, authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'DISCIPLINE_COORDINATOR']), roleChangeAuditMiddleware, removeRole); // RoleId here is the UserRole record ID
+// MANAGER may assign/remove roles like the other personnel-management admins, but
+// may never grant MANAGER or SUPER_MANAGER — enforced in the controller via
+// assertManagerCannotGrantPrivilegedRole (mirrors the coordinator's scope guard).
+router.post('/:id/roles', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'DISCIPLINE_COORDINATOR']), roleChangeAuditMiddleware, assignRole); // Single role assignment
+router.delete('/:id/roles', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'DISCIPLINE_COORDINATOR']), roleChangeAuditMiddleware, removeRole); // Remove role (specify role in body)
+router.put('/:id/roles/academic-year', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'DISCIPLINE_COORDINATOR']), roleChangeAuditMiddleware, setUserRolesForCurrentAcademicYear); // New route for setting roles
+router.delete('/:id/roles/:roleId', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'DISCIPLINE_COORDINATOR']), roleChangeAuditMiddleware, removeRole); // RoleId here is the UserRole record ID
 
 // Specific Assignments (Vice Principal, Discipline Master)
 // Assign VP to Subclass (Defaults to current year if academicYearId is omitted in body)
