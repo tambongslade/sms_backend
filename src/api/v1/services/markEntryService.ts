@@ -49,6 +49,11 @@ function windowState(sequence: { status: string; submission_deadline: Date | nul
     return { is_open: true, closed_reason: null as string | null };
 }
 
+async function hasEditGrant(examSequenceId: number, subClassSubjectId: number): Promise<boolean> {
+    const n = await prisma.markEditGrant.count({ where: { exam_sequence_id: examSequenceId, sub_class_subject_id: subClassSubjectId, used_at: null } });
+    return n > 0;
+}
+
 /**
  * Full roster of a subclass for one exam sequence + subject, with the saved mark
  * (if any) on each row. Withdrawn students are left out. Sorted by name.
@@ -79,6 +84,7 @@ export async function getEntrySheet(examSequenceId: number, subClassId: number, 
         })
         : [];
     const markByEnrollment = new Map(marks.map(m => [m.enrollment_id, m]));
+    const reopened = !isAdmin && await hasEditGrant(examSequenceId, subClassSubject.id);
 
     const students = enrollments
         .map(e => {
@@ -94,7 +100,7 @@ export async function getEntrySheet(examSequenceId: number, subClassId: number, 
                 // A teacher who already submitted this student's mark can no longer
                 // change it; admins (who bypass per-subject assignment checks above)
                 // can still correct it.
-                locked: !isAdmin && m?.score != null,
+                locked: !isAdmin && !reopened && m?.score != null,
             };
         })
         .sort((a, b) => a.name.localeCompare(b.name));
@@ -111,7 +117,7 @@ export async function getEntrySheet(examSequenceId: number, subClassId: number, 
             submission_deadline: sequence.submission_deadline,
             is_open,
             closed_reason,
-            can_edit_submitted: isAdmin,
+            can_edit_submitted: isAdmin || reopened,
         },
         sub_class: {
             id: subClassSubject.sub_class.id,
@@ -193,7 +199,12 @@ export async function saveEntrySheet(params: {
 
     // Once a teacher has submitted a student's mark, it is locked: only an
     // admin (SUPER_MANAGER / PRINCIPAL / VICE_PRINCIPAL) can change it after that.
-    if (!params.is_admin) {
+    // An unused one-time grant (see MarkEditGrant) lifts the lock for this save, then is used up.
+    const grant = params.is_admin ? null : await prisma.markEditGrant.findFirst({
+        where: { exam_sequence_id: params.exam_sequence_id, sub_class_subject_id: subClassSubject.id, used_at: null },
+        orderBy: { id: 'asc' },
+    });
+    if (!params.is_admin && !grant) {
         const existingMarks = await prisma.mark.findMany({
             where: {
                 exam_sequence_id: params.exam_sequence_id,
@@ -242,6 +253,7 @@ export async function saveEntrySheet(params: {
             saved++;
         }
     }
+    if (grant) ops.push(prisma.markEditGrant.update({ where: { id: grant.id }, data: { used_at: new Date() } }));
     await prisma.$transaction(ops);
 
     // Keep the stored sequence averages/ranks (parent portal, dashboards) in step

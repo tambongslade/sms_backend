@@ -3034,3 +3034,16 @@ model SmsMessage {
   @@index([created_at])
   @@index([phone, created_at])
 }
+
+// One-time permission for a teacher to change already-submitted marks of one subject in one
+// exam sequence. Created by an administrator, used up by the next successful save.
+model MarkEditGrant {
+  id                   Int       @id @default(autoincrement())
+  exam_sequence_id     Int
+  sub_class_subject_id Int
+  note                 String?
+  created_at           DateTime  @default(now())
+  used_at              DateTime?
+
+  @@index([exam_sequence_id, sub_class_subject_id, used_at])
+}
