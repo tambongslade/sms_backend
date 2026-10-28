@@ -64,13 +64,15 @@ export interface ClassMarksheet {
 const pct = (a: number, b: number) => (b > 0 ? round2((a / b) * 100) : null);
 
 export function buildClassMarksheet(r: ClassResults): ClassMarksheet {
-    const subjects = [...r.subjects].sort((a, b) => {
+    // Subjects nobody has a mark for (e.g. a duplicate or unused subject) are left off the sheet.
+    const withMarks = new Set<number>();
+    for (const st of r.students) for (const sr of st.subjects) if (sr.score !== null) withMarks.add(sr.sub_class_subject_id);
+    const subjects = r.subjects.filter(s => withMarks.has(s.sub_class_subject_id)).sort((a, b) => {
         const ca = CATEGORY_ORDER.indexOf(a.category), cb = CATEGORY_ORDER.indexOf(b.category);
         return (ca - cb) || a.name.localeCompare(b.name);
     });
-    const categories = CATEGORY_ORDER
-        .filter(k => subjects.some(s => s.category === k))
-        .map(k => ({ key: k, label: CATEGORY_LABELS[k] ?? k }));
+    // Category averages are no longer printed on the sheet.
+    const categories: { key: string; label: string }[] = [];
 
     const subjectIndex = new Map(subjects.map((s, i) => [s.sub_class_subject_id, i]));
     const statBySubject = new Map(r.subject_stats.map(s => [s.sub_class_subject_id, s]));
