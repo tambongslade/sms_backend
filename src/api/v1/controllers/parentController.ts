@@ -108,6 +108,10 @@ export const downloadChildReportCard = async (req: Request, res: Response): Prom
     try {
         const matricule = readMatricule(req);
         if (!matricule) { res.status(400).json({ success: false, error: 'Matricule is required' }); return; }
+        if (!(await parentService.isSequenceReleased(parseInt((req.finalQuery?.examSequenceId ?? req.finalQuery?.exam_sequence_id) as string)))) {
+            res.status(403).json({ success: false, error: 'Results for this sequence are not released yet. They are available once the sequence is closed.' });
+            return;
+        }
         const student = await parentService.resolveStudentByMatricule(matricule);
         // examController.generateStudentReportCard reads req.params.studentId
         // and finalQuery.{academic_year_id, exam_sequence_id} and streams the PDF.
@@ -139,6 +143,10 @@ export const checkChildReportCardAvailability = async (req: Request, res: Respon
             return;
         }
 
+        if (!(await parentService.isSequenceReleased(examSequenceId))) {
+            res.status(403).json({ success: false, error: 'Results for this sequence are not released yet. They are available once the sequence is closed.' });
+            return;
+        }
         const student = await parentService.resolveStudentByMatricule(matricule);
         const examService = await import('../services/examService');
         const result = await examService.checkStudentReportCardAvailability(

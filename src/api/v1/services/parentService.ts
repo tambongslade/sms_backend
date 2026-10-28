@@ -140,6 +140,16 @@ export interface ReportCard {
 // ────────────────────────────────────────────────────────────────────────────
 
 const MARK_SCALE = 20;
+
+// Parents only see marks, averages and report cards of a sequence once it has been closed
+// (anything other than OPEN). Marks of a sequence that is still open are not shown.
+const RELEASED_MARKS = { exam_sequence: { status: { not: 'OPEN' as const } } };
+export async function isSequenceReleased(examSequenceId: number): Promise<boolean> {
+    if (isNaN(examSequenceId)) return false;
+    const seq = await prisma.examSequence.findUnique({ where: { id: examSequenceId }, select: { status: true } });
+    return !!seq && seq.status !== 'OPEN';
+}
+const RELEASED_REPORTS = { OR: [{ exam_sequence_id: null }, { exam_sequence: { status: { not: 'OPEN' as const } } }] };
 const FALLBACK_WORKING_DAYS = 180;
 const workingDaysCache = new Map<number, number>();
 
@@ -208,6 +218,7 @@ export async function getParentDashboard(parentId: number, academicYearId?: numb
                                     include: { class: true }
                                 },
                                 marks: {
+                                    where: RELEASED_MARKS,
                                     include: {
                                         sub_class_subject: { include: { subject: true } },
                                         exam_sequence: { include: { term: true } },
@@ -607,7 +618,7 @@ export async function getChildAnalytics(parentId: number, studentId: number, aca
         const enrollment = student.enrollments[0];
         const actualYearId = enrollment.academic_year_id;
 
-        const marks = await prisma.mark.findMany({ where: { enrollment_id: enrollment.id } });
+        const marks = await prisma.mark.findMany({ where: { enrollment_id: enrollment.id, ...RELEASED_MARKS } });
 
         const [
             performanceAnalytics,
@@ -936,6 +947,7 @@ async function calculateComparativeAnalytics(studentId: number, subClassId: numb
         },
         include: {
             marks: {
+                where: RELEASED_MARKS,
                 include: {
                     sub_class_subject: {
                         include: {
@@ -1161,7 +1173,7 @@ async function getChildAcademicResultsCore(
     }
 
     const marks = await prisma.mark.findMany({
-        where: { enrollment_id: enrollmentId },
+        where: { enrollment_id: enrollmentId, ...RELEASED_MARKS },
         include: {
             sub_class_subject: {
                 include: {
@@ -1228,7 +1240,7 @@ async function getChildAcademicResultsCore(
     let sequenceAverages: any[] = [];
     if (academicYearId) {
         sequenceAverages = await prisma.studentSequenceAverage.findMany({
-            where: { enrollment_id: enrollmentId },
+            where: { enrollment_id: enrollmentId, ...RELEASED_MARKS },
             include: {
                 exam_sequence: {
                     select: {
@@ -1357,6 +1369,7 @@ export async function listChildReportCardsByMatricule(
         where: {
             student_id: student.id,
             report_type: 'SINGLE_STUDENT' as any,
+            ...RELEASED_REPORTS,
             ...(yearId ? { academic_year_id: yearId } : {})
         },
         include: {
@@ -1417,6 +1430,7 @@ export async function getChildDashboardByMatricule(
         include: {
             sub_class: { include: { class: true } },
             marks: {
+                where: RELEASED_MARKS,
                 include: {
                     sub_class_subject: { include: { subject: true } },
                     exam_sequence: { include: { term: true } },
@@ -1488,6 +1502,7 @@ export async function getChildDetailsByMatricule(
                 }
             },
             marks: {
+                where: RELEASED_MARKS,
                 include: {
                     sub_class_subject: { include: { subject: true } },
                     exam_sequence: { include: { term: true } },
@@ -1513,6 +1528,7 @@ export async function getChildDetailsByMatricule(
         reports = await prisma.generatedReport.findMany({
             where: {
                 student_id: student.id,
+                ...RELEASED_REPORTS,
                 ...(yearId ? { academic_year_id: yearId } : {})
             },
             include: {
@@ -1764,7 +1780,7 @@ export async function getChildAnalyticsByMatricule(
 
     const enrollment = studentWithEnrollments.enrollments[0];
     const actualYearId = enrollment.academic_year_id;
-    const marks = await prisma.mark.findMany({ where: { enrollment_id: enrollment.id } });
+    const marks = await prisma.mark.findMany({ where: { enrollment_id: enrollment.id, ...RELEASED_MARKS } });
 
     const [
         performanceAnalytics,
