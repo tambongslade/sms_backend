@@ -65,7 +65,7 @@ router.get('/payment-trends',
 // BURSAR and management roles can view defaulters report
 router.get('/defaulters-report',
     authenticate,
-    authorize(['BURSAR', 'SUPER_MANAGER', 'PRINCIPAL', 'MANAGER']),
+    authorize(['BURSAR', 'SUPER_MANAGER', 'PRINCIPAL', 'MANAGER', 'SECRETARY']),
     bursarController.getDefaultersReport
 );
 
@@ -73,7 +73,7 @@ router.get('/defaulters-report',
 // (one subclass per page). Same query params as /defaulters-report.
 router.get('/defaulters-report/pdf',
     authenticate,
-    authorize(['BURSAR', 'SUPER_MANAGER', 'PRINCIPAL', 'MANAGER']),
+    authorize(['BURSAR', 'SUPER_MANAGER', 'PRINCIPAL', 'MANAGER', 'SECRETARY']),
     bursarController.exportDefaultersReportPdf
 );
 
