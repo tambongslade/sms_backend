@@ -15,6 +15,11 @@
 //    score = mean of the term subject scores that exist.
 //  - Only students with an average are ranked. Ties share a rank (1, 2, 2, 4).
 //  - Withdrawn students are left out of everything.
+//  - Moral Instructions is not graded in FORM 1 and FORM 2: it is left out of results,
+//    mark sheets and report cards.
+//  - A student needs marks in a minimum number of subjects to get an average and a rank:
+//    10 in FORM 1 to FORM 5, 4 in LOWER SIXTH and UPPER SIXTH. Below that the average and
+//    rank are NC (the marks themselves are still shown).
 
 import prisma from '../../../config/db';
 
@@ -113,6 +118,16 @@ export class ResultsError extends Error {
     constructor(public status: number, message: string) {
         super(message);
     }
+}
+
+const isForm1or2 = (className: string) => /^FORM\s*[12]\b/i.test(className.trim());
+
+/** Fewest subjects with marks a student needs to be given an average and a rank. */
+export function minSubjectsForAverage(className: string): number {
+    const name = className.trim();
+    if (/^FORM\s*[1-5]\b/i.test(name)) return 10;
+    if (/\b(LOWER|UPPER)\s+SIXTH\b/i.test(name)) return 4;
+    return 0;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -223,6 +238,7 @@ async function loadBase(subClassId: number, academicYearId: number) {
     }
 
     const subjects: ResultsSubject[] = subClass.sub_class_subjects
+        .filter(scs => !(isForm1or2(subClass.class.name) && /moral/i.test(scs.subject.name)))
         .map(scs => ({
             sub_class_subject_id: scs.id,
             subject_id: scs.subject_id,
@@ -272,6 +288,7 @@ function compute(
     scoreOf: (enrollmentId: number, scsId: number) => { score: number | null; parts: { label: string; score: number | null }[] },
     averageOverride?: (enrollmentId: number, computed: number | null) => number | null
 ): { students: StudentResult[]; subject_stats: SubjectStats[]; class_stats: ClassStats } {
+    const minSubjects = minSubjectsForAverage(base.subClass.class.name);
     const students: StudentResult[] = base.enrollments.map(e => {
         let totalCoef = 0;
         let totalWeighted = 0;
@@ -296,6 +313,7 @@ function compute(
         });
         let average: number | null = totalCoef > 0 ? round2(totalWeighted / totalCoef) : null;
         if (averageOverride) average = averageOverride(e.id, average);
+        if (withMarks < minSubjects) average = null;
         return {
             enrollment_id: e.id,
             student_id: e.student.id,
