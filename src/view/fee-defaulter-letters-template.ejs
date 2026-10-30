@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title><%= documentTitle %></title>
+<style>
+    @page {
+        size: A4 portrait;
+        margin: 16mm;
+    }
+    * { box-sizing: border-box; }
+    body {
+        font-family: 'Helvetica', 'Arial', sans-serif;
+        color: #111827;
+        margin: 0;
+        padding: 0;
+        font-size: 11pt;
+        line-height: 1.5;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    .letterhead {
+        border-bottom: 1.5px solid #1e3a8a;
+        padding-bottom: 6px;
+        margin-bottom: 16px;
+    }
+    .letterhead img { display: block; width: 100%; max-height: 60px; object-fit: contain; }
+
+    .letter-page {
+        page-break-after: always;
+    }
+    .letter-page:last-child { page-break-after: auto; }
+
+    .date-line {
+        text-align: right;
+        font-size: 9.5pt;
+        color: #374151;
+        margin-bottom: 18px;
+    }
+    .salutation { margin-bottom: 10px; }
+    .custom-message { margin-bottom: 10px; white-space: pre-wrap; }
+    .body-text { margin-bottom: 10px; }
+    .body-text b { color: #111827; }
+    .closing { margin-top: 10px; }
+    .signature { margin-top: 36px; font-weight: 700; }
+</style>
+</head>
+<body>
+    <%
+        function fmt(n) {
+            if (n === null || n === undefined) return '0';
+            return Number(n).toLocaleString('en-GB');
+        }
+    %>
+    <% letters.forEach(function(l) { %>
+        <section class="letter-page">
+            <div class="letterhead">
+                <% if (letterhead) { %><img src="<%= letterhead %>" alt="" /><% } %>
+            </div>
+
+            <div class="date-line"><%= generatedDate %></div>
+
+            <div class="salutation">Dear Parent,</div>
+
+            <% if (customMessage) { %>
+                <div class="custom-message"><%= customMessage %></div>
+            <% } %>
+
+            <div class="body-text">
+                We will like to inform you that your child <b><%= l.studentName %></b> of <b><%= l.className %><% if (l.subClassName) { %> <%= l.subClassName %><% } %></b>
+                is owing <b><%= fmt(l.outstandingAmount) %> FCFA</b><% if (dueDateLabel) { %> to complete the fee which was expected before <b><%= dueDateLabel %></b><% } %>.
+                <% if (exclusionDateLabel) { %>Your child will not be allowed on campus as of <b><%= exclusionDateLabel %></b>.<% } %>
+            </div>
+
+            <div class="closing">Endeavour to pay and send justification of payment.</div>
+
+            <div class="signature">The Principal</div>
+        </section>
+    <% }); %>
+</body>
+</html>

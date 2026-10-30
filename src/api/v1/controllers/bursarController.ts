@@ -512,6 +512,51 @@ export const exportDefaultersReportPdf = async (req: Request, res: Response): Pr
 };
 
 /**
+ * Generate one fee-defaulter letter (PDF, one page each, on the school letterhead)
+ * per selected student, filling in their name/class/outstanding amount.
+ * POST /api/v1/bursar/defaulters-report/letters-pdf
+ */
+export const generateFeeDefaulterLettersPdf = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { studentIds, academicYearId, customMessage, dueDate, exclusionDate } = req.body as {
+            studentIds?: unknown;
+            academicYearId?: number | string;
+            customMessage?: string;
+            dueDate?: string;
+            exclusionDate?: string;
+        };
+
+        if (!Array.isArray(studentIds) || studentIds.length === 0) {
+            res.status(400).json({ success: false, error: 'studentIds must be a non-empty array.' });
+            return;
+        }
+        const ids = studentIds.map(id => Number(id)).filter(id => Number.isInteger(id));
+        if (ids.length === 0) {
+            res.status(400).json({ success: false, error: 'studentIds must contain valid student IDs.' });
+            return;
+        }
+
+        const { buffer, filename } = await bursarService.generateFeeDefaulterLettersPdf({
+            studentIds: ids,
+            academicYearId: academicYearId !== undefined ? Number(academicYearId) : undefined,
+            customMessage,
+            dueDateLabel: dueDate,
+            exclusionDateLabel: exclusionDate,
+        });
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(buffer);
+    } catch (error: any) {
+        console.error('Error generating fee defaulter letters PDF:', error);
+        res.status(error.statusCode || 500).json({
+            success: false,
+            error: error.message
+        });
+    }
+};
+
+/**
  * Reset a parent's password back to the default `password123`.
  * POST /api/v1/bursar/parents/:parentId/reset-password
  */

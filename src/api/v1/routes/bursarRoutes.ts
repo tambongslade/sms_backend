@@ -77,6 +77,14 @@ router.get('/defaulters-report/pdf',
     bursarController.exportDefaultersReportPdf
 );
 
+// POST /bursar/defaulters-report/letters-pdf - Parent Mailing > Fee Defaulters Mailings:
+// one letter per selected student (PDF, on the school letterhead).
+router.post('/defaulters-report/letters-pdf',
+    authenticate,
+    authorize(['BURSAR', 'SUPER_MANAGER', 'PRINCIPAL', 'MANAGER', 'SECRETARY']),
+    bursarController.generateFeeDefaulterLettersPdf
+);
+
 // POST /bursar/parents/:parentId/reset-password - Reset a parent's password back to the default
 // Used when a parent forgets the password they set after first login.
 // BURSAR, PRINCIPAL, VICE_PRINCIPAL, SUPER_MANAGER, MANAGER can perform the reset.

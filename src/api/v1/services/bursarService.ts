@@ -1077,3 +1077,102 @@ export async function generateDefaultersReportPdf(
         try { await page.close(); } catch { /* noop */ }
     }
 }
+
+// -------------------- Parent Mailing: fee-defaulter letters --------------------
+
+const feeDefaulterLettersTemplateCache: { html?: string } = {};
+function loadFeeDefaulterLettersTemplate(): string {
+    if (!feeDefaulterLettersTemplateCache.html) {
+        const templatePath = path.join(process.cwd(), 'src/view/fee-defaulter-letters-template.ejs');
+        feeDefaulterLettersTemplateCache.html = fs.readFileSync(templatePath, 'utf-8');
+    }
+    return feeDefaulterLettersTemplateCache.html;
+}
+
+// The current school letterhead (logo + name/motto + address/phone banner), shared with
+// every other official PDF the system produces (receipts, report cards, timetables, ...).
+const letterheadDataUriCache: { dataUri?: string } = {};
+function loadLetterheadDataUri(): string {
+    if (!letterheadDataUriCache.dataUri) {
+        try {
+            const logoPath = path.join(process.cwd(), 'public/letterhead.png');
+            const buf = fs.readFileSync(logoPath);
+            letterheadDataUriCache.dataUri = `data:image/png;base64,${buf.toString('base64')}`;
+        } catch {
+            letterheadDataUriCache.dataUri = '';
+        }
+    }
+    return letterheadDataUriCache.dataUri;
+}
+
+export interface FeeDefaulterLettersOptions {
+    studentIds: number[];
+    academicYearId?: number;
+    // Free-text paragraph the bursar/secretary adds for this batch, shown between
+    // "Dear Parent," and the fixed owing-amount sentence. Optional.
+    customMessage?: string;
+    // Shown in the fixed sentence as-is (already formatted, e.g. "31st October 2026").
+    // Omitted entirely from the letter when not provided.
+    dueDateLabel?: string;
+    exclusionDateLabel?: string;
+}
+
+/**
+ * One fee-defaulter letter per selected student (one page each, same letterhead
+ * as every other official document), drawing name/class/outstanding amount from
+ * the same defaulters aggregation as GET /bursar/defaulters-report.
+ */
+export async function generateFeeDefaulterLettersPdf(
+    options: FeeDefaulterLettersOptions
+): Promise<{ buffer: Buffer; filename: string }> {
+    const studentIds = [...new Set((options.studentIds || []).filter(id => Number.isInteger(id)))];
+    if (studentIds.length === 0) {
+        const err: any = new Error('Select at least one student to send a letter to.');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const report = await getDefaultersReport({ academicYearId: options.academicYearId });
+    const byId = new Map<number, any>(report.students.map((s: any) => [s.studentId, s]));
+    const letters = studentIds
+        .map(id => byId.get(id))
+        .filter(Boolean)
+        .sort((a: any, b: any) => {
+            const byClass = a.className.localeCompare(b.className, undefined, { numeric: true, sensitivity: 'base' });
+            if (byClass !== 0) return byClass;
+            return a.subClassName.localeCompare(b.subClassName, undefined, { numeric: true, sensitivity: 'base' });
+        });
+
+    if (letters.length === 0) {
+        const err: any = new Error('None of the selected students currently have an outstanding balance.');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const template = loadFeeDefaulterLettersTemplate();
+    const html = ejs.render(template, {
+        documentTitle: 'Fee Defaulter Letters',
+        letterhead: loadLetterheadDataUri(),
+        letters,
+        customMessage: (options.customMessage || '').trim(),
+        dueDateLabel: (options.dueDateLabel || '').trim(),
+        exclusionDateLabel: (options.exclusionDateLabel || '').trim(),
+        generatedDate: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
+    });
+
+    const page = await PuppeteerManager.newPage();
+    try {
+        await page.setContent(html, { waitUntil: 'networkidle0' });
+        const pdf = await page.pdf({
+            format: 'A4',
+            landscape: false,
+            printBackground: true,
+            margin: { top: '10mm', right: '10mm', bottom: '10mm', left: '10mm' },
+            preferCSSPageSize: true,
+        });
+        const buffer = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
+        return { buffer, filename: `fee-defaulter-letters-${Date.now()}.pdf` };
+    } finally {
+        try { await page.close(); } catch { /* noop */ }
+    }
+}
