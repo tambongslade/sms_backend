@@ -18,7 +18,7 @@ function assets() {
     if (!cache.html) cache.html = fs.readFileSync(path.join(process.cwd(), 'src/view/class-list-template.ejs'), 'utf-8');
     if (cache.logo === undefined) {
         try {
-            cache.logo = `data:image/png;base64,${fs.readFileSync(path.join(process.cwd(), 'public/school.png')).toString('base64')}`;
+            cache.logo = `data:image/png;base64,${fs.readFileSync(path.join(process.cwd(), 'public/letterhead.png')).toString('base64')}`;
         } catch {
             cache.logo = '';
         }
@@ -51,11 +51,7 @@ export async function generateClassListPdf(params: { subClassId: number; academi
         academicYearName: year?.name ?? '',
         names,
         blankColumns: BLANK_COLUMNS,
-        schoolLogo: logo,
-        schoolName: "ST STEPHEN'S INTERNATIONAL COLLEGE",
-        schoolTagline: 'Excellence for Higher Heights',
-        schoolAddress: 'Yaounde Essono city Damas',
-        schoolPhone: '(+237) 680 188 080 / 681 630 435',
+        letterhead: logo,
         generatedAt: new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }),
     });
 
