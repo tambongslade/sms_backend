@@ -4,6 +4,7 @@ import { authenticate, authorize } from '../middleware/auth.middleware';
 import { validateTeacherMarksAccess, validateTeacherSubjectAccess } from '../middleware/teacherAuth.middleware';
 import { Role } from '@prisma/client';
 import * as resultsController from '../controllers/resultsController';
+import { generateClassListPdf } from '../services/classListFormService';
 
 // Swagger documentation can be found in src/config/swagger/docs/examDocs.ts
 
@@ -42,6 +43,30 @@ router.get(
         'DEAN_OF_STUDIES', 'HOD', 'SECRETARY', 'BURSAR', 'TEACHER',
     ]),
     examController.exportMarksheetPdf
+);
+
+// GET /exams/classlist/pdf - Landscape class list on the school letterhead (names only, other columns empty)
+router.get(
+    '/classlist/pdf',
+    authenticate,
+    authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_STUDIES', 'SECRETARY', 'BURSAR']),
+    async (req, res) => {
+        try {
+            const subClassId = parseInt(req.finalQuery.sub_class_id as string);
+            if (isNaN(subClassId)) {
+                res.status(400).json({ success: false, error: 'subClassId is required' });
+                return;
+            }
+            const academicYearId = req.finalQuery.academic_year_id ? parseInt(req.finalQuery.academic_year_id as string) : undefined;
+            const { buffer, filename } = await generateClassListPdf({ subClassId, academicYearId });
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+            res.send(buffer);
+        } catch (error: any) {
+            console.error('Error generating class list PDF:', error);
+            res.status(error.message?.includes('not found') ? 404 : 500).json({ success: false, error: error.message });
+        }
+    }
 );
 
 // GET /exams/:id - Get exam details

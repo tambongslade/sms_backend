@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Class List - <%= className %></title>
+<style>
+    @page { size: A4 landscape; margin: 8mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Helvetica', 'Arial', sans-serif; color: #111827; margin: 0; font-size: 9pt;
+           -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    p { margin: 0; }
+    .letterhead { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #000;
+                  padding-bottom: 3px; margin-bottom: 3px; font-size: 6.5pt; }
+    .letterhead .col { width: 34%; text-align: center; line-height: 1.15; }
+    .letterhead .bold { font-weight: 700; }
+    .letterhead .logo { width: 32%; text-align: center; }
+    .letterhead .logo img { max-height: 46px; max-width: 100%; }
+    .school { text-align: center; line-height: 1.2; margin: 2px 0 4px; }
+    .school h2 { margin: 0; font-size: 12pt; letter-spacing: .5px; }
+    .school .tagline { font-style: italic; font-size: 7.5pt; color: #374151; }
+    .school .contact { font-size: 7pt; color: #4b5563; }
+    h1.title { text-align: center; margin: 4px 0 4px; font-size: 13pt; letter-spacing: 1px; text-transform: uppercase; }
+    .fields { display: flex; justify-content: space-between; font-size: 10pt; margin-bottom: 5px; gap: 16px; }
+    .fields strong { font-weight: 700; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 0.6px solid #000; padding: 0 3px; text-align: left; height: 6.6mm; overflow: hidden; white-space: nowrap; }
+    thead th { background: #e5e7eb; height: 6mm; }
+    thead { display: table-header-group; }
+    tr { page-break-inside: avoid; }
+    td.num { text-align: center; }
+    .foot { margin-top: 3px; text-align: right; font-size: 6.5pt; color: #6b7280; }
+</style>
+</head>
+<body>
+    <div class="letterhead">
+        <div class="col">
+            <p class="bold">REPUBLIC OF CAMEROON</p>
+            <p>MINISTRY OF SECONDARY EDUCATION</p>
+            <p>REGIONAL DELEGATION FOR CENTRE</p>
+            <p>DIVISIONAL DELEGATION OF MFOUNDI</p>
+        </div>
+        <div class="logo"><% if (schoolLogo) { %><img src="<%= schoolLogo %>" alt="" /><% } %></div>
+        <div class="col">
+            <p class="bold">REPUBLIQUE DU CAMEROUN</p>
+            <p>MINISTERE DES ENSEIGNEMENTS SECONDAIRES</p>
+            <p>DELEGATION REGIONALE DU CENTRE</p>
+            <p>DELEGATION DEPARTEMENTALE DU MFOUNDI</p>
+        </div>
+    </div>
+    <div class="school">
+        <h2><%= schoolName %></h2>
+        <div class="tagline"><%= schoolTagline %></div>
+        <div class="contact"><%= schoolAddress %> &middot; Tel: <%= schoolPhone %></div>
+    </div>
+    <h1 class="title">Class List</h1>
+    <div class="fields">
+        <div><strong>Class:</strong> <%= className %></div>
+        <div><strong>Academic year:</strong> <%= academicYearName %></div>
+        <div><strong>Number of students:</strong> <%= names.length %></div>
+    </div>
+
+    <table>
+        <colgroup>
+            <col style="width:26px">
+            <col style="width:320px">
+            <% for (let i = 0; i < blankColumns; i++) { %><col><% } %>
+        </colgroup>
+        <thead>
+            <tr>
+                <th class="num">No.</th>
+                <th>Name</th>
+                <% for (let i = 0; i < blankColumns; i++) { %><th></th><% } %>
+            </tr>
+        </thead>
+        <tbody>
+            <% names.forEach(function (n, i) { %>
+            <tr>
+                <td class="num"><%= i + 1 %></td>
+                <td><%= n %></td>
+                <% for (let j = 0; j < blankColumns; j++) { %><td></td><% } %>
+            </tr>
+            <% }); %>
+        </tbody>
+    </table>
+    <div class="foot">Generated <%= generatedAt %></div>
+</body>
+</html>
