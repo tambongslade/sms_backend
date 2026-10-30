@@ -4,13 +4,13 @@
 <meta charset="UTF-8" />
 <title>Class List - <%= className %></title>
 <style>
-    @page { size: A4 landscape; margin: 8mm; }
+    @page { size: A4 <%= orientation %>; margin: 8mm; }
     * { box-sizing: border-box; }
     body { font-family: 'Helvetica', 'Arial', sans-serif; color: #111827; margin: 0; font-size: 9pt;
            -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     p { margin: 0; }
     .banner { text-align: center; border-bottom: 1px solid #000; padding-bottom: 3px; margin-bottom: 4px; }
-    .banner img { width: 200mm; max-width: 100%; }
+    .banner img { width: <%= orientation === 'portrait' ? '190mm' : '200mm' %>; max-width: 100%; }
     h1.title { text-align: center; margin: 4px 0 4px; font-size: 13pt; letter-spacing: 1px; text-transform: uppercase; }
     .fields { display: flex; justify-content: space-between; font-size: 10pt; margin-bottom: 5px; gap: 16px; }
     .fields strong { font-weight: 700; }
@@ -29,28 +29,28 @@
     <div class="fields">
         <div><strong>Class:</strong> <%= className %></div>
         <div><strong>Academic year:</strong> <%= academicYearName %></div>
-        <div><strong>Number of students:</strong> <%= names.length %></div>
+        <div><strong>Number of students:</strong> <%= rows.length %></div>
     </div>
 
     <table>
         <colgroup>
             <col style="width:26px">
-            <col style="width:320px">
-            <% for (let i = 0; i < blankColumns; i++) { %><col><% } %>
+            <% if (headers.length > 0) { %><col style="width:<%= orientation === 'portrait' ? 240 : 320 %>px"><% } else { %><col><% } %>
+            <% headers.forEach(function () { %><col><% }); %>
         </colgroup>
         <thead>
             <tr>
                 <th class="num">No.</th>
                 <th>Name</th>
-                <% for (let i = 0; i < blankColumns; i++) { %><th></th><% } %>
+                <% headers.forEach(function (h) { %><th><%= h %></th><% }); %>
             </tr>
         </thead>
         <tbody>
-            <% names.forEach(function (n, i) { %>
+            <% rows.forEach(function (r, i) { %>
             <tr>
                 <td class="num"><%= i + 1 %></td>
-                <td><%= n %></td>
-                <% for (let j = 0; j < blankColumns; j++) { %><td></td><% } %>
+                <td><%= r.name %></td>
+                <% r.cells.forEach(function (c) { %><td><%= c %></td><% }); %>
             </tr>
             <% }); %>
         </tbody>
