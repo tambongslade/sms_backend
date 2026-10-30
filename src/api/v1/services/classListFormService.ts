@@ -11,7 +11,8 @@ import prisma from '../../../config/db';
 import * as PuppeteerManager from '../../../utils/puppeteerManager';
 import { getAcademicYearId } from '../../../utils/academicYear';
 
-const BLANK_COLUMNS = 12;
+const DEFAULT_BLANK_COLUMNS = 5;
+const MAX_BLANK_COLUMNS = 20;
 
 const cache: { html?: string; logo?: string } = {};
 function assets() {
@@ -26,7 +27,7 @@ function assets() {
     return { html: cache.html, logo: cache.logo };
 }
 
-export async function generateClassListPdf(params: { subClassId: number; academicYearId?: number }): Promise<{ buffer: Buffer; filename: string }> {
+export async function generateClassListPdf(params: { subClassId: number; academicYearId?: number; blankColumns?: number }): Promise<{ buffer: Buffer; filename: string }> {
     const yearId = await getAcademicYearId(params.academicYearId);
     if (!yearId) throw new Error('No academic year found');
 
@@ -45,12 +46,15 @@ export async function generateClassListPdf(params: { subClassId: number; academi
         ? subClass.name : `${subClass.class.name} ${subClass.name}`;
     const names = enrollments.map(e => e.student.name).sort((a, b) => a.localeCompare(b));
 
+    const blankColumns = Number.isFinite(params.blankColumns)
+        ? Math.min(Math.max(Math.trunc(params.blankColumns as number), 0), MAX_BLANK_COLUMNS)
+        : DEFAULT_BLANK_COLUMNS;
     const { html: template, logo } = assets();
     const html = ejs.render(template, {
         className,
         academicYearName: year?.name ?? '',
         names,
-        blankColumns: BLANK_COLUMNS,
+        blankColumns,
         letterhead: logo,
         generatedAt: new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }),
     });

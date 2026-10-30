@@ -58,7 +58,8 @@ router.get(
                 return;
             }
             const academicYearId = req.finalQuery.academic_year_id ? parseInt(req.finalQuery.academic_year_id as string) : undefined;
-            const { buffer, filename } = await generateClassListPdf({ subClassId, academicYearId });
+            const blankColumns = req.finalQuery.columns !== undefined ? parseInt(req.finalQuery.columns as string) : undefined;
+            const { buffer, filename } = await generateClassListPdf({ subClassId, academicYearId, blankColumns });
             res.setHeader('Content-Type', 'application/pdf');
             res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
             res.send(buffer);
