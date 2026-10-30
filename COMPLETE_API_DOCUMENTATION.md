@@ -12104,6 +12104,52 @@ A student is treated as a defaulter when their aggregate outstanding balance acr
 }
 ```
 
+### Generate Fee Defaulter Letters (PDF)
+```http
+POST /api/v1/bursar/defaulters-report/letters-pdf
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+**Description:**
+Generates one fee-defaulter letter per selected student, on the school letterhead, filled in automatically from the same defaulters aggregation as `GET /bursar/defaulters-report`. Letters print 3-up on each A4 portrait page as cuttable slips, separated by a dashed line.
+
+**Authorization:**
+- `BURSAR`, `SUPER_MANAGER`, `PRINCIPAL`, `MANAGER`, `SECRETARY`
+
+**Request Body:**
+```typescript
+{
+  studentIds: number[];        // Required, non-empty. Student IDs to generate a letter for.
+  academicYearId?: number;     // Optional: defaults to the current academic year.
+  customMessage?: string;      // Optional free-text paragraph shown under "Dear Parent," for this batch.
+  dueDate?: string;            // Optional, shown as-is (e.g. "31st October 2026").
+  exclusionDate?: string;      // Optional, shown as-is (e.g. "Monday 10th November 2026").
+  installment?: 'first' | 'second' | 'third'; // Optional. When set: (a) students who no
+    // longer owe on that installment are skipped, same filter as
+    // GET /bursar/defaulters-report?installment=..., and (b) the letter states the
+    // amount still owed on that installment instead of the student's total balance.
+}
+```
+
+**Response (Success - 200):** `application/pdf` binary (one PDF, 3 letters per A4 page).
+
+**Error Response (400):**
+```typescript
+{ success: false; error: "studentIds must be a non-empty array." }
+{ success: false; error: "studentIds must contain valid student IDs." }
+{ success: false; error: "None of the selected students currently have an outstanding balance." }
+{ success: false; error: "None of the selected students currently owe on that installment." } // when installment is set
+```
+
+**Error Response (500):**
+```typescript
+{
+  success: false;
+  error: "[error message]";
+}
+```
+
 ---
 
 ## Slack-Style Chat (`/chat`)

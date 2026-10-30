@@ -518,12 +518,13 @@ export const exportDefaultersReportPdf = async (req: Request, res: Response): Pr
  */
 export const generateFeeDefaulterLettersPdf = async (req: Request, res: Response): Promise<void> => {
     try {
-        const { studentIds, academicYearId, customMessage, dueDate, exclusionDate } = req.body as {
+        const { studentIds, academicYearId, customMessage, dueDate, exclusionDate, installment } = req.body as {
             studentIds?: unknown;
             academicYearId?: number | string;
             customMessage?: string;
             dueDate?: string;
             exclusionDate?: string;
+            installment?: string;
         };
 
         if (!Array.isArray(studentIds) || studentIds.length === 0) {
@@ -536,12 +537,17 @@ export const generateFeeDefaulterLettersPdf = async (req: Request, res: Response
             return;
         }
 
+        const validInstallment = installment === 'first' || installment === 'second' || installment === 'third'
+            ? installment
+            : undefined;
+
         const { buffer, filename } = await bursarService.generateFeeDefaulterLettersPdf({
             studentIds: ids,
             academicYearId: academicYearId !== undefined ? Number(academicYearId) : undefined,
             customMessage,
             dueDateLabel: dueDate,
             exclusionDateLabel: exclusionDate,
+            installment: validInstallment,
         });
 
         res.setHeader('Content-Type', 'application/pdf');

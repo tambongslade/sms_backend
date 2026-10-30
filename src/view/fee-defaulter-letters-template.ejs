@@ -6,7 +6,7 @@
 <style>
     @page {
         size: A4 portrait;
-        margin: 16mm;
+        margin: 10mm;
     }
     * { box-sizing: border-box; }
     body {
@@ -14,35 +14,51 @@
         color: #111827;
         margin: 0;
         padding: 0;
-        font-size: 11pt;
-        line-height: 1.5;
+        font-size: 9pt;
+        line-height: 1.35;
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
     }
-    .letterhead {
-        border-bottom: 1.5px solid #1e3a8a;
-        padding-bottom: 6px;
-        margin-bottom: 16px;
-    }
-    .letterhead img { display: block; width: 100%; max-height: 60px; object-fit: contain; }
 
-    .letter-page {
+    /* One page = 3 stacked, cuttable letter slips. 277mm = 297mm A4 height
+       minus the 10mm top/bottom margins set on page.pdf(). */
+    .sheet {
+        height: 277mm;
+        display: flex;
+        flex-direction: column;
         page-break-after: always;
     }
-    .letter-page:last-child { page-break-after: auto; }
+    .sheet:last-child { page-break-after: auto; }
+
+    .letter-slot {
+        flex: 1 1 33.333%;
+        max-height: 33.333%;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 3mm 4mm;
+        overflow: hidden;
+    }
+    .letter-slot + .letter-slot {
+        border-top: 1px dashed #9ca3af;
+    }
+
+    .letterhead { margin-bottom: 5px; flex: none; }
+    .letterhead img { display: block; width: 100%; max-height: 32px; object-fit: contain; }
 
     .date-line {
         text-align: right;
-        font-size: 9.5pt;
+        font-size: 8pt;
         color: #374151;
-        margin-bottom: 18px;
+        margin-bottom: 6px;
+        flex: none;
     }
-    .salutation { margin-bottom: 10px; }
-    .custom-message { margin-bottom: 10px; white-space: pre-wrap; }
-    .body-text { margin-bottom: 10px; }
+    .salutation { margin-bottom: 4px; flex: none; }
+    .custom-message { margin-bottom: 4px; white-space: pre-wrap; flex: none; }
+    .body-text { margin-bottom: 4px; flex: none; }
     .body-text b { color: #111827; }
-    .closing { margin-top: 10px; }
-    .signature { margin-top: 36px; font-weight: 700; }
+    .closing { margin-top: 2px; flex: none; }
+    .signature { margin-top: 8px; font-weight: 700; flex: none; }
 </style>
 </head>
 <body>
@@ -52,29 +68,33 @@
             return Number(n).toLocaleString('en-GB');
         }
     %>
-    <% letters.forEach(function(l) { %>
-        <section class="letter-page">
-            <div class="letterhead">
-                <% if (letterhead) { %><img src="<%= letterhead %>" alt="" /><% } %>
-            </div>
+    <% pages.forEach(function(group) { %>
+        <section class="sheet">
+            <% group.forEach(function(l) { %>
+                <div class="letter-slot">
+                    <div class="letterhead">
+                        <% if (letterhead) { %><img src="<%= letterhead %>" alt="" /><% } %>
+                    </div>
 
-            <div class="date-line"><%= generatedDate %></div>
+                    <div class="date-line"><%= generatedDate %></div>
 
-            <div class="salutation">Dear Parent,</div>
+                    <div class="salutation">Dear Parent,</div>
 
-            <% if (customMessage) { %>
-                <div class="custom-message"><%= customMessage %></div>
-            <% } %>
+                    <% if (customMessage) { %>
+                        <div class="custom-message"><%= customMessage %></div>
+                    <% } %>
 
-            <div class="body-text">
-                We will like to inform you that your child <b><%= l.studentName %></b> of <b><%= l.className %><% if (l.subClassName) { %> <%= l.subClassName %><% } %></b>
-                is owing <b><%= fmt(l.outstandingAmount) %> FCFA</b><% if (dueDateLabel) { %> to complete the fee which was expected before <b><%= dueDateLabel %></b><% } %>.
-                <% if (exclusionDateLabel) { %>Your child will not be allowed on campus as of <b><%= exclusionDateLabel %></b>.<% } %>
-            </div>
+                    <div class="body-text">
+                        We will like to inform you that your child <b><%= l.studentName %></b> of <b><%= l.className %><% if (l.subClassName) { %> <%= l.subClassName %><% } %></b>
+                        is owing <b><%= fmt(l.displayAmount) %> FCFA</b><% if (installmentLabel) { %> for the <b><%= installmentLabel %></b><% } %><% if (dueDateLabel) { %> which was expected before <b><%= dueDateLabel %></b><% } %>.
+                        <% if (exclusionDateLabel) { %>Your child will not be allowed on campus as of <b><%= exclusionDateLabel %></b>.<% } %>
+                    </div>
 
-            <div class="closing">Endeavour to pay and send justification of payment.</div>
+                    <div class="closing">Endeavour to pay and send justification of payment.</div>
 
-            <div class="signature">The Principal</div>
+                    <div class="signature">The Principal</div>
+                </div>
+            <% }); %>
         </section>
     <% }); %>
 </body>

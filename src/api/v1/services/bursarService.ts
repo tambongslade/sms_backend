@@ -1105,6 +1105,12 @@ function loadLetterheadDataUri(): string {
     return letterheadDataUriCache.dataUri;
 }
 
+const INSTALLMENT_LABELS: Record<'first' | 'second' | 'third', string> = {
+    first: '1st Installment',
+    second: '2nd Installment',
+    third: '3rd Installment',
+};
+
 export interface FeeDefaulterLettersOptions {
     studentIds: number[];
     academicYearId?: number;
@@ -1115,12 +1121,21 @@ export interface FeeDefaulterLettersOptions {
     // Omitted entirely from the letter when not provided.
     dueDateLabel?: string;
     exclusionDateLabel?: string;
+    // The specific installment being chased for this batch. When set, (a) only
+    // students still owing on that installment are kept (same filter as
+    // GET /bursar/defaulters-report?installment=...) and (b) the letter states
+    // the amount still owed on that installment rather than the total balance.
+    installment?: 'first' | 'second' | 'third';
 }
 
+// Letters print 3-up on an A4 portrait page (so a batch of 30 parents is 10
+// sheets, not 30), each a self-contained, cuttable slip with its own letterhead.
+const LETTERS_PER_PAGE = 3;
+
 /**
- * One fee-defaulter letter per selected student (one page each, same letterhead
- * as every other official document), drawing name/class/outstanding amount from
- * the same defaulters aggregation as GET /bursar/defaulters-report.
+ * One fee-defaulter letter per selected student (same letterhead as every other
+ * official document, 3 letters per A4 page), drawing name/class/outstanding
+ * amount from the same defaulters aggregation as GET /bursar/defaulters-report.
  */
 export async function generateFeeDefaulterLettersPdf(
     options: FeeDefaulterLettersOptions
@@ -1132,11 +1147,20 @@ export async function generateFeeDefaulterLettersPdf(
         throw err;
     }
 
-    const report = await getDefaultersReport({ academicYearId: options.academicYearId });
+    const report = await getDefaultersReport({
+        academicYearId: options.academicYearId,
+        installment: options.installment,
+    });
     const byId = new Map<number, any>(report.students.map((s: any) => [s.studentId, s]));
     const letters = studentIds
         .map(id => byId.get(id))
         .filter(Boolean)
+        .map((s: any) => ({
+            ...s,
+            // Amount quoted in the letter: the chosen installment's balance when
+            // one was picked, else the student's total outstanding balance.
+            displayAmount: options.installment ? s.installments[options.installment].outstanding : s.outstandingAmount,
+        }))
         .sort((a: any, b: any) => {
             const byClass = a.className.localeCompare(b.className, undefined, { numeric: true, sensitivity: 'base' });
             if (byClass !== 0) return byClass;
@@ -1144,16 +1168,27 @@ export async function generateFeeDefaulterLettersPdf(
         });
 
     if (letters.length === 0) {
-        const err: any = new Error('None of the selected students currently have an outstanding balance.');
+        const err: any = new Error(
+            options.installment
+                ? 'None of the selected students currently owe on that installment.'
+                : 'None of the selected students currently have an outstanding balance.'
+        );
         err.statusCode = 400;
         throw err;
+    }
+
+    // Group into pages of 3 for the printed layout.
+    const pages: any[][] = [];
+    for (let i = 0; i < letters.length; i += LETTERS_PER_PAGE) {
+        pages.push(letters.slice(i, i + LETTERS_PER_PAGE));
     }
 
     const template = loadFeeDefaulterLettersTemplate();
     const html = ejs.render(template, {
         documentTitle: 'Fee Defaulter Letters',
         letterhead: loadLetterheadDataUri(),
-        letters,
+        pages,
+        installmentLabel: options.installment ? INSTALLMENT_LABELS[options.installment] : '',
         customMessage: (options.customMessage || '').trim(),
         dueDateLabel: (options.dueDateLabel || '').trim(),
         exclusionDateLabel: (options.exclusionDateLabel || '').trim(),
