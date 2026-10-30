@@ -43,8 +43,24 @@
         border-top: 1px dashed #9ca3af;
     }
 
-    .letterhead { margin-bottom: 5px; flex: none; }
-    .letterhead img { display: block; width: 100%; max-height: 32px; object-fit: contain; }
+    /* The letterhead image is embedded here ONCE as a CSS rule and reused by
+       every slot via this class, instead of a separate <img src="data:...">
+       per letter -- repeating a ~28KB base64 string per letter made the HTML
+       document (and Puppeteer's render time) scale badly with batch size,
+       timing out past 30s for anything more than a handful of letters. */
+    <% if (letterhead) { %>
+    .letterhead {
+        margin-bottom: 5px;
+        flex: none;
+        height: 32px;
+        background-image: url(<%- JSON.stringify(letterhead) %>);
+        background-repeat: no-repeat;
+        background-position: left center;
+        background-size: contain;
+    }
+    <% } else { %>
+    .letterhead { margin-bottom: 5px; flex: none; height: 32px; }
+    <% } %>
 
     .date-line {
         text-align: right;
@@ -72,9 +88,7 @@
         <section class="sheet">
             <% group.forEach(function(l) { %>
                 <div class="letter-slot">
-                    <div class="letterhead">
-                        <% if (letterhead) { %><img src="<%= letterhead %>" alt="" /><% } %>
-                    </div>
+                    <div class="letterhead"></div>
 
                     <div class="date-line"><%= generatedDate %></div>
 

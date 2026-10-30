@@ -1197,7 +1197,10 @@ export async function generateFeeDefaulterLettersPdf(
 
     const page = await PuppeteerManager.newPage();
     try {
-        await page.setContent(html, { waitUntil: 'networkidle0' });
+        // Large batches (a whole class or more) still take longer than Puppeteer's
+        // 30s default to lay out; the letterhead is no longer duplicated per letter
+        // (see the template), but this margin is kept as a safety net regardless.
+        await page.setContent(html, { waitUntil: 'networkidle0', timeout: 120000 });
         const pdf = await page.pdf({
             format: 'A4',
             landscape: false,
