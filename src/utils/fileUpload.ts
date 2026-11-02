@@ -46,7 +46,7 @@ export enum PhotoType {
 // Configure dynamic storage based on photo type
 const storage = (multer as any).diskStorage({
     destination: (req: any, file: any, cb: any) => {
-        const photoType = req.body.photoType || req.query.photoType || PhotoType.USER;
+        const photoType = req.photoType || req.body.photoType || req.query.photoType || PhotoType.USER;
 
         let destinationDir = USER_PHOTOS_DIR;
         if (photoType === PhotoType.STUDENT) {
@@ -57,7 +57,7 @@ const storage = (multer as any).diskStorage({
         cb(null, destinationDir);
     },
     filename: (req: any, file: any, cb: any) => {
-        const photoType = req.body.photoType || req.query.photoType || PhotoType.USER;
+        const photoType = req.photoType || req.body.photoType || req.query.photoType || PhotoType.USER;
         const entityId = req.body.entityId || req.params.id || req.params.studentId || req.params.userId;
 
         // Create a unique filename based on entity type and ID

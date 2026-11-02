@@ -336,6 +336,7 @@ router.post('/:id/photo',
     (req: any, res: any, next: any) => {
         // Set photo type for multer
         req.body.photoType = PhotoType.STUDENT;
+        req.photoType = PhotoType.STUDENT; // multer rebuilds req.body, this one survives
         req.params.entityId = req.params.id;
         next();
     },
