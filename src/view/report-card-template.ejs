@@ -45,7 +45,7 @@ const f2 = v => (v === null || v === undefined) ? 'NC' : Number(v).toFixed(2);
     table.marks th { background: #e5e7eb; font-size: 7pt; text-transform: uppercase; }
     table.marks td.subj { text-align: left; }
     table.marks td.subj .t { color: #4b5563; font-size: 6.5pt; }
-    table.marks tr.cat td { background: #f3f4f6; font-weight: 700; text-align: left; text-transform: uppercase; font-size: 7pt; }
+    table.marks tr.cat td { background: #f3f4f6; font-weight: 700; text-align: center; text-transform: uppercase; font-size: 9pt; }
     table.marks tr.sum td { background: #dbeafe; font-weight: 700; }
     table.marks td.nc { color: #b91c1c; font-weight: 700; }
     table.marks td.fail { color: #b91c1c; }
@@ -139,10 +139,14 @@ const f2 = v => (v === null || v === undefined) ? 'NC' : Number(v).toFixed(2);
             <tr class="sum">
                 <td class="subj">Sub-total</td>
                 <% card.partLabels.forEach(function() { %><td></td><% }) %>
-                <td><%= f2(cat.average) %></td>
+                <td></td>
                 <td><%= cat.coefficient %></td>
                 <td><%= f2(cat.weighted) %></td>
-                <td colspan="5"></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td><%= f2(cat.average) %></td>
+                <td></td>
             </tr>
         <% }) %>
         </tbody>

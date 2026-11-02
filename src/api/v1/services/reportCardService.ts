@@ -169,7 +169,7 @@ function buildCard(r: ClassResults, s: StudentResult, nextClass: string | null) 
             appreciation: appreciation(s.average),
             subjectsMarked: s.subjects_with_marks,
             subjectsPassed: s.subjects_passed,
-            points: gradeTally(rows.map(row => row.grade)),
+            points: gradeTally(rows.map(row => row.grade), r.sub_class.class_name),
         },
         pointsLegend,
         termAverages: s.term_averages?.map(t => ({ name: t.term_name, average: t.average, rankLabel: t.rank === null ? 'NC' : ordinal(t.rank) })) ?? null,

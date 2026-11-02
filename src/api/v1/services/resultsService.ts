@@ -122,6 +122,15 @@ export class ResultsError extends Error {
 
 const isForm1or2 = (className: string) => /^FORM\s*[12]\b/i.test(className.trim());
 
+// Printed order on the report card: Science & Technology, then Languages &
+// Literature, then Social Sciences, with anything else (OTHERS, or an
+// unrecognised category) last.
+const CATEGORY_ORDER = ['SCIENCE_AND_TECHNOLOGY', 'LANGUAGES_AND_LITERATURE', 'HUMAN_AND_SOCIAL_SCIENCE'];
+const categoryOrder = (category: string): number => {
+    const i = CATEGORY_ORDER.indexOf(category);
+    return i === -1 ? CATEGORY_ORDER.length : i;
+};
+
 // Staff who hold timetable periods (kept for schedule/workload tracking,
 // attendance, etc.) but whose name must never print as "the subject teacher"
 // on a report card -- e.g. a Dean of Studies who covers occasional periods
@@ -212,21 +221,31 @@ export function pointsTable(className: string): Record<string, number> {
 const GRADE_ORDER = ['A', 'B', 'C', 'D', 'E', 'F'];
 
 /**
- * "5A, 4B, 1C" -- a plain count of every base letter grade a student earned
- * across their graded subjects (A+/B+/D+ count as their base letter), best
- * grade first, every tier shown including D/E/F.
+ * "5A, 4B, 1C = 24/33pts" -- a plain count of every base letter grade a
+ * student earned across their graded subjects (A+/B+/D+ count as their base
+ * letter; every tier shown including D/E/F), followed by the points total:
+ * each grade's points (from pointsTable, 0 for a grade outside it) summed
+ * against the maximum possible (subjects marked x the top grade's points).
  */
-export function gradeTally(grades: string[]): string {
+export function gradeTally(grades: string[], className: string): string {
     const counts = new Map<string, number>();
     for (const g of grades) {
         const base = g.replace('+', '');
         if (!GRADE_ORDER.includes(base)) continue;
         counts.set(base, (counts.get(base) ?? 0) + 1);
     }
-    return GRADE_ORDER
+    const list = GRADE_ORDER
         .filter(letter => (counts.get(letter) ?? 0) > 0)
         .map(letter => `${counts.get(letter)}${letter}`)
         .join(', ');
+    if (grades.length === 0) return list;
+
+    const table = pointsTable(className);
+    const maxPoints = Math.max(...Object.values(table));
+    let total = 0;
+    for (const letter of GRADE_ORDER) total += (counts.get(letter) ?? 0) * (table[letter] ?? 0);
+    const max = grades.length * maxPoints;
+    return `${list} = ${total}/${max}pts`;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +317,7 @@ async function loadBase(subClassId: number, academicYearId: number) {
             coefficient: scs.coefficient,
             teacher_name: teacherNames.get(scs.subject_id)?.join(', ') || null,
         }))
-        .sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+        .sort((a, b) => categoryOrder(a.category) - categoryOrder(b.category) || a.name.localeCompare(b.name));
 
     return { subClass, year, enrollments, subjects };
 }
