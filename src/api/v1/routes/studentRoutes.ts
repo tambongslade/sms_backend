@@ -332,7 +332,7 @@ router.get('/enrollments/:enrollmentId',
 // POST /students/:id/photo - Upload student photo (requires authentication)
 router.post('/:id/photo',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'TEACHER', 'SECRETARY']),
+    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'TEACHER', 'SECRETARY', 'CONTROLLER']),
     (req: any, res: any, next: any) => {
         // Set photo type for multer
         req.body.photoType = PhotoType.STUDENT;
@@ -346,14 +346,14 @@ router.post('/:id/photo',
 // PUT /students/:id/enrollment-photo - Update student enrollment photo
 router.put('/:id/enrollment-photo',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY']),
+    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY', 'CONTROLLER']),
     studentController.updateStudentEnrollmentPhoto
 );
 
 // GET /students/:id/enrollment-photo - Get student enrollment photo info
 router.get('/:id/enrollment-photo',
     authenticate,
-    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'TEACHER', 'PARENT', 'SECRETARY']),
+    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'TEACHER', 'PARENT', 'SECRETARY', 'CONTROLLER']),
     studentController.getStudentEnrollmentPhoto
 );
 
