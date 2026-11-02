@@ -288,6 +288,39 @@ export async function getEntityAuditTrail(
     }
 }
 
+// Get the audit trail for every PaymentTransaction belonging to one student --
+// i.e. the edit history behind that student's payment records, across all their
+// fee rows/years, regardless of who made the edit. Used by the Payment Records
+// tab's per-student panel so an edit/add is immediately traceable.
+export async function getStudentPaymentAuditLog(studentId: number) {
+    const enrollments = await prisma.enrollment.findMany({
+        where: { student_id: studentId },
+        select: {
+            school_fees: {
+                select: { payment_transactions: { select: { id: true } } },
+            },
+        },
+    });
+
+    const paymentIds = enrollments
+        .flatMap(e => e.school_fees)
+        .flatMap(f => f.payment_transactions)
+        .map(t => t.id.toString());
+
+    if (paymentIds.length === 0) return [];
+
+    return prisma.auditLog.findMany({
+        where: {
+            table_name: 'PaymentTransaction',
+            record_id: { in: paymentIds },
+        },
+        include: {
+            user: { select: { id: true, name: true, matricule: true } },
+        },
+        orderBy: { created_at: 'desc' },
+    });
+}
+
 // Get user activity summary
 export async function getUserActivitySummary(
     userId: number,

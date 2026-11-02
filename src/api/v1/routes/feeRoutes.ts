@@ -72,6 +72,11 @@ router.get('/student/:studentId', authenticate, feeController.getStudentFees);
 // GET /fees/student/:studentId/status - Quick fee-paid status for report-card preflight
 router.get('/student/:studentId/status', authenticate, feeController.getStudentFeesStatus);
 
+// GET /fees/student/:studentId/payment-audit-log - Edit history of this student's
+// payment records (who changed what, when) -- backs the Payment Records tab's
+// per-student panel.
+router.get('/student/:studentId/payment-audit-log', authenticate, authorize(VIEW_REFUNDS), feeController.getStudentPaymentAuditLog);
+
 // GET /fees/sub_class/:sub_classId/summary - Get fee summary for a sub_class
 router.get('/sub_class/:id/summary', authenticate, feeController.getSubclassFeesSummary);
 

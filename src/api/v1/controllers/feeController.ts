@@ -10,6 +10,7 @@ import * as feeOutstandingService from '../services/feeOutstandingService';
 import { getAcademicYearId } from '../../../utils/academicYear';
 import { listPaymentMethods } from '../../../utils/paymentMethod';
 import * as financialReportService from '../services/financialReportService';
+import * as auditTrailService from '../services/auditTrailService';
 import { PaginationOptions, FilterOptions } from '../../../utils/pagination';
 
 export const getAllFees = async (req: Request, res: Response) => {
@@ -219,6 +220,20 @@ export const getStudentFeesStatus = async (req: Request, res: Response): Promise
         return res.json({ success: true, data: status });
     } catch (error: any) {
         console.error('Error fetching student fee status:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+/** GET /fees/student/:studentId/payment-audit-log -- edit history of this student's payment records. */
+export const getStudentPaymentAuditLog = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const studentId = parseInt(req.params.studentId);
+        if (isNaN(studentId)) return res.status(400).json({ success: false, error: 'Invalid studentId' });
+
+        const log = await auditTrailService.getStudentPaymentAuditLog(studentId);
+        return res.json({ success: true, data: log });
+    } catch (error: any) {
+        console.error('Error fetching student payment audit log:', error);
         return res.status(500).json({ success: false, error: error.message });
     }
 };

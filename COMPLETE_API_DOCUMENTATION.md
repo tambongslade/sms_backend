@@ -4650,6 +4650,15 @@ Authorization: Bearer <token>
 - `MISSING_CONTROL` / `MISSING_PRIMARY` — one ledger has money, the other has no row.
 - `NO_RECORDS` — neither row exists.
 
+### Get Student Payment Audit Log
+```http
+GET /api/v1/fees/student/:studentId/payment-audit-log
+Authorization: Bearer <token>
+```
+**Authorization:** `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `BURSAR`, `SECRETARY`, `FEE_AUDITOR`
+
+Every `AuditLog` entry (edits made via `PUT /fees/payments/:paymentId` or `PUT /fees/:feeId/payments/:paymentId`) for any `PaymentTransaction` belonging to this student, across all their fee rows/years — newest first. Each entry has `action`, `oldValues`/`newValues` (only the fields that actually changed), `user` (who made the edit), and `createdAt`. Backs the Payment Records tab's per-student panel (Super Manager → Fees Management → Payment Records → search & select a student).
+
 ---
 
 ## Finance Requests (Approval Workflows)
