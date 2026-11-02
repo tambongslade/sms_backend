@@ -184,15 +184,18 @@ export function appreciation(avg: number | null | undefined): string {
     return 'Poor';
 }
 
+// 20-19 A+, 18-17 A, 16-15 B+, 14-13 B, 12 C, 11 D+, 10 D, 9 E, 8-0 F.
 export function grade(avg: number | null | undefined): string {
     if (avg === null || avg === undefined) return 'NC';
-    if (avg >= 18) return 'A+';
-    if (avg >= 16) return 'A';
+    if (avg >= 19) return 'A+';
+    if (avg >= 17) return 'A';
     if (avg >= 15) return 'B+';
-    if (avg >= 14) return 'B';
-    if (avg >= 12) return 'C+';
-    if (avg >= 10) return 'C';
-    return 'D';
+    if (avg >= 13) return 'B';
+    if (avg >= 12) return 'C';
+    if (avg >= 11) return 'D+';
+    if (avg >= 10) return 'D';
+    if (avg >= 9) return 'E';
+    return 'F';
 }
 
 // ---------------------------------------------------------------------------

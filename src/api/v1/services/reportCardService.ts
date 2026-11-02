@@ -173,7 +173,9 @@ function buildCard(r: ClassResults, s: StudentResult, nextClass: string | null) 
             enrolled: r.class_stats.enrolled,
         },
         decision,
-        remark: s.average === null ? '' : appreciation(s.average),
+        // Left blank for the class master to fill in by hand -- no auto-generated
+        // comment ("Very Good", "Good", etc).
+        remark: '',
     };
 }
 
