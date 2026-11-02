@@ -172,7 +172,7 @@ reportCardsRouter.get('/student/:studentId/availability', authenticate, examCont
 reportCardsRouter.post(
     '/student/:studentId/generate',
     authenticate,
-    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL]),
+    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL, Role.SECRETARY]),
     examController.regenerateStudentReportCard
 );
 
@@ -186,7 +186,7 @@ reportCardsRouter.get('/subclass/:subClassId/availability', authenticate, examCo
 reportCardsRouter.post(
     '/subclass/:subClassId/generate',
     authenticate,
-    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL]),
+    authorize([Role.SUPER_MANAGER, Role.PRINCIPAL, Role.VICE_PRINCIPAL, Role.SECRETARY]),
     examController.regenerateSubclassReportCards
 );
 
