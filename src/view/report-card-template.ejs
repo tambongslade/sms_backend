@@ -157,9 +157,9 @@ const f2 = v => (v === null || v === undefined) ? 'NC' : Number(v).toFixed(2);
                 <tr><td>Subjects marked / passed</td><td class="v"><%= card.totals.subjectsMarked %> / <%= card.totals.subjectsPassed %></td></tr>
                 <tr><td>Average</td><td class="v big"><%= f2(card.totals.average) %> / 20</td></tr>
                 <tr><td>Student Rank</td><td class="v"><%= card.totals.rankLabel %><%= card.totals.rank !== null ? ' / ' + card.classStats.ranked : '' %></td></tr>
-                <tr><td>Result</td><td class="v big <%= card.totals.average === null ? '' : (card.totals.average >= passMark ? 'pass' : 'fail') %>"><%= card.totals.average === null ? '' : (card.totals.average >= passMark ? 'PASSED' : 'FAILED') %></td></tr>
-                <tr><td>Appreciation</td><td class="v"><%= card.totals.appreciation %></td></tr>
                 <tr><td>Total Points</td><td class="v"><%= card.totals.points %></td></tr>
+                <tr><td>Decision</td><td class="v big <%= card.totals.average === null ? '' : (card.totals.average >= passMark ? 'pass' : 'fail') %>"><%= card.totals.average === null ? '' : (card.totals.average >= passMark ? 'PASSED' : 'FAILED') %></td></tr>
+                <tr><td>Appreciation</td><td class="v"><%= card.totals.appreciation %></td></tr>
             </table>
         </div>
         <% if (card.termAverages && card.termAverages.length) { %>

@@ -209,35 +209,24 @@ export function pointsTable(className: string): Record<string, number> {
     return isSixthForm(className) ? POINTS_SIXTH : POINTS_FORM1TO5;
 }
 
-/** Points earned for one subject's letter grade ('A+' etc. count as their base letter; 0 if not in the table). */
-export function pointsForGrade(letterGrade: string, className: string): number {
-    return pointsTable(className)[letterGrade.replace('+', '')] ?? 0;
-}
+const GRADE_ORDER = ['A', 'B', 'C', 'D', 'E', 'F'];
 
 /**
- * "5Ax3pts, 4Bx2pts, 1Cx1pts = 24/33pts" -- tallies each student's subject
- * grades into their base letter, multiplies by that letter's points, and
- * states the total against the maximum possible (subjects marked x the
- * highest grade's points).
+ * "5A, 4B, 1C" -- a plain count of every base letter grade a student earned
+ * across their graded subjects (A+/B+/D+ count as their base letter), best
+ * grade first, every tier shown including D/E/F.
  */
-export function pointsSummary(grades: string[], className: string): string {
-    if (grades.length === 0) return '';
-    const table = pointsTable(className);
-    const order = Object.keys(table).sort((a, b) => table[b] - table[a]);
+export function gradeTally(grades: string[]): string {
     const counts = new Map<string, number>();
     for (const g of grades) {
         const base = g.replace('+', '');
-        if (!(base in table)) continue;
+        if (!GRADE_ORDER.includes(base)) continue;
         counts.set(base, (counts.get(base) ?? 0) + 1);
     }
-    const maxPoints = Math.max(...Object.values(table));
-    const parts = order
+    return GRADE_ORDER
         .filter(letter => (counts.get(letter) ?? 0) > 0)
-        .map(letter => `${counts.get(letter)}${letter}x${table[letter]}pts`);
-    const total = order.reduce((sum, letter) => sum + (counts.get(letter) ?? 0) * table[letter], 0);
-    const max = grades.length * maxPoints;
-    if (parts.length === 0) return `0/${max}pts`;
-    return `${parts.join(', ')} = ${total}/${max}pts`;
+        .map(letter => `${counts.get(letter)}${letter}`)
+        .join(', ');
 }
 
 // ---------------------------------------------------------------------------

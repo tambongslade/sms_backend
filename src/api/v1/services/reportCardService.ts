@@ -12,7 +12,7 @@ import {
     ClassResults, StudentResult, ResultsError, PASS_MARK,
     getSequenceResults, getTermResults, getAnnualResults,
     ordinal, grade, appreciation, decisionLabel,
-    pointsTable, pointsSummary,
+    pointsTable, gradeTally,
 } from './resultsService';
 import prisma from '../../../config/db';
 
@@ -169,7 +169,7 @@ function buildCard(r: ClassResults, s: StudentResult, nextClass: string | null) 
             appreciation: appreciation(s.average),
             subjectsMarked: s.subjects_with_marks,
             subjectsPassed: s.subjects_passed,
-            points: pointsSummary(rows.map(row => row.grade), r.sub_class.class_name),
+            points: gradeTally(rows.map(row => row.grade)),
         },
         pointsLegend,
         termAverages: s.term_averages?.map(t => ({ name: t.term_name, average: t.average, rankLabel: t.rank === null ? 'NC' : ordinal(t.rank) })) ?? null,
