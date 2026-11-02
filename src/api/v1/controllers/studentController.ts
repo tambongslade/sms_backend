@@ -395,6 +395,45 @@ export const updateStudentEnrollmentPhoto = async (req: Request, res: Response):
 };
 
 /**
+ * Delete a student's photo for an academic year (defaults to the current one)
+ * @route DELETE /api/v1/students/:id/enrollment-photo
+ */
+export const deleteStudentEnrollmentPhoto = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const studentId = parseInt(req.params.id);
+        if (isNaN(studentId)) {
+            res.status(400).json({ success: false, error: 'Invalid student ID format' });
+            return;
+        }
+
+        const requestedYear = parseInt(String(req.query.academic_year_id ?? req.body?.academic_year_id ?? ''));
+        const academicYearId = !isNaN(requestedYear) ? requestedYear : await getAcademicYearId();
+        if (!academicYearId) {
+            res.status(400).json({ success: false, error: 'No academic year found' });
+            return;
+        }
+
+        const removed = await studentService.clearEnrollmentPhoto(studentId, academicYearId);
+        if (!removed) {
+            res.status(404).json({ success: false, error: 'This student has no photo to delete' });
+            return;
+        }
+
+        // Only remove the picture file when no other enrollment still points at it.
+        const fileDeleted = removed.stillUsed ? false : deletePhotoFile(removed.filename);
+
+        res.json({
+            success: true,
+            message: 'Student photo deleted successfully',
+            data: { studentId, academicYearId, fileDeleted }
+        });
+    } catch (error: any) {
+        console.error('Error deleting student enrollment photo:', error);
+        res.status(500).json({ success: false, error: 'Failed to delete student photo', details: error.message });
+    }
+};
+
+/**
  * Get student enrollment photo info
  * @route GET /api/v1/students/:id/enrollment-photo
  */

@@ -1269,6 +1269,28 @@ export async function updateEnrollmentPhoto(
 }
 
 /**
+ * Remove a student's photo for one academic year. Only the enrollment's link to the picture is cleared;
+ * the caller decides whether the file itself can go (see removeEnrollmentPhoto in the controller).
+ * Returns the filename that was removed, or null when the enrollment had no photo.
+ */
+export async function clearEnrollmentPhoto(studentId: number, academicYearId: number): Promise<{ filename: string; stillUsed: boolean } | null> {
+    const enrollment = await prisma.enrollment.findUnique({
+        where: { student_id_academic_year_id: { student_id: studentId, academic_year_id: academicYearId } },
+        select: { id: true, photo: true }
+    });
+    if (!enrollment) {
+        throw new Error(`No enrollment found for student ${studentId} in academic year ${academicYearId}`);
+    }
+    if (!enrollment.photo) return null;
+
+    await prisma.enrollment.update({ where: { id: enrollment.id }, data: { photo: null } });
+
+    // The same file can be shared by another enrollment (e.g. a photo reused for a later year).
+    const stillUsed = (await prisma.enrollment.count({ where: { photo: enrollment.photo } })) > 0;
+    return { filename: enrollment.photo, stillUsed };
+}
+
+/**
  * Get student enrollment photo information.
  *
  * Resolution order:

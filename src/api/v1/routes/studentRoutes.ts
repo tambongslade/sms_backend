@@ -350,6 +350,13 @@ router.put('/:id/enrollment-photo',
     studentController.updateStudentEnrollmentPhoto
 );
 
+// DELETE /students/:id/enrollment-photo - Delete the student's photo for an academic year
+router.delete('/:id/enrollment-photo',
+    authenticate,
+    authorize(['SUPER_MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'BURSAR', 'SECRETARY', 'CONTROLLER']),
+    studentController.deleteStudentEnrollmentPhoto
+);
+
 // GET /students/:id/enrollment-photo - Get student enrollment photo info
 router.get('/:id/enrollment-photo',
     authenticate,
