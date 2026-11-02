@@ -159,6 +159,7 @@ const f2 = v => (v === null || v === undefined) ? 'NC' : Number(v).toFixed(2);
                 <tr><td>Student Rank</td><td class="v"><%= card.totals.rankLabel %><%= card.totals.rank !== null ? ' / ' + card.classStats.ranked : '' %></td></tr>
                 <tr><td>Result</td><td class="v big <%= card.totals.average === null ? '' : (card.totals.average >= passMark ? 'pass' : 'fail') %>"><%= card.totals.average === null ? '' : (card.totals.average >= passMark ? 'PASSED' : 'FAILED') %></td></tr>
                 <tr><td>Appreciation</td><td class="v"><%= card.totals.appreciation %></td></tr>
+                <tr><td>Total Points</td><td class="v"><%= card.totals.points %></td></tr>
             </table>
         </div>
         <% if (card.termAverages && card.termAverages.length) { %>
@@ -192,7 +193,7 @@ const f2 = v => (v === null || v === undefined) ? 'NC' : Number(v).toFixed(2);
         <div class="s">Parent's signature</div>
         <div class="s">The Principal</div>
     </div>
-    <div class="note">Grading: 20-19 A+ &middot; 18-17 A &middot; 16-15 B+ &middot; 14-13 B &middot; 12 C &middot; 11 D+ &middot; 10 D &middot; 9 E &middot; 8-0 F. Generated <%= generatedAt %>.</div>
+    <div class="note">Grading: 20-19 A+ &middot; 18-17 A &middot; 16-15 B+ &middot; 14-13 B &middot; 12 C &middot; 11 D+ &middot; 10 D &middot; 9 E &middot; 8-0 F. Points: <%= card.pointsLegend %>. Generated <%= generatedAt %>.</div>
 </section>
 <% }) %>
 </body>

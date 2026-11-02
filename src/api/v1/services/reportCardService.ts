@@ -12,6 +12,7 @@ import {
     ClassResults, StudentResult, ResultsError, PASS_MARK,
     getSequenceResults, getTermResults, getAnnualResults,
     ordinal, grade, appreciation, decisionLabel,
+    pointsTable, pointsSummary,
 } from './resultsService';
 import prisma from '../../../config/db';
 
@@ -126,6 +127,12 @@ function buildCard(r: ClassResults, s: StudentResult, nextClass: string | null) 
         };
     });
 
+    const table = pointsTable(r.sub_class.class_name);
+    const pointsLegend = Object.entries(table)
+        .sort((a, b) => b[1] - a[1])
+        .map(([letter, pts]) => `${letter}=${pts}`)
+        .join(', ');
+
     let decision: string | null = null;
     if (r.scope.kind === 'ANNUAL') {
         const label = decisionLabel(s.average, r.sub_class.pass_mark, !!r.sub_class.next_class_id, r.sub_class.class_name);
@@ -162,7 +169,9 @@ function buildCard(r: ClassResults, s: StudentResult, nextClass: string | null) 
             appreciation: appreciation(s.average),
             subjectsMarked: s.subjects_with_marks,
             subjectsPassed: s.subjects_passed,
+            points: pointsSummary(rows.map(row => row.grade), r.sub_class.class_name),
         },
+        pointsLegend,
         termAverages: s.term_averages?.map(t => ({ name: t.term_name, average: t.average, rankLabel: t.rank === null ? 'NC' : ordinal(t.rank) })) ?? null,
         classStats: {
             classAverage: r.class_stats.class_average,

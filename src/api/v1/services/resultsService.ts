@@ -198,6 +198,48 @@ export function grade(avg: number | null | undefined): string {
     return 'F';
 }
 
+export const isSixthForm = (className: string) => /\b(LOWER|UPPER)\s+SIXTH\b/i.test(className.trim());
+
+// "Number of points" per subject grade (A+/B+/D+ count as their base letter):
+// Form 1-5 only rewards A/B/C; Lower/Upper Sixth rewards A through E.
+const POINTS_FORM1TO5: Record<string, number> = { A: 3, B: 2, C: 1 };
+const POINTS_SIXTH: Record<string, number> = { A: 5, B: 4, C: 3, D: 2, E: 1 };
+
+export function pointsTable(className: string): Record<string, number> {
+    return isSixthForm(className) ? POINTS_SIXTH : POINTS_FORM1TO5;
+}
+
+/** Points earned for one subject's letter grade ('A+' etc. count as their base letter; 0 if not in the table). */
+export function pointsForGrade(letterGrade: string, className: string): number {
+    return pointsTable(className)[letterGrade.replace('+', '')] ?? 0;
+}
+
+/**
+ * "5Ax3pts, 4Bx2pts, 1Cx1pts = 24/33pts" -- tallies each student's subject
+ * grades into their base letter, multiplies by that letter's points, and
+ * states the total against the maximum possible (subjects marked x the
+ * highest grade's points).
+ */
+export function pointsSummary(grades: string[], className: string): string {
+    if (grades.length === 0) return '';
+    const table = pointsTable(className);
+    const order = Object.keys(table).sort((a, b) => table[b] - table[a]);
+    const counts = new Map<string, number>();
+    for (const g of grades) {
+        const base = g.replace('+', '');
+        if (!(base in table)) continue;
+        counts.set(base, (counts.get(base) ?? 0) + 1);
+    }
+    const maxPoints = Math.max(...Object.values(table));
+    const parts = order
+        .filter(letter => (counts.get(letter) ?? 0) > 0)
+        .map(letter => `${counts.get(letter)}${letter}x${table[letter]}pts`);
+    const total = order.reduce((sum, letter) => sum + (counts.get(letter) ?? 0) * table[letter], 0);
+    const max = grades.length * maxPoints;
+    if (parts.length === 0) return `0/${max}pts`;
+    return `${parts.join(', ')} = ${total}/${max}pts`;
+}
+
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
