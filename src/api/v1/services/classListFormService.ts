@@ -54,6 +54,15 @@ export async function generateClassListPdf(params: {
     blankColumns?: number;
     orientation?: 'portrait' | 'landscape';
     namesOnly?: boolean;
+    /** Replaces the "Class List" heading printed at the top of the page. */
+    documentTitle?: string;
+    /**
+     * One entry per extra column, same indexing as `columns`. A non-empty entry
+     * overrides that column's header text -- the fixed field label (or the blank
+     * header for an 'empty' column) otherwise. Lets the secretary rename a column
+     * ("Matricule" -> "ID") or title a hand-filled column ("Remarks", "Signature").
+     */
+    columnLabels?: string[];
 }): Promise<{ buffer: Buffer; filename: string }> {
     const yearId = await getAcademicYearId(params.academicYearId);
     if (!yearId) throw new Error('No academic year found');
@@ -112,8 +121,13 @@ export async function generateClassListPdf(params: {
     const rows = enrollments
         .map(e => ({ name: e.student.name, cells: kinds.map(k => cell(e, k)) }))
         .sort((a, b) => a.name.localeCompare(b.name));
-    const headers = kinds.map(k => (k === 'empty' ? '' : CLASS_LIST_FIELDS[k]));
+    const headers = kinds.map((k, i) => {
+        const custom = params.columnLabels?.[i]?.trim();
+        if (custom) return custom.slice(0, 40);
+        return k === 'empty' ? '' : CLASS_LIST_FIELDS[k];
+    });
     const orientation = params.orientation === 'portrait' ? 'portrait' : 'landscape';
+    const documentTitle = (params.documentTitle || '').trim().slice(0, 80) || 'Class List';
 
     const { html: template, logo } = assets();
     const html = ejs.render(template, {
@@ -123,6 +137,7 @@ export async function generateClassListPdf(params: {
         headers,
         orientation,
         letterhead: logo,
+        documentTitle,
         generatedAt: new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }),
     });
 

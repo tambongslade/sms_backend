@@ -9339,6 +9339,42 @@ Printable mark sheet for one subject in one subclass, with the school letterhead
 - `404` – subject is not assigned to the subclass
 - `500` – PDF generation failed
 
+### Download Class List (PDF)
+```http
+GET /api/v1/exams/classlist/pdf?subClassId=1
+Authorization: Bearer <token>
+```
+
+Printable class list for one subclass, on the school letterhead, landscape or portrait. One row per enrolled student (withdrawn excluded, sorted by name): `No.` and `Name` always print; every extra column is either left blank (to fill in by hand) or shows a chosen roster detail.
+
+**Authorization:** SUPER_MANAGER, MANAGER, PRINCIPAL, VICE_PRINCIPAL, DEAN_OF_STUDIES, SECRETARY, BURSAR.
+
+**Query Parameters:**
+```typescript
+{
+  subClassId: number;        // required
+  academicYearId?: number;   // defaults to the current academic year
+  orientation?: 'landscape' | 'portrait'; // default landscape
+  namesOnly?: boolean;       // true = no extra columns at all (default false)
+  columns?: number;          // how many blank extra columns, when `fields` is not given (0-20, default 5)
+  fields?: string;           // comma-separated list, one per extra column: 'empty' or a field key below
+                              //   (matricule, sex, date_of_birth, place_of_birth, residence, repeater,
+                              //    student_type, parent_name, parent_phone). Takes precedence over `columns`.
+  documentTitle?: string;    // replaces the "Class List" heading at the top of the page (max 80 chars)
+  columnLabels?: string;     // JSON-stringified array of strings, same length/order as `fields` -- a
+                              //   non-empty entry overrides that column's header text (e.g. rename
+                              //   "Matricule" to "ID", or title a blank column "Remarks"). Example:
+                              //   columnLabels=["ID","","Remarks"]
+}
+```
+
+**Response (200):** `application/pdf` file download (`Content-Disposition: attachment; filename="class-list_<Class>.pdf"`).
+
+**Errors:**
+- `400` – `subClassId` missing or not a number
+- `404` – subclass not found
+- `500` – PDF generation failed
+
 ---
 
 ## Class and Subject Management

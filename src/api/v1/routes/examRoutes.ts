@@ -59,6 +59,13 @@ router.get(
             }
             const academicYearId = req.finalQuery.academic_year_id ? parseInt(req.finalQuery.academic_year_id as string) : undefined;
             const blankColumns = req.finalQuery.columns !== undefined ? parseInt(req.finalQuery.columns as string) : undefined;
+            let columnLabels: string[] | undefined;
+            if (req.finalQuery.column_labels !== undefined) {
+                try {
+                    const parsed = JSON.parse(String(req.finalQuery.column_labels));
+                    if (Array.isArray(parsed)) columnLabels = parsed.map(v => String(v ?? ''));
+                } catch { /* malformed -- fall back to default headers */ }
+            }
             const { buffer, filename } = await generateClassListPdf({
                 subClassId,
                 academicYearId,
@@ -66,6 +73,8 @@ router.get(
                 columns: req.finalQuery.fields !== undefined ? String(req.finalQuery.fields).split(',').map(s => s.trim()).filter(Boolean) : undefined,
                 orientation: String(req.finalQuery.orientation) === 'portrait' ? 'portrait' : 'landscape',
                 namesOnly: String(req.finalQuery.names_only) === 'true',
+                documentTitle: req.finalQuery.document_title !== undefined ? String(req.finalQuery.document_title) : undefined,
+                columnLabels,
             });
             res.setHeader('Content-Type', 'application/pdf');
             res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

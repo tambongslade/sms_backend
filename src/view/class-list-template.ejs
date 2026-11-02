@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Class List - <%= className %></title>
+<title><%= documentTitle %> - <%= className %></title>
 <style>
     @page { size: A4 <%= orientation %>; margin: 8mm; }
     * { box-sizing: border-box; }
@@ -25,7 +25,7 @@
 </head>
 <body>
     <div class="banner"><% if (letterhead) { %><img src="<%= letterhead %>" alt="" /><% } %></div>
-    <h1 class="title">Class List</h1>
+    <h1 class="title"><%= documentTitle %></h1>
     <div class="fields">
         <div><strong>Class:</strong> <%= className %></div>
         <div><strong>Academic year:</strong> <%= academicYearName %></div>
