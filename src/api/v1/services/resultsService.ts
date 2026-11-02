@@ -122,6 +122,16 @@ export class ResultsError extends Error {
 
 const isForm1or2 = (className: string) => /^FORM\s*[12]\b/i.test(className.trim());
 
+// Staff who hold timetable periods (kept for schedule/workload tracking,
+// attendance, etc.) but whose name must never print as "the subject teacher"
+// on a report card -- e.g. a Dean of Studies who covers occasional periods
+// in classes that aren't really theirs. Add a user id here, not a role: the
+// same person may legitimately teach elsewhere, and other staff with the
+// same role may genuinely be a class's real teacher.
+const TEACHER_NAME_SUPPRESSED_USER_IDS = new Set<number>([
+    527, // Lawson Metoko Nokwa, Dean of Studies
+]);
+
 /** Fewest subjects with marks a student needs to be given an average and a rank. */
 export function minSubjectsForAverage(className: string): number {
     const name = className.trim();
@@ -221,9 +231,16 @@ async function loadBase(subClassId: number, academicYearId: number) {
             },
         }),
         // The subject teacher printed on cards is whoever the timetable assigns
-        // to this subject in this subclass this year (full name).
+        // to this subject in this subclass this year (full name) -- except the
+        // users in TEACHER_NAME_SUPPRESSED_USER_IDS, who cover periods for
+        // schedule/workload purposes but should never print as "the teacher"
+        // on an official report card.
         prisma.teacherPeriod.findMany({
-            where: { sub_class_id: subClassId, academic_year_id: academicYearId, teacher_id: { not: null } },
+            where: {
+                sub_class_id: subClassId,
+                academic_year_id: academicYearId,
+                teacher_id: { not: null, notIn: [...TEACHER_NAME_SUPPRESSED_USER_IDS] },
+            },
             distinct: ['subject_id', 'teacher_id'],
             select: { subject_id: true, teacher: { select: { name: true } } },
         }),
