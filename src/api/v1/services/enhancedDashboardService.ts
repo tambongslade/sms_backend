@@ -3,6 +3,7 @@ import prisma from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
 import { SUBCLASS_MAX_STUDENTS, getClassMaxStudents } from '../../../utils/capacity';
 import { activeEnrollmentWhere, countActiveStudents } from '../../../utils/schoolCounts';
+import { ACTIVE_FEE_ROW_WHERE } from './feeOutstandingService';
 
 /**
  * Enhanced Super Manager Dashboard with comprehensive analytics
@@ -50,9 +51,10 @@ export async function getEnhancedSuperManagerDashboard(academicYearId?: number):
  */
 async function getSchoolOverview(yearId?: number) {
     const [financialData, disciplineData, teacherData] = await Promise.all([
-        // Financial Overview
+        // Financial Overview. Same population rule as feeOutstandingService.ts
+        // (M8): withdrawn students excluded from every fee report/dashboard.
         prisma.schoolFees.aggregate({
-            where: yearId ? { academic_year_id: yearId } : undefined,
+            where: { AND: [...(yearId ? [{ academic_year_id: yearId }] : []), ACTIVE_FEE_ROW_WHERE] },
             _sum: { amount_expected: true, amount_paid: true },
             _count: { id: true }
         }),
@@ -108,8 +110,9 @@ async function getSchoolOverview(yearId?: number) {
  * First-term expected also absorbs miscellaneous_fee + new_or_old student_fee (billed upfront).
  */
 async function getSchoolFeesBreakdown(yearId?: number) {
+    // Same population rule as feeOutstandingService.ts (M8): withdrawn students excluded.
     const fees = await prisma.schoolFees.findMany({
-        where: yearId ? { academic_year_id: yearId } : undefined,
+        where: { AND: [...(yearId ? [{ academic_year_id: yearId }] : []), ACTIVE_FEE_ROW_WHERE] },
         select: {
             amount_expected: true,
             amount_paid: true,
@@ -131,14 +134,10 @@ async function getSchoolFeesBreakdown(yearId?: number) {
         }
     });
 
-    let totalExpected = 0;
-    let totalCollected = 0;
-    let firstExpected = 0;
-    let firstCollected = 0;
-    let secondExpected = 0;
-    let secondCollected = 0;
-    let thirdExpected = 0;
-    let thirdCollected = 0;
+    let totalExpected = 0, totalCollected = 0, totalRemaining = 0, totalOverpayment = 0;
+    let firstExpected = 0, firstCollected = 0, firstRemaining = 0;
+    let secondExpected = 0, secondCollected = 0, secondRemaining = 0;
+    let thirdExpected = 0, thirdCollected = 0, thirdRemaining = 0;
 
     for (const fee of fees) {
         const cls = fee.enrollment?.class;
@@ -161,26 +160,34 @@ async function getSchoolFeesBreakdown(yearId?: number) {
 
         totalExpected += fee.amount_expected;
         totalCollected += fee.amount_paid;
+        // Clamped per fee row and summed separately, same rule as
+        // feeOutstandingService.ts: one student's overpayment never offsets
+        // another's debt.
+        totalRemaining += Math.max(fee.amount_expected - fee.amount_paid, 0);
+        totalOverpayment += Math.max(fee.amount_paid - fee.amount_expected, 0);
         firstExpected += firstBucket;
         firstCollected += paidFirst;
+        firstRemaining += Math.max(firstBucket - paidFirst, 0);
         secondExpected += secondBucket;
         secondCollected += paidSecond;
+        secondRemaining += Math.max(secondBucket - paidSecond, 0);
         thirdExpected += thirdBucket;
         thirdCollected += paidThird;
+        thirdRemaining += Math.max(thirdBucket - paidThird, 0);
     }
 
-    const bucket = (expected: number, collected: number) => ({
+    const bucket = (expected: number, collected: number, remaining: number) => ({
         expected,
         collected,
-        remaining: Math.max(expected - collected, 0),
+        remaining,
         collectionRate: expected > 0 ? (collected / expected) * 100 : 0
     });
 
     return {
-        total: bucket(totalExpected, totalCollected),
-        firstTerm: bucket(firstExpected, firstCollected),
-        secondTerm: bucket(secondExpected, secondCollected),
-        thirdTerm: bucket(thirdExpected, thirdCollected)
+        total: { ...bucket(totalExpected, totalCollected, totalRemaining), overpayment: totalOverpayment },
+        firstTerm: bucket(firstExpected, firstCollected, firstRemaining),
+        secondTerm: bucket(secondExpected, secondCollected, secondRemaining),
+        thirdTerm: bucket(thirdExpected, thirdCollected, thirdRemaining)
     };
 }
 

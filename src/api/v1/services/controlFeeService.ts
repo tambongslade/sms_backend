@@ -702,12 +702,14 @@ export async function getSubclassControlFeesSummary(sub_classId: number, academi
         throw new Error("Academic year ID is required to fetch subclass control fees summary, but none was provided or found.");
     }
 
-    // Get all control fees for students in the specified sub_class for the academic year
+    // Get all control fees for students in the specified sub_class for the academic
+    // year. Same withdrawn-student exclusion as the main fee rules (feeOutstandingService.ts).
     const fees = await prisma.controlSchoolFees.findMany({
         where: {
             academic_year_id: yearId,
             enrollment: {
-                sub_class_id: sub_classId
+                sub_class_id: sub_classId,
+                student: { status: { not: 'WITHDRAWN' } },
             }
         },
         include: {
@@ -717,7 +719,10 @@ export async function getSubclassControlFeesSummary(sub_classId: number, academi
 
     const totalExpected = fees.reduce((sum, fee) => sum + fee.amount_expected, 0);
     const totalPaid = fees.reduce((sum, fee) => sum + fee.amount_paid, 0);
-    const outstanding = totalExpected - totalPaid;
+    // Clamped per fee row and summed separately: one student's overpayment never
+    // offsets another's debt.
+    const outstanding = fees.reduce((sum, fee) => sum + Math.max(fee.amount_expected - fee.amount_paid, 0), 0);
+    const overpayment = fees.reduce((sum, fee) => sum + Math.max(fee.amount_paid - fee.amount_expected, 0), 0);
     const paymentPercentage = totalExpected > 0 ? (totalPaid / totalExpected) * 100 : 0;
 
     // Get sub_class and class names for context
@@ -735,6 +740,7 @@ export async function getSubclassControlFeesSummary(sub_classId: number, academi
         totalExpected: totalExpected,
         totalPaid: totalPaid,
         outstanding: outstanding,
+        overpayment: overpayment,
         paymentPercentage: parseFloat(paymentPercentage.toFixed(2))
     };
 }
@@ -840,9 +846,11 @@ export async function exportControlFeeReports(
             throw new Error("No academic year found and none provided");
         }
 
-        // Build where clause based on the new filters
+        // Build where clause based on the new filters. Same withdrawn-student
+        // exclusion as the main fee rules (feeOutstandingService.ts).
         const where: any = {
-            academic_year_id: yearId
+            academic_year_id: yearId,
+            enrollment: { student: { status: { not: 'WITHDRAWN' } } },
         };
 
         if (subClassId) {
@@ -867,6 +875,7 @@ export async function exportControlFeeReports(
             where.enrollment = {
                 ...(where.enrollment || {}),
                 student: {
+                    status: { not: 'WITHDRAWN' },
                     OR: [
                         { name: { contains: studentIdentifier, mode: 'insensitive' } },
                         { matricule: { contains: studentIdentifier, mode: 'insensitive' } }
@@ -924,7 +933,10 @@ export async function exportControlFeeReports(
             subClassName: fee.enrollment.sub_class?.name || 'No Subclass',
             expectedAmount: parseFloat(fee.amount_expected.toFixed(2)),
             paidAmount: parseFloat(fee.amount_paid.toFixed(2)),
-            outstanding: parseFloat((fee.amount_expected - fee.amount_paid).toFixed(2)),
+            // Clamped, same rule as feeOutstandingService.ts: overpayment is tracked
+            // separately rather than shown as a negative outstanding balance.
+            outstanding: parseFloat(Math.max(fee.amount_expected - fee.amount_paid, 0).toFixed(2)),
+            overpayment: parseFloat(Math.max(fee.amount_paid - fee.amount_expected, 0).toFixed(2)),
             paymentPercentage: fee.amount_expected > 0 ?
                 parseFloat(((fee.amount_paid / fee.amount_expected) * 100).toFixed(2)) : 0,
             dueDate: fee.due_date.toISOString().split('T')[0], // Format date

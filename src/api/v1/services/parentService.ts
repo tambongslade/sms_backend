@@ -17,6 +17,7 @@ export interface ParentDashboardData {
     childrenEnrolled: number;
     pendingFees: number;
     totalFeesOwed: number;
+    totalFeesOverpayment: number;
     latestGrades: number;
     disciplineIssues: number;
     unreadMessages: number;
@@ -35,6 +36,8 @@ export interface ChildOverview {
     attendance_rate: number;
     latest_marks: MarkSummary[];
     pending_fees: number;
+    /** Paid beyond what's expected -- kept separate, never nets against pending_fees. */
+    fees_overpayment: number;
     discipline_issues: number;
     recent_absences: number;
 }
@@ -71,6 +74,8 @@ export interface ChildDetails {
         total_expected: number;
         total_paid: number;
         outstanding_balance: number;
+        /** Paid beyond what's expected -- kept separate, never reduces outstanding_balance. */
+        overpayment: number;
         due_date?: Date | null;
         days_overdue?: number;
         urgency?: 'PAID' | 'OK' | 'DUE_SOON' | 'OVERDUE';
@@ -239,6 +244,7 @@ export async function getParentDashboard(parentId: number, academicYearId?: numb
 
         const children: ChildOverview[] = [];
         let totalFeesOwed = 0;
+        let totalFeesOverpayment = 0;
         let totalDisciplineIssues = 0;
         let totalLatestGrades = 0;
 
@@ -258,8 +264,13 @@ export async function getParentDashboard(parentId: number, academicYearId?: numb
                 date: mark.created_at
             })) || [];
 
+            // Balance and overpayment are clamped per fee row and summed separately --
+            // never netted against each other, same rule as feeOutstandingService.ts.
             const pendingFees = currentEnrollment?.school_fees?.reduce((total, fee) =>
-                total + (fee.amount_expected - fee.amount_paid), 0
+                total + Math.max(fee.amount_expected - fee.amount_paid, 0), 0
+            ) || 0;
+            const feesOverpayment = currentEnrollment?.school_fees?.reduce((total, fee) =>
+                total + Math.max(fee.amount_paid - fee.amount_expected, 0), 0
             ) || 0;
 
             const disciplineIssues = currentEnrollment?.discipline_issues?.length || 0;
@@ -278,12 +289,14 @@ export async function getParentDashboard(parentId: number, academicYearId?: numb
                 attendance_rate: attendanceRate,
                 latest_marks: latestMarks,
                 pending_fees: pendingFees,
+                fees_overpayment: feesOverpayment,
                 discipline_issues: disciplineIssues,
                 recent_absences: recentAbsences
             };
 
             children.push(childOverview);
             totalFeesOwed += pendingFees;
+            totalFeesOverpayment += feesOverpayment;
             totalDisciplineIssues += disciplineIssues;
             totalLatestGrades += latestMarks.length;
         }
@@ -299,6 +312,7 @@ export async function getParentDashboard(parentId: number, academicYearId?: numb
             childrenEnrolled: children.filter(child => child.enrollment_status === 'ASSIGNED_TO_CLASS').length,
             pendingFees: children.filter(child => child.pending_fees > 0).length,
             totalFeesOwed,
+            totalFeesOverpayment,
             latestGrades: totalLatestGrades,
             disciplineIssues: totalDisciplineIssues,
             unreadMessages,
@@ -1418,7 +1432,7 @@ export async function listChildReportCardsByMatricule(
 export async function getChildDashboardByMatricule(
     matricule: string,
     academicYearId?: number
-): Promise<ChildOverview & { fees: { totalExpected: number; totalPaid: number; outstanding: number } }> {
+): Promise<ChildOverview & { fees: { totalExpected: number; totalPaid: number; outstanding: number; overpayment: number } }> {
     const student = await resolveStudentByMatricule(matricule);
     const yearId = academicYearId ?? (await getCurrentAcademicYear())?.id;
 
@@ -1459,7 +1473,10 @@ export async function getChildDashboardByMatricule(
 
     const totalExpected = enrollment?.school_fees?.reduce((s, f) => s + f.amount_expected, 0) || 0;
     const totalPaid = enrollment?.school_fees?.reduce((s, f) => s + f.amount_paid, 0) || 0;
-    const outstanding = totalExpected - totalPaid;
+    // Clamped, same rule as feeOutstandingService.ts: overpayment is tracked
+    // separately and never reduces the outstanding balance below 0.
+    const outstanding = Math.max(totalExpected - totalPaid, 0);
+    const overpayment = Math.max(totalPaid - totalExpected, 0);
 
     return {
         id: student.id,
@@ -1472,9 +1489,10 @@ export async function getChildDashboardByMatricule(
         attendance_rate: Number(attendanceRate.toFixed(1)),
         latest_marks: latestMarks,
         pending_fees: outstanding,
+        fees_overpayment: overpayment,
         discipline_issues: enrollment?.discipline_issues?.length || 0,
         recent_absences: recentAbsences,
-        fees: { totalExpected, totalPaid, outstanding }
+        fees: { totalExpected, totalPaid, outstanding, overpayment }
     };
 }
 
@@ -1586,7 +1604,10 @@ export async function getChildDetailsByMatricule(
     const allFees = currentEnrollment?.school_fees ?? [];
     const totalExpected = allFees.reduce((s, f) => s + (f.amount_expected || 0), 0);
     const totalPaid = allFees.reduce((s, f) => s + (f.amount_paid || 0), 0);
-    const outstandingBalance = totalExpected - totalPaid;
+    // Clamped, same rule as feeOutstandingService.ts: overpayment is tracked
+    // separately and never reduces the outstanding balance below 0.
+    const outstandingBalance = Math.max(totalExpected - totalPaid, 0);
+    const feesOverpayment = Math.max(totalPaid - totalExpected, 0);
     // Earliest still-outstanding due date across all fee rows drives urgency.
     const dueDate = allFees
         .filter(f => (f.amount_expected || 0) - (f.amount_paid || 0) > 0 && f.due_date)
@@ -1680,6 +1701,7 @@ export async function getChildDetailsByMatricule(
             total_expected: totalExpected,
             total_paid: totalPaid,
             outstanding_balance: outstandingBalance,
+            overpayment: feesOverpayment,
             due_date: dueDate,
             days_overdue: daysOverdue,
             urgency: feeUrgency,
@@ -2481,6 +2503,7 @@ export async function getLinkedChildrenForParent(parentId: number, academicYearI
     let familyTotalExpected = 0;
     let familyTotalPaid = 0;
     let familyTotalOutstanding = 0;
+    let familyTotalOverpayment = 0;
     let familyActiveDisciplineIssues = 0;
     let familyUnexcusedAbsences = 0;
 
@@ -2491,12 +2514,14 @@ export async function getLinkedChildrenForParent(parentId: number, academicYearI
         const totalExpected = fees?.amount_expected ?? 0;
         const totalPaid = fees?.amount_paid ?? 0;
         const outstanding = Math.max(0, totalExpected - totalPaid);
+        const overpayment = Math.max(0, totalPaid - totalExpected);
         const unexcused = enr?.absences?.filter(a => !a.is_excused).length ?? 0;
         const disciplineIssues = enr?.discipline_issues?.length ?? 0;
 
         familyTotalExpected += totalExpected;
         familyTotalPaid += totalPaid;
         familyTotalOutstanding += outstanding;
+        familyTotalOverpayment += overpayment;
         familyActiveDisciplineIssues += disciplineIssues;
         familyUnexcusedAbsences += unexcused;
 
@@ -2522,6 +2547,7 @@ export async function getLinkedChildrenForParent(parentId: number, academicYearI
                 total_expected: totalExpected,
                 total_paid: totalPaid,
                 outstanding,
+                overpayment,
                 due_date: dueDate,
                 days_overdue: daysOverdue,
                 urgency: outstanding <= 0
@@ -2550,6 +2576,7 @@ export async function getLinkedChildrenForParent(parentId: number, academicYearI
                 total_expected: familyTotalExpected,
                 total_paid: familyTotalPaid,
                 outstanding: familyTotalOutstanding,
+                overpayment: familyTotalOverpayment,
             },
             attendance: {
                 total_unexcused_absences: familyUnexcusedAbsences,

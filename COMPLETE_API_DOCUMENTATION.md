@@ -3966,23 +3966,7 @@ All money figures use the shared outstanding rule (see "Outstanding Fees Summary
 }
 ```
 
-### Create Fee
-```http
-POST /api/v1/fees
-Authorization: Bearer <token>
-```
-
-**Request Body:**
-```typescript
-{
-  enrollmentId: number;
-  amountExpected: number;
-  feeType?: string;
-  description?: string;
-  dueDate?: string;       // "YYYY-MM-DD"
-  academicYearId?: number;
-}
-```
+> **Removed:** `POST /api/v1/fees` (create) and `PUT /api/v1/fees/:id` (update) let a caller set `amountPaid` directly, bypassing the payment ledger. Fees are created automatically via the enrollment flow; use `POST /fees/:feeId/payments` below to record a payment, and `POST /fees/:id/deduction` to correct `amountExpected`.
 
 ### Record Payment
 ```http
@@ -4304,90 +4288,11 @@ Retrieves details of a specific fee record by its ID.
 }
 ```
 
-### Create a Fee Record
-```http
-POST /api/v1/fees
-Authorization: Bearer <token>
-```
-
-**Description:**
-Creates a new fee record for a student.
-
-**Authorization:**
-- `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `BURSAR`
-
-**Request Body:**
-```typescript
-{
-  amountExpected: number;
-  amountPaid: number;
-  dueDate: string; // YYYY-MM-DD
-  enrollmentId?: number; // Required if studentId is not provided
-  studentId?: number; // Required if enrollmentId is not provided
-  academicYearId?: number; // Optional: The ID of the academic year. Defaults to current year.
-  paymentMethod?: "EXPRESS_UNION" | "CCA" | "F3DC"; // Optional: Default payment method for the fee.
-}
-```
-
-**Response (Success - 201):**
-```typescript
-{
-  success: true;
-  data: {
-    id: number;
-    amountExpected: number;
-    amountPaid: number;
-    dueDate: string;
-    enrollmentId: number;
-    academicYearId: number;
-    createdAt: string;
-    updatedAt: string;
-  };
-}
-```
-
-### Update a Fee Record
-```http
-PUT /api/v1/fees/:id
-Authorization: Bearer <token>
-```
-
-**Description:**
-Updates an existing fee record.
-
-**Authorization:**
-- `SUPER_MANAGER`, `MANAGER`, `PRINCIPAL`, `BURSAR`
-
-**Path Parameters:**
-- `id` (number): The ID of the fee record to update.
-
-**Request Body:**
-```typescript
-{
-  amountExpected?: number;
-  amountPaid?: number;
-  paymentMethod?: "EXPRESS_UNION" | "CCA" | "F3DC";
-  dueDate?: string; // YYYY-MM-DD
-}
-```
-
-**Response (Success - 200):**
-```typescript
-{
-  success: true;
-  data: {
-    id: number;
-    amountExpected: number;
-    amountPaid: number;
-    dueDate: string;
-    enrollmentId: number;
-    academicYearId: number;
-    createdAt: string;
-    updatedAt: string;
-    // ... potentially other included relations as per getFeeById
-  };
-}
-```
+### Create / Update a Fee Record — removed (M10)
+`POST /api/v1/fees` and `PUT /api/v1/fees/:id` used to let a caller set `amountPaid` directly on a fee record, with no `PaymentTransaction` created — the stored total could silently drift from the real payment ledger (the sum of that fee's actual payment transactions). Both endpoints have been removed:
+- Fee records are created automatically by the enrollment flow (`ensureSchoolFeeForEnrollment` / `createOrUpdateFeeForEnrollment`), never manually.
+- `amountPaid` only ever moves through `POST /fees/:feeId/payments` (record a payment) or `PUT /fees/:feeId/payments/:paymentId` (edit one) — both go through the payment ledger.
+- `amountExpected` corrections go through `POST /fees/:id/deduction` (see Apply Fee Deduction), which keeps an audit trail (before/after amount, reason).
 
 ### Delete a Fee Record
 ```http

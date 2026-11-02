@@ -98,26 +98,27 @@ export async function generateStudentDetailedFeesReport(
         throw new Error("No academic year found and none provided");
     }
 
-    // Build where clause
-    const where: any = { academic_year_id: yearId };
-
-    if (classId) {
-        where.enrollment = {
-            sub_class: { class_id: classId }
-        };
-    }
-
+    // Build where clause. Same population rule as feeOutstandingService.ts (M8):
+    // withdrawn students excluded from every fee report/dashboard.
+    const enrollmentFilters: any[] = [];
+    if (classId) enrollmentFilters.push({ sub_class: { class_id: classId } });
     if (studentIdentifier) {
-        where.enrollment = {
-            ...(where.enrollment || {}),
+        enrollmentFilters.push({
             student: {
                 OR: [
                     { name: { contains: studentIdentifier, mode: 'insensitive' } },
                     { matricule: { contains: studentIdentifier, mode: 'insensitive' } }
                 ]
             }
-        };
+        });
     }
+    const where: any = {
+        AND: [
+            { academic_year_id: yearId },
+            ACTIVE_FEE_ROW_WHERE,
+            ...enrollmentFilters.map(f => ({ enrollment: f })),
+        ],
+    };
 
     const fees = await prisma.schoolFees.findMany({
         where,
@@ -140,15 +141,22 @@ export async function generateStudentDetailedFeesReport(
         ]
     });
 
-    const reportData = fees.map(fee => ({
-        studentName: fee.enrollment.student.name,
-        studentMatricule: fee.enrollment.student.matricule,
-        className: fee.enrollment.sub_class?.name || 'No Class',
-        expectedAmount: Number(fee.amount_expected) || 0,
-        paidAmount: Number(fee.amount_paid) || 0,
-        outstanding: (Number(fee.amount_expected) || 0) - (Number(fee.amount_paid) || 0),
-        dueDate: fee.due_date.toISOString().split('T')[0]
-    }));
+    const reportData = fees.map(fee => {
+        const expectedAmount = Number(fee.amount_expected) || 0;
+        const paidAmount = Number(fee.amount_paid) || 0;
+        return {
+            studentName: fee.enrollment.student.name,
+            studentMatricule: fee.enrollment.student.matricule,
+            className: fee.enrollment.sub_class?.name || 'No Class',
+            expectedAmount,
+            paidAmount,
+            // Clamped, same rule as feeOutstandingService.ts: overpayment is tracked
+            // separately and never shown as a negative outstanding balance.
+            outstanding: Math.max(expectedAmount - paidAmount, 0),
+            overpayment: Math.max(paidAmount - expectedAmount, 0),
+            dueDate: fee.due_date.toISOString().split('T')[0]
+        };
+    });
 
     // Generate file
     let buffer: Buffer;
@@ -164,6 +172,7 @@ export async function generateStudentDetailedFeesReport(
                 { label: 'Expected Amount (FCFA)', value: 'expectedAmount' },
                 { label: 'Paid Amount (FCFA)', value: 'paidAmount' },
                 { label: 'Outstanding (FCFA)', value: 'outstanding' },
+                { label: 'Overpayment (FCFA)', value: 'overpayment' },
                 { label: 'Due Date', value: 'dueDate' }
             ];
             const parser = new Parser({ fields });
@@ -194,6 +203,7 @@ export async function generateStudentDetailedFeesReport(
                     'Expected (FCFA)': item.expectedAmount,
                     'Paid (FCFA)': item.paidAmount,
                     'Outstanding (FCFA)': item.outstanding,
+                    'Overpayment (FCFA)': item.overpayment,
                     'Due Date': item.dueDate
                 }));
 
@@ -206,6 +216,7 @@ export async function generateStudentDetailedFeesReport(
                     { wch: 18 },  // Expected Amount
                     { wch: 16 },  // Paid Amount
                     { wch: 18 },  // Outstanding
+                    { wch: 18 },  // Overpayment
                     { wch: 15 }   // Due Date
                 ];
                 worksheet['!cols'] = colWidths;

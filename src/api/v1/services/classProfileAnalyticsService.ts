@@ -31,6 +31,7 @@ export interface ClassProfileOverview {
     totalFeesCollected: number;
     collectionRate: number;
     outstandingAmount: number;
+    overpaymentAmount: number;
     defaulters: number;
   };
   discipline: {
@@ -91,7 +92,9 @@ export async function getClassProfileAnalytics(
         sub_classes: {
           include: {
             enrollments: {
-              where: { academic_year_id: currentAcademicYearId },
+              // Same population rule as feeOutstandingService.ts (M8): withdrawn
+              // students excluded from every fee report/dashboard.
+              where: { academic_year_id: currentAcademicYearId, student: { status: { not: 'WITHDRAWN' } } },
               include: {
                 student: true,
                 marks: true,
@@ -292,7 +295,10 @@ async function calculateFinancialMetrics(enrollments: any[]): Promise<any> {
     const totalFeesExpected = allFees.reduce((sum, fee) => sum + fee.amount_expected, 0);
     const totalFeesCollected = allFees.reduce((sum, fee) => sum + fee.amount_paid, 0);
     const collectionRate = totalFeesExpected > 0 ? (totalFeesCollected / totalFeesExpected) * 100 : 0;
-    const outstandingAmount = totalFeesExpected - totalFeesCollected;
+    // Clamped per fee row and summed separately, same rule as feeOutstandingService.ts:
+    // one student's overpayment never offsets another's debt.
+    const outstandingAmount = allFees.reduce((sum, fee) => sum + Math.max(fee.amount_expected - fee.amount_paid, 0), 0);
+    const overpaymentAmount = allFees.reduce((sum, fee) => sum + Math.max(fee.amount_paid - fee.amount_expected, 0), 0);
 
     const defaulters = allFees.filter(fee => fee.amount_paid < fee.amount_expected).length;
 
@@ -301,6 +307,7 @@ async function calculateFinancialMetrics(enrollments: any[]): Promise<any> {
       totalFeesCollected,
       collectionRate,
       outstandingAmount,
+      overpaymentAmount,
       defaulters
     };
   } catch (error: any) {
@@ -348,18 +355,22 @@ async function calculateTeacherMetrics(classId: number, academicYearId: number):
       }
     });
 
-    const uniqueTeachers = new Set(teacherPeriods.map(tp => tp.teacher_id));
+    // teacher_id can be null (a period slot assigned to a subject before a teacher
+    // is picked), which Prisma's `in` filter rejects outright -- filter those out.
+    const uniqueTeachers = new Set(teacherPeriods.map(tp => tp.teacher_id).filter((id): id is number => id != null));
     const totalTeachers = uniqueTeachers.size;
     const uniqueSubjects = new Set(teacherPeriods.map(tp => tp.subject_id));
     const subjectsOffered = uniqueSubjects.size;
 
     // Calculate teacher attendance rate
     const teacherIds = Array.from(uniqueTeachers);
-    const teacherAbsences = await prisma.teacherAbsence.count({
-      where: {
-        teacher_id: { in: teacherIds }
-      }
-    });
+    const teacherAbsences = teacherIds.length > 0
+      ? await prisma.teacherAbsence.count({
+          where: {
+            teacher_id: { in: teacherIds }
+          }
+        })
+      : 0;
 
     const totalExpectedPresence = teacherIds.length * 365; // Approximate
     const teacherAttendanceRate = totalExpectedPresence > 0

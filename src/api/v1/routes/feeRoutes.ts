@@ -26,7 +26,7 @@ router.get('/refunds', authenticate, authorize(VIEW_REFUNDS), feeController.list
 router.get('/refunds/:id', authenticate, authorize(VIEW_REFUNDS), feeController.getRefundById);
 
 // --- Fee deductions (must be registered before /:id to avoid param capture) ---
-// Same authorization as "who can edit a fee record" (PUT /fees/:id) for create/delete;
+// Same roster as the finance-editing roles elsewhere on this router for create/delete;
 // deduction viewing reuses the refund-viewer roster since both are sensitive finance reads.
 const MANAGE_DEDUCTIONS = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR'];
 router.get('/deductions', authenticate, authorize(VIEW_REFUNDS), feeController.listFeeDeductions);
@@ -51,13 +51,13 @@ router.get('/payments/:paymentId/receipt/pdf', authenticate, authorize(RECEIPT_R
 // GET /fees/:id - Get a specific fee by ID
 router.get('/:id', authenticate, feeController.getFeeById);
 
-// POST /fees - Create a fee record for a student
-// Only SUPER_MANAGER, PRINCIPAL, BURSAR can create fee records
-router.post('/', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR']), feeController.createFee);
-
-// PUT /fees/:id - Update a fee record
-// Only SUPER_MANAGER, PRINCIPAL, BURSAR can update fee records
-router.put('/:id', authenticate, authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'BURSAR']), feeController.updateFee);
+// Fee rows are only ever created via the enrollment flow (ensureSchoolFeeForEnrollment /
+// createOrUpdateFeeForEnrollment) and amount_paid only ever moves through the payment
+// ledger (POST /fees/:feeId/payments). A direct "create/edit a fee record with an
+// arbitrary amount_paid" endpoint used to exist here (POST / and PUT /:id) but let a
+// caller silently desync amount_paid from the actual PaymentTransaction history --
+// removed rather than left as a bypass. amount_expected corrections go through
+// POST /fees/:id/deduction instead.
 
 // DELETE /fees/:id - Delete a fee record
 // Only SUPER_MANAGER, PRINCIPAL, BURSAR can delete fee records

@@ -3,8 +3,9 @@
 // (defaulting to the current one) and returns chart-friendly shapes
 // (counts, groupings, top-N lists, time-bucketed trends).
 
-import prisma from '../../../config/db';
+import prisma, { Prisma } from '../../../config/db';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
+import { ACTIVE_FEE_ROW_WHERE } from './feeOutstandingService';
 import { getClassMaxStudents, SUBCLASS_MAX_STUDENTS } from '../../../utils/capacity';
 import { activeEnrollmentWhere, INACTIVE_STUDENT_STATUSES, staffUserWhere, teacherUserWhere } from '../../../utils/schoolCounts';
 import { getTeacherWorkloads } from '../../../utils/teacherWorkload';
@@ -303,8 +304,17 @@ export async function getAcademicOverview(academicYearId?: number) {
 export async function getFinancialOverview(academicYearId?: number) {
     const yearId = await resolveYearId(academicYearId);
 
+    // Same population/clamping rules as feeOutstandingService.ts (M8): withdrawn
+    // students excluded, balance/overpayment computed per fee row and never netted
+    // against another student's debt.
+    const feesWhere: Prisma.SchoolFeesWhereInput = {
+        AND: [
+            ...(yearId ? [{ academic_year_id: yearId }] : []),
+            ACTIVE_FEE_ROW_WHERE,
+        ],
+    };
+
     const [
-        feeAgg,
         paymentsByMethod,
         expendituresByCategory,
         financeRequestsByStatus,
@@ -316,11 +326,6 @@ export async function getFinancialOverview(academicYearId?: number) {
         feesRaw,
         classesMeta,
     ] = await Promise.all([
-        prisma.schoolFees.aggregate({
-            where: yearId ? { academic_year_id: yearId } : undefined,
-            _sum: { amount_expected: true, amount_paid: true },
-            _count: { id: true },
-        }),
         prisma.paymentTransaction.groupBy({
             by: ['payment_method'],
             where: yearId ? { academic_year_id: yearId } : undefined,
@@ -361,12 +366,17 @@ export async function getFinancialOverview(academicYearId?: number) {
             },
         }),
         prisma.schoolFees.findMany({
-            where: yearId ? { academic_year_id: yearId } : undefined,
+            where: feesWhere,
             select: {
                 amount_expected: true,
                 amount_paid: true,
+                is_new_student: true,
                 enrollment: {
-                    select: { class_id: true, sub_class_id: true },
+                    select: {
+                        class_id: true,
+                        sub_class_id: true,
+                        sub_class: { select: { class_id: true } },
+                    },
                 },
                 payment_transactions: {
                     select: { payment_method: true, amount: true },
@@ -380,13 +390,14 @@ export async function getFinancialOverview(academicYearId?: number) {
                 first_term_fee: true,
                 second_term_fee: true,
                 third_term_fee: true,
+                new_student_fee: true,
+                old_student_fee: true,
+                miscellaneous_fee: true,
                 sub_classes: { select: { id: true, name: true } },
             },
         }),
     ]);
 
-    const expected = feeAgg._sum.amount_expected || 0;
-    const collected = feeAgg._sum.amount_paid || 0;
     const totalExpenditures = expendituresByCategory.reduce((s, e) => s + (e._sum.amount || 0), 0);
     const totalPayments = paymentsByMethod.reduce((s, p) => s + (p._sum.amount || 0), 0);
 
@@ -401,6 +412,8 @@ export async function getFinancialOverview(academicYearId?: number) {
         subClassName: string;
         expected: number;
         collected: number;
+        outstanding: number;
+        overpayment: number;
         studentCount: number;
         studentsPaid: number;
         studentsPartial: number;
@@ -412,6 +425,8 @@ export async function getFinancialOverview(academicYearId?: number) {
         className: string;
         expected: number;
         collected: number;
+        outstanding: number;
+        overpayment: number;
         studentCount: number;
         studentsPaid: number;
         studentsPartial: number;
@@ -419,21 +434,34 @@ export async function getFinancialOverview(academicYearId?: number) {
         subMap: Map<number, SubClassAcc>;
     }
 
-    // Installment schedule per class — 1st and 2nd term fees define the
-    // amounts we'd expect a student to have paid at each installment. Payments
-    // fill installments FIFO (1st → 2nd → the remainder).
-    const installmentByClass = new Map<number, { first: number; second: number }>();
+    // Installment schedule per class. Registration (new/old-student fee +
+    // miscellaneous) is paid first, then the 1st/2nd/3rd term fees -- same FIFO
+    // rule as bursarService.ts's installmentBreakdown().
+    const installmentByClass = new Map<number, {
+        registrationNew: number; registrationOld: number; misc: number;
+        first: number; second: number; third: number;
+    }>();
     for (const cls of classesMeta) {
         installmentByClass.set(cls.id, {
+            registrationNew: cls.new_student_fee || 0,
+            registrationOld: cls.old_student_fee || 0,
+            misc: cls.miscellaneous_fee || 0,
             first: cls.first_term_fee || 0,
             second: cls.second_term_fee || 0,
+            third: cls.third_term_fee || 0,
         });
     }
 
-    let firstExpected = 0;
-    let firstCollected = 0;
-    let secondExpected = 0;
-    let secondCollected = 0;
+    let registrationExpected = 0, registrationCollected = 0;
+    let firstExpected = 0, firstCollected = 0;
+    let secondExpected = 0, secondCollected = 0;
+    let thirdExpected = 0, thirdCollected = 0;
+
+    // Whole-population totals, matching feeOutstandingService's reconciliation rule:
+    // outstanding is the sum of each row's own clamped balance, overpayment is
+    // summed separately and never used to offset another student's debt.
+    let totalExpected = 0, totalCollected = 0, totalOutstanding = 0, totalOverpayment = 0;
+    let studentsOwing = 0, studentsPaidInFull = 0, studentsOverpaid = 0, studentsNotPaidAnything = 0;
 
     const classById = new Map<number, ClassAcc>();
     // Prime the map from schema so classes with zero fee records still surface.
@@ -445,6 +473,8 @@ export async function getFinancialOverview(academicYearId?: number) {
                 subClassName: sc.name,
                 expected: 0,
                 collected: 0,
+                outstanding: 0,
+                overpayment: 0,
                 studentCount: 0,
                 studentsPaid: 0,
                 studentsPartial: 0,
@@ -457,6 +487,8 @@ export async function getFinancialOverview(academicYearId?: number) {
             className: cls.name,
             expected: 0,
             collected: 0,
+            outstanding: 0,
+            overpayment: 0,
             studentCount: 0,
             studentsPaid: 0,
             studentsPartial: 0,
@@ -466,7 +498,39 @@ export async function getFinancialOverview(academicYearId?: number) {
     }
 
     for (const fee of feesRaw) {
-        const classId = fee.enrollment?.class_id;
+        const exp = fee.amount_expected || 0;
+        const paid = fee.amount_paid || 0;
+        const balance = Math.max(exp - paid, 0);
+        const overpayment = Math.max(paid - exp, 0);
+
+        // Whole-population totals (M8 rule): balance/overpayment computed per row,
+        // never netted against another student's debt.
+        totalExpected += exp;
+        totalCollected += paid;
+        totalOutstanding += balance;
+        totalOverpayment += overpayment;
+        if (balance > 0) studentsOwing++; else studentsPaidInFull++;
+        if (overpayment > 0) studentsOverpaid++;
+        if (paid <= 0 && exp > 0) studentsNotPaidAnything++;
+
+        // Class = sub_class.class when placed, else the registered class --
+        // same rule as feeOutstandingService.ts.
+        const classId = fee.enrollment?.sub_class?.class_id ?? fee.enrollment?.class_id;
+        const schedule = installmentByClass.get(classId ?? -1) || { registrationNew: 0, registrationOld: 0, misc: 0, first: 0, second: 0, third: 0 };
+        const registration = (fee.is_new_student ? schedule.registrationNew : schedule.registrationOld) + schedule.misc;
+        registrationExpected += registration;
+        const paidToRegistration = Math.min(paid, registration);
+        registrationCollected += paidToRegistration;
+        firstExpected += schedule.first;
+        const paidToFirst = Math.min(Math.max(paid - registration, 0), schedule.first);
+        firstCollected += paidToFirst;
+        secondExpected += schedule.second;
+        const paidToSecond = Math.min(Math.max(paid - registration - schedule.first, 0), schedule.second);
+        secondCollected += paidToSecond;
+        thirdExpected += schedule.third;
+        const paidToThird = Math.min(Math.max(paid - registration - schedule.first - schedule.second, 0), schedule.third);
+        thirdCollected += paidToThird;
+
         if (classId == null) continue;
         const clsAcc = classById.get(classId);
         if (!clsAcc) continue;
@@ -479,6 +543,8 @@ export async function getFinancialOverview(academicYearId?: number) {
                 subClassName: subClassId === UNASSIGNED_SUBCLASS_ID ? UNASSIGNED_SUBCLASS_NAME : `Subclass #${subClassId}`,
                 expected: 0,
                 collected: 0,
+                outstanding: 0,
+                overpayment: 0,
                 studentCount: 0,
                 studentsPaid: 0,
                 studentsPartial: 0,
@@ -488,21 +554,16 @@ export async function getFinancialOverview(academicYearId?: number) {
             clsAcc.subMap.set(subClassId, subAcc);
         }
 
-        const exp = fee.amount_expected || 0;
-        const paid = fee.amount_paid || 0;
-
         clsAcc.expected += exp;
         clsAcc.collected += paid;
+        clsAcc.outstanding += balance;
+        clsAcc.overpayment += overpayment;
         clsAcc.studentCount += 1;
         subAcc.expected += exp;
         subAcc.collected += paid;
+        subAcc.outstanding += balance;
+        subAcc.overpayment += overpayment;
         subAcc.studentCount += 1;
-
-        const schedule = installmentByClass.get(classId) || { first: 0, second: 0 };
-        firstExpected += schedule.first;
-        firstCollected += Math.min(paid, schedule.first);
-        secondExpected += schedule.second;
-        secondCollected += Math.min(Math.max(0, paid - schedule.first), schedule.second);
 
         // Payment status buckets — "paid" means fully covered; "partial" is any
         // non-zero payment short of the expected amount; "unpaid" is nothing paid.
@@ -528,7 +589,8 @@ export async function getFinancialOverview(academicYearId?: number) {
             className: cls.className,
             expected: cls.expected,
             collected: cls.collected,
-            outstanding: Math.max(cls.expected - cls.collected, 0),
+            outstanding: cls.outstanding,
+            overpayment: cls.overpayment,
             collectionRate: toPct(cls.collected, cls.expected),
             studentCount: cls.studentCount,
             studentsPaid: cls.studentsPaid,
@@ -541,7 +603,8 @@ export async function getFinancialOverview(academicYearId?: number) {
                     subClassName: sc.subClassName,
                     expected: sc.expected,
                     collected: sc.collected,
-                    outstanding: Math.max(sc.expected - sc.collected, 0),
+                    outstanding: sc.outstanding,
+                    overpayment: sc.overpayment,
                     collectionRate: toPct(sc.collected, sc.expected),
                     studentCount: sc.studentCount,
                     studentsPaid: sc.studentsPaid,
@@ -568,10 +631,24 @@ export async function getFinancialOverview(academicYearId?: number) {
 
     return {
         summary: {
-            totalExpected: expected,
-            totalCollected: collected,
-            outstanding: Math.max(expected - collected, 0),
-            collectionRate: toPct(collected, expected),
+            totalExpected,
+            totalCollected,
+            // Sum of each student's own clamped balance -- never reduced by another
+            // student's overpayment. Overpayments are reported separately below.
+            outstanding: totalOutstanding,
+            totalOverpayments: totalOverpayment,
+            collectionRate: toPct(totalCollected, totalExpected),
+            studentsOwing,
+            studentsPaidInFull,
+            studentsOverpaid,
+            studentsNotPaidAnything,
+            reconciliation: {
+                expected: totalExpected,
+                collected: totalCollected,
+                overpayments: totalOverpayment,
+                outstanding: totalOutstanding,
+                formula: `${Math.round(totalExpected).toLocaleString('en-US')} expected − ${Math.round(totalCollected).toLocaleString('en-US')} collected + ${Math.round(totalOverpayment).toLocaleString('en-US')} overpayments = ${Math.round(totalOutstanding).toLocaleString('en-US')} outstanding`,
+            },
             paymentsLast7Days: recentPaymentsCount,
             totalExpendituresYTD: totalExpenditures,
             totalRefunds: totalRefunds._sum.amount || 0,
@@ -580,9 +657,16 @@ export async function getFinancialOverview(academicYearId?: number) {
             activeFeeItems,
             controlPaymentsRecorded: controlPaymentsCount,
             byInstallment: {
+                registration: buildInstallmentBucket(registrationExpected, registrationCollected),
                 first: buildInstallmentBucket(firstExpected, firstCollected),
                 second: buildInstallmentBucket(secondExpected, secondCollected),
-                total: buildInstallmentBucket(expected, collected),
+                third: buildInstallmentBucket(thirdExpected, thirdCollected),
+                // Not buildInstallmentBucket(totalExpected, totalCollected): that would
+                // re-derive outstanding as max(expected-collected,0) on the raw totals,
+                // which lets one student's overpayment hide another's debt. Reuse the
+                // already-correct per-row-summed totals instead, so this always agrees
+                // with summary.outstanding above.
+                total: { expected: totalExpected, collected: totalCollected, outstanding: totalOutstanding, collectionRate: toPct(totalCollected, totalExpected) },
             },
         },
         paymentsByMethod: paymentsByMethod.map(p => ({

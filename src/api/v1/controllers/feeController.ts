@@ -122,53 +122,11 @@ export const getFeeById = async (req: Request, res: Response): Promise<any> => {
     }
 };
 
-export const createFee = async (req: Request, res: Response) => {
-    try {
-        // Use the body directly - middleware handles the conversion to snake_case
-        const feeData = req.body;
-        const newFee = await feeService.createFee(feeData);
-
-        res.status(201).json({
-            success: true,
-            data: newFee
-        });
-    } catch (error: any) {
-        console.error('Error creating fee:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-};
-
-export const updateFee = async (req: Request, res: Response): Promise<any> => {
-    try {
-        const id = parseInt(req.params.id);
-        const feeData = req.body;
-
-        const updatedFee = await feeService.updateFee(id, feeData);
-
-        res.json({
-            success: true,
-            data: updatedFee
-        });
-    } catch (error: any) {
-        console.error('Error updating fee:', error);
-
-        // Check if it's a "not found" error
-        if (error.message.includes('not found')) {
-            return res.status(404).json({
-                success: false,
-                error: error.message
-            });
-        }
-
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-};
+// createFee/updateFee (POST / and PUT /:id) were removed: they let a caller set
+// amount_paid to an arbitrary value with no PaymentTransaction, silently desyncing
+// the stored total from the real payment ledger. Fees are created via the enrollment
+// flow; amount_paid moves only through recordPayment/updatePayment below, and
+// amount_expected corrections go through applyFeeDeduction.
 
 export const deleteFee = async (req: Request, res: Response): Promise<any> => {
     try {

@@ -805,6 +805,12 @@ export async function assignStudentToClass(
 
     // Update is_new_student field based on enrollment history
     await updateNewStudentStatus(student_id);
+    // A repeater is by definition not new -- updateNewStudentStatus only flips this
+    // once there are 2+ distinct enrollment years on record, which misses a repeater
+    // flagged on their first enrollment in this system (e.g. a transfer-in).
+    if (data.repeater) {
+        await prisma.student.update({ where: { id: student_id }, data: { is_new_student: false } });
+    }
 
     // Update student status to ASSIGNED_TO_CLASS
     await prisma.student.update({
@@ -903,6 +909,12 @@ export async function enrollStudentInSubclass(
 
     // Update is_new_student field based on enrollment history
     await updateNewStudentStatus(student_id);
+    // A repeater is by definition not new -- updateNewStudentStatus only flips this
+    // once there are 2+ distinct enrollment years on record, which misses a repeater
+    // flagged on their first enrollment in this system (e.g. a transfer-in).
+    if (data.repeater) {
+        await prisma.student.update({ where: { id: student_id }, data: { is_new_student: false } });
+    }
 
     // Update student status to ENROLLED when assigned to subclass
     await prisma.student.update({

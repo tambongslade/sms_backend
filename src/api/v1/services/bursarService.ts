@@ -744,6 +744,7 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
             amount_expected: true,
             amount_paid: true,
             due_date: true,
+            is_new_student: true,
             enrollment: {
                 select: {
                     id: true,
@@ -753,6 +754,7 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
                         select: {
                             id: true, name: true,
                             first_term_fee: true, second_term_fee: true, third_term_fee: true,
+                            new_student_fee: true, old_student_fee: true, miscellaneous_fee: true,
                         }
                     },
                     sub_class: { select: { id: true, name: true } },
@@ -790,9 +792,12 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
         isNewStudent: boolean;
         outstanding: number;
         totalPaid: number;
-        // 1st/2nd/3rd term fee for the enrollment's class -- the schedule
-        // payments get applied against FIFO to derive per-installment owing.
-        schedule: { first: number; second: number; third: number };
+        // Registration (new/old-student fee + miscellaneous) plus the 1st/2nd/3rd
+        // term fee for the enrollment's class -- the schedule payments get applied
+        // against FIFO (registration first, then term 1/2/3) to derive per-installment
+        // owing. Registration uses this specific fee row's own is_new_student snapshot
+        // (what the student was actually billed), not the student's current status.
+        schedule: { registration: number; first: number; second: number; third: number };
         oldestDueDate: Date | null;
         parentPhone?: string;
     }
@@ -829,6 +834,10 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
             outstanding: balance,
             totalPaid: row.amount_paid || 0,
             schedule: {
+                registration: (row.is_new_student
+                    ? (enrollment?.class?.new_student_fee || 0)
+                    : (enrollment?.class?.old_student_fee || 0))
+                    + (enrollment?.class?.miscellaneous_fee || 0),
                 first: enrollment?.class?.first_term_fee || 0,
                 second: enrollment?.class?.second_term_fee || 0,
                 third: enrollment?.class?.third_term_fee || 0,
@@ -844,16 +853,17 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
 
     const defaulters = Array.from(perEnrollment.values()).filter(d => d.outstanding >= minAmount && d.outstanding > 0);
 
-    // Same FIFO rule as superManagerOverviewService.ts's collection chart:
-    // a payment covers the 1st term's fee first, then the 2nd, then the 3rd.
-    // What's left of the class schedule after that is what's still owed on
-    // each installment.
+    // Registration (new/old-student fee + miscellaneous) is paid first, then the
+    // 1st term's fee, then the 2nd, then the 3rd. What's left of the class
+    // schedule after that is what's still owed on each installment.
     const installmentBreakdown = (d: DefaulterAgg) => {
-        const { first, second, third } = d.schedule;
-        const paidToFirst = Math.min(d.totalPaid, first);
-        const paidToSecond = Math.min(Math.max(d.totalPaid - first, 0), second);
-        const paidToThird = Math.min(Math.max(d.totalPaid - first - second, 0), third);
+        const { registration, first, second, third } = d.schedule;
+        const paidToRegistration = Math.min(d.totalPaid, registration);
+        const paidToFirst = Math.min(Math.max(d.totalPaid - registration, 0), first);
+        const paidToSecond = Math.min(Math.max(d.totalPaid - registration - first, 0), second);
+        const paidToThird = Math.min(Math.max(d.totalPaid - registration - first - second, 0), third);
         return {
+            registration: { expected: registration, paid: paidToRegistration, outstanding: Math.max(registration - paidToRegistration, 0) },
             first: { expected: first, paid: paidToFirst, outstanding: Math.max(first - paidToFirst, 0) },
             second: { expected: second, paid: paidToSecond, outstanding: Math.max(second - paidToSecond, 0) },
             third: { expected: third, paid: paidToThird, outstanding: Math.max(third - paidToThird, 0) },

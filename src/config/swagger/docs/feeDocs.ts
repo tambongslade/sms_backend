@@ -105,71 +105,11 @@
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 
-/**
- * @swagger
- * /fees:
- *   post:
- *     summary: Create a new school fee record
- *     description: Creates a new school fee record for a student. Only accessible by ADMIN, PRINCIPAL, BURSAR.
- *     tags: [Fees]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/CreateFeeRequest'
- *     responses:
- *       201:
- *         description: Fee record created successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 data:
- *                   $ref: '#/components/schemas/SchoolFees'
- *       400:
- *         description: Invalid request data
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *       401:
- *         description: Unauthorized - User is not authenticated
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *       403:
- *         description: Forbidden - User does not have required permissions
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *       404:
- *         description: Student enrollment or academic year not found
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *       409:
- *         description: Fee record already exists for this student in this academic year
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *       500:
- *         description: Server error
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- */
+// POST /fees (create) and PUT /fees/{id} (update) were removed (M10): they let a
+// caller set amount_paid to an arbitrary value with no PaymentTransaction, silently
+// desyncing the stored total from the real payment ledger. Fees are created via the
+// enrollment flow; amount_paid moves only through POST/PUT /fees/{feeId}/payments
+// below; amount_expected corrections go through POST /fees/{id}/deduction.
 
 /**
  * @swagger
