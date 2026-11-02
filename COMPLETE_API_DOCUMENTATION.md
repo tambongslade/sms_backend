@@ -9345,22 +9345,24 @@ GET /api/v1/exams/classlist/pdf?subClassId=1
 Authorization: Bearer <token>
 ```
 
-Printable class list for one subclass, on the school letterhead, landscape or portrait. One row per enrolled student (withdrawn excluded, sorted by name): `No.` and `Name` always print; every extra column is either left blank (to fill in by hand) or shows a chosen roster detail.
+Printable class list on the school letterhead, landscape or portrait. One row per enrolled student (withdrawn excluded, sorted by name): `No.` and `Name` always print; every extra column is either left blank (to fill in by hand) or shows a chosen roster detail.
+
+`subClassId` also accepts a comma-separated list (e.g. `subClassId=1,2,3`) to print several classes in a **single combined PDF**, one subclass per page/section in the order given -- each class always starts on a new page.
 
 **Authorization:** SUPER_MANAGER, MANAGER, PRINCIPAL, VICE_PRINCIPAL, DEAN_OF_STUDIES, SECRETARY, BURSAR.
 
 **Query Parameters:**
 ```typescript
 {
-  subClassId: number;        // required
+  subClassId: number | string; // required -- one id, or a comma-separated list for a combined PDF
   academicYearId?: number;   // defaults to the current academic year
-  orientation?: 'landscape' | 'portrait'; // default landscape
+  orientation?: 'landscape' | 'portrait'; // default landscape -- applies to every class in the PDF
   namesOnly?: boolean;       // true = no extra columns at all (default false)
   columns?: number;          // how many blank extra columns, when `fields` is not given (0-20, default 5)
   fields?: string;           // comma-separated list, one per extra column: 'empty' or a field key below
                               //   (matricule, sex, date_of_birth, place_of_birth, residence, repeater,
                               //    student_type, parent_name, parent_phone). Takes precedence over `columns`.
-  documentTitle?: string;    // replaces the "Class List" heading at the top of the page (max 80 chars)
+  documentTitle?: string;    // replaces the "Class List" heading at the top of every page (max 80 chars)
   columnLabels?: string;     // JSON-stringified array of strings, same length/order as `fields` -- a
                               //   non-empty entry overrides that column's header text (e.g. rename
                               //   "Matricule" to "ID", or title a blank column "Remarks"). Example:
@@ -9368,11 +9370,11 @@ Printable class list for one subclass, on the school letterhead, landscape or po
 }
 ```
 
-**Response (200):** `application/pdf` file download (`Content-Disposition: attachment; filename="class-list_<Class>.pdf"`).
+**Response (200):** `application/pdf` file download (`Content-Disposition: attachment; filename="class-list_<Class>.pdf"` for one subclass, or `filename="class-list_combined_<N>-classes.pdf"` for several).
 
 **Errors:**
-- `400` – `subClassId` missing or not a number
-- `404` – subclass not found
+- `400` – `subClassId` missing or not a number (or not a valid comma-separated list of numbers)
+- `404` – a subclass in the list was not found
 - `500` – PDF generation failed
 
 ---

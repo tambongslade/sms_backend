@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title><%= documentTitle %> - <%= className %></title>
+<title><%= documentTitle %><%= sections.length === 1 ? (' - ' + sections[0].className) : '' %></title>
 <style>
     @page { size: A4 <%= orientation %>; margin: 8mm; }
     * { box-sizing: border-box; }
     body { font-family: 'Helvetica', 'Arial', sans-serif; color: #111827; margin: 0; font-size: 9pt;
            -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     p { margin: 0; }
+    .section + .section { break-before: page; }
     .banner { text-align: center; border-bottom: 1px solid #000; padding-bottom: 3px; margin-bottom: 4px; }
     .banner img { width: <%= orientation === 'portrait' ? '190mm' : '200mm' %>; max-width: 100%; }
     h1.title { text-align: center; margin: 4px 0 4px; font-size: 13pt; letter-spacing: 1px; text-transform: uppercase; }
@@ -24,37 +25,41 @@
 </style>
 </head>
 <body>
-    <div class="banner"><% if (letterhead) { %><img src="<%= letterhead %>" alt="" /><% } %></div>
-    <h1 class="title"><%= documentTitle %></h1>
-    <div class="fields">
-        <div><strong>Class:</strong> <%= className %></div>
-        <div><strong>Academic year:</strong> <%= academicYearName %></div>
-        <div><strong>Number of students:</strong> <%= rows.length %></div>
-    </div>
+    <% sections.forEach(function (sec) { %>
+    <div class="section">
+        <div class="banner"><% if (letterhead) { %><img src="<%= letterhead %>" alt="" /><% } %></div>
+        <h1 class="title"><%= documentTitle %></h1>
+        <div class="fields">
+            <div><strong>Class:</strong> <%= sec.className %></div>
+            <div><strong>Academic year:</strong> <%= academicYearName %></div>
+            <div><strong>Number of students:</strong> <%= sec.rows.length %></div>
+        </div>
 
-    <table>
-        <colgroup>
-            <col style="width:26px">
-            <% if (headers.length > 0) { %><col style="width:<%= orientation === 'portrait' ? 240 : 320 %>px"><% } else { %><col><% } %>
-            <% headers.forEach(function () { %><col><% }); %>
-        </colgroup>
-        <thead>
-            <tr>
-                <th class="num">No.</th>
-                <th>Name</th>
-                <% headers.forEach(function (h) { %><th><%= h %></th><% }); %>
-            </tr>
-        </thead>
-        <tbody>
-            <% rows.forEach(function (r, i) { %>
-            <tr>
-                <td class="num"><%= i + 1 %></td>
-                <td><%= r.name %></td>
-                <% r.cells.forEach(function (c) { %><td><%= c %></td><% }); %>
-            </tr>
-            <% }); %>
-        </tbody>
-    </table>
-    <div class="foot">Generated <%= generatedAt %></div>
+        <table>
+            <colgroup>
+                <col style="width:26px">
+                <% if (headers.length > 0) { %><col style="width:<%= orientation === 'portrait' ? 240 : 320 %>px"><% } else { %><col><% } %>
+                <% headers.forEach(function () { %><col><% }); %>
+            </colgroup>
+            <thead>
+                <tr>
+                    <th class="num">No.</th>
+                    <th>Name</th>
+                    <% headers.forEach(function (h) { %><th><%= h %></th><% }); %>
+                </tr>
+            </thead>
+            <tbody>
+                <% sec.rows.forEach(function (r, i) { %>
+                <tr>
+                    <td class="num"><%= i + 1 %></td>
+                    <td><%= r.name %></td>
+                    <% r.cells.forEach(function (c) { %><td><%= c %></td><% }); %>
+                </tr>
+                <% }); %>
+            </tbody>
+        </table>
+        <div class="foot">Generated <%= generatedAt %></div>
+    </div>
+    <% }); %>
 </body>
 </html>

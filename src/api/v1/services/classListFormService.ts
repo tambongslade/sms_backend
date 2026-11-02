@@ -46,7 +46,8 @@ function assets() {
 const fmtDate = (d: Date | null | undefined) => (d ? new Date(d).toLocaleDateString('en-GB') : '');
 
 export async function generateClassListPdf(params: {
-    subClassId: number;
+    /** One subclass per PDF page/section, each starting on a new page, in the order given. */
+    subClassIds: number[];
     academicYearId?: number;
     /** One entry per extra column: 'empty' or a ClassListField. Takes precedence over blankColumns. */
     columns?: string[];
@@ -67,30 +68,13 @@ export async function generateClassListPdf(params: {
     const yearId = await getAcademicYearId(params.academicYearId);
     if (!yearId) throw new Error('No academic year found');
 
-    const [subClass, year, enrollments] = await Promise.all([
-        prisma.subClass.findUnique({ where: { id: params.subClassId }, include: { class: true } }),
-        prisma.academicYear.findUnique({ where: { id: yearId }, select: { name: true } }),
-        prisma.enrollment.findMany({
-            where: { sub_class_id: params.subClassId, academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
-            select: {
-                repeater: true,
-                student: {
-                    select: {
-                        name: true, matricule: true, gender: true, date_of_birth: true, place_of_birth: true,
-                        residence: true, is_new_student: true,
-                        parents: { select: { parent: { select: { name: true, phone: true } } }, orderBy: { id: 'asc' }, take: 1 },
-                    },
-                },
-            },
-        }),
-    ]);
-    if (!subClass) throw new Error('Subclass not found');
+    const subClassIds = [...new Set(params.subClassIds)];
+    if (subClassIds.length === 0) throw new Error('At least one subclass is required');
 
-    // Subclass names usually already carry the class ("FORM 1 N"); don't print it twice.
-    const className = subClass.name.toUpperCase().startsWith(subClass.class.name.toUpperCase())
-        ? subClass.name : `${subClass.class.name} ${subClass.name}`;
+    const year = await prisma.academicYear.findUnique({ where: { id: yearId }, select: { name: true } });
 
-    // Names only = no extra columns at all
+    // Names only = no extra columns at all. Shared across every class in the
+    // combined PDF -- the column choice is made once for the whole request.
     let kinds: (ClassListField | 'empty')[];
     if (params.namesOnly) kinds = [];
     else if (params.columns) kinds = params.columns.slice(0, MAX_COLUMNS).map(c => (isField(c) ? c : 'empty'));
@@ -101,7 +85,7 @@ export async function generateClassListPdf(params: {
         kinds = Array(n).fill('empty');
     }
 
-    const cell = (e: (typeof enrollments)[number], k: ClassListField | 'empty'): string => {
+    const cell = (e: { repeater: boolean; student: any }, k: ClassListField | 'empty'): string => {
         const s = e.student;
         const parent = s.parents[0]?.parent;
         switch (k) {
@@ -118,9 +102,39 @@ export async function generateClassListPdf(params: {
         }
     };
 
-    const rows = enrollments
-        .map(e => ({ name: e.student.name, cells: kinds.map(k => cell(e, k)) }))
-        .sort((a, b) => a.name.localeCompare(b.name));
+    // One subclass per section, each rendered as its own page in the final PDF
+    // (see the `.section + .section` page-break rule in the template), in the
+    // order the caller asked for.
+    const sections = await Promise.all(subClassIds.map(async (subClassId) => {
+        const [subClass, enrollments] = await Promise.all([
+            prisma.subClass.findUnique({ where: { id: subClassId }, include: { class: true } }),
+            prisma.enrollment.findMany({
+                where: { sub_class_id: subClassId, academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
+                select: {
+                    repeater: true,
+                    student: {
+                        select: {
+                            name: true, matricule: true, gender: true, date_of_birth: true, place_of_birth: true,
+                            residence: true, is_new_student: true,
+                            parents: { select: { parent: { select: { name: true, phone: true } } }, orderBy: { id: 'asc' }, take: 1 },
+                        },
+                    },
+                },
+            }),
+        ]);
+        if (!subClass) throw new Error(`Subclass not found: ${subClassId}`);
+
+        // Subclass names usually already carry the class ("FORM 1 N"); don't print it twice.
+        const className = subClass.name.toUpperCase().startsWith(subClass.class.name.toUpperCase())
+            ? subClass.name : `${subClass.class.name} ${subClass.name}`;
+
+        const rows = enrollments
+            .map(e => ({ name: e.student.name, cells: kinds.map(k => cell(e, k)) }))
+            .sort((a, b) => a.name.localeCompare(b.name));
+
+        return { className, rows };
+    }));
+
     const headers = kinds.map((k, i) => {
         const custom = params.columnLabels?.[i]?.trim();
         if (custom) return custom.slice(0, 40);
@@ -131,9 +145,8 @@ export async function generateClassListPdf(params: {
 
     const { html: template, logo } = assets();
     const html = ejs.render(template, {
-        className,
+        sections,
         academicYearName: year?.name ?? '',
-        rows,
         headers,
         orientation,
         letterhead: logo,
@@ -146,7 +159,9 @@ export async function generateClassListPdf(params: {
         await page.setContent(html, { waitUntil: 'networkidle0' });
         const pdf = await page.pdf({ format: 'A4', landscape: orientation === 'landscape', printBackground: true, preferCSSPageSize: true });
         const buffer = Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
-        const filename = `class-list_${className}`.replace(/[^\w-]+/g, '_') + '.pdf';
+        const filename = sections.length === 1
+            ? `class-list_${sections[0].className}`.replace(/[^\w-]+/g, '_') + '.pdf'
+            : `class-list_combined_${sections.length}-classes`.replace(/[^\w-]+/g, '_') + '.pdf';
         return { buffer, filename };
     } finally {
         try { await page.close(); } catch { /* noop */ }

@@ -52,8 +52,13 @@ router.get(
     authorize(['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_STUDIES', 'SECRETARY', 'BURSAR']),
     async (req, res) => {
         try {
-            const subClassId = parseInt(req.finalQuery.sub_class_id as string);
-            if (isNaN(subClassId)) {
+            // subClassId takes a single id or a comma-separated list -- one section per
+            // id, each starting on a new page in the combined PDF, in the order given.
+            const subClassIds = String(req.finalQuery.sub_class_id ?? '')
+                .split(',')
+                .map(s => parseInt(s.trim()))
+                .filter(n => !isNaN(n));
+            if (subClassIds.length === 0) {
                 res.status(400).json({ success: false, error: 'subClassId is required' });
                 return;
             }
@@ -67,7 +72,7 @@ router.get(
                 } catch { /* malformed -- fall back to default headers */ }
             }
             const { buffer, filename } = await generateClassListPdf({
-                subClassId,
+                subClassIds,
                 academicYearId,
                 blankColumns,
                 columns: req.finalQuery.fields !== undefined ? String(req.finalQuery.fields).split(',').map(s => s.trim()).filter(Boolean) : undefined,
