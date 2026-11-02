@@ -88,24 +88,29 @@ function buildCard(r: ClassResults, s: StudentResult, nextClass: string | null) 
     const stats = new Map(r.subject_stats.map(st => [st.sub_class_subject_id, st]));
     const partLabels = s.subjects[0]?.parts.map(p => p.label) ?? [];
 
-    const rows = r.subjects.map((sub, i) => {
-        const x = s.subjects[i];
-        const st = stats.get(sub.sub_class_subject_id);
-        return {
-            category: sub.category,
-            name: sub.name,
-            teacher: sub.teacher_name,
-            coefficient: sub.coefficient,
-            parts: x.parts.map(p => p.score),
-            score: x.score,
-            weighted: x.weighted,
-            rankLabel: x.rank === null ? 'NC' : ordinal(x.rank),
-            grade: grade(x.score),
-            min: st?.min ?? null,
-            avg: st?.average ?? null,
-            max: st?.max ?? null,
-        };
-    });
+    const rows = r.subjects
+        .map((sub, i) => {
+            const x = s.subjects[i];
+            const st = stats.get(sub.sub_class_subject_id);
+            return {
+                category: sub.category,
+                name: sub.name,
+                teacher: sub.teacher_name,
+                coefficient: sub.coefficient,
+                parts: x.parts.map(p => p.score),
+                score: x.score,
+                weighted: x.weighted,
+                rankLabel: x.rank === null ? 'NC' : ordinal(x.rank),
+                grade: grade(x.score),
+                min: st?.min ?? null,
+                avg: st?.average ?? null,
+                max: st?.max ?? null,
+            };
+        })
+        // A subject with no mark for this student ("NC") never counted toward
+        // their average -- it's left off the printed card too, not shown as a
+        // blank/NC row.
+        .filter(row => row.score !== null);
 
     const categories = [...new Set(rows.map(r => r.category))].map(name => {
         const subs = rows.filter(r => r.category === name);
