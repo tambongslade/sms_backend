@@ -4,16 +4,18 @@
  *   browser --https--> online SMS (this file, "server" side) --WebSocket--> school SMS (this file, "client" side)
  *                                                                              --http--> the file app on the school server
  *
- * The school server's backend opens ONE outbound WebSocket to the online backend (the same direction the sync already
+ * The school server's backend opens a few outbound WebSockets to the online backend (the same direction the sync already
  * uses, authenticated with the same SYNC_API_KEY), so nothing has to be opened on the school network. Every file request
- * the online SMS receives is streamed over that socket to the file app and the answer is streamed back. Nothing is
+ * the online SMS receives is streamed over the least busy socket to the file app and the answer is streamed back. Several
+ * sockets matter: the school's upload link is slow, and on one shared socket a download that was started and abandoned (the
+ * Android web view does this before handing a download to the system) would keep the link busy for everything queued behind it. Nothing is
  * written to disk online: bytes only pass through memory. If the school server is not connected, File Management online
  * says so.
  *
- * Frames are binary: [type:1][request id:4][payload]. Many requests share the one socket.
+ * Frames are binary: [type:1][request id:4][payload]. A request stays on the socket it started on.
  *
  * Env (online server):  FILE_RELAY_SERVER=on  (and FILE_APP_MODE=relay for the File Management route)
- * Env (school server):  FILE_RELAY_CLIENT=on, FILE_RELAY_TARGET (default http://127.0.0.1:8081, the file app's
+ * Env (school server):  FILE_RELAY_CLIENT=on, FILE_RELAY_CONNECTIONS (default 3), FILE_RELAY_TARGET (default http://127.0.0.1:8081, the file app's
  *                       signed-sessions-only listener), REMOTE_SYNC_URL + SYNC_API_KEY (already set for the sync),
  *                       or FILE_RELAY_URL to override the address.
  */
@@ -25,8 +27,11 @@ const { WebSocketServer, WebSocket } = require('ws');
 
 const PATH = '/api/v1/file-relay/connect';
 const REQ_HEAD = 1, REQ_BODY = 2, REQ_END = 3, RES_HEAD = 4, RES_BODY = 5, RES_END = 6, ABORT = 7;
-const CHUNK = 256 * 1024;
-const HIGH_WATER = 4 * 1024 * 1024;
+// Small on purpose: whatever is queued on a socket has to be sent before anything that comes after it, and the school's
+// upload link is slow (about 0.4 MB/s), so every 1 MB queued is ~2.5 s of delay for the next request on that socket.
+const CHUNK = 64 * 1024;
+const HIGH_WATER = 512 * 1024;
+const MAX_PEERS = 8;
 const HEAD_TIMEOUT_MS = 30 * 1000;
 
 const HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
@@ -58,11 +63,32 @@ function pump(ws: any, source: any, type: number, id: number, onEnd: () => void)
 
 // ============================ online server side ============================
 
-let peer: any = null;
+const peers = new Set<any>();
 let nextId = 1;
-const pending = new Map<number, { res: any; started: boolean; timer: NodeJS.Timeout }>();
+const pending = new Map<number, { res: any; started: boolean; timer: NodeJS.Timeout; ws: any }>();
 
-export const relayConnected = (): boolean => !!peer && peer.readyState === WebSocket.OPEN;
+export const relayConnected = (): boolean => [...peers].some((p) => p.readyState === WebSocket.OPEN);
+
+// The open socket that is carrying the least, so a request never queues behind a big download. The backlog is on the
+// school server's side of the link, which this side cannot measure, so it goes by what we can see: requests still in
+// progress on the socket, and answer data still arriving for a request that was already cancelled (the Android web view
+// starts a download, drops it and asks again: its leftovers keep that socket busy for a while).
+const STRAY_BUSY_MS = 3000;
+const busyScore = (ws: any): number => {
+    let n = 0;
+    for (const p of pending.values()) if (p.ws === ws) n++;
+    return n + (Date.now() - (ws._strayAt || 0) < STRAY_BUSY_MS ? 100 : 0);
+};
+const pickPeer = (): any => {
+    let best: any = null, bestScore = Infinity;
+    for (const p of peers) {
+        if (p.readyState !== WebSocket.OPEN) continue;
+        const score = busyScore(p);
+        if (score < bestScore || (score === bestScore && (p._usedAt || 0) < (best._usedAt || 0))) { best = p; bestScore = score; }
+    }
+    if (best) best._usedAt = Date.now();
+    return best;
+};
 
 const keyOk = (header: string | undefined): boolean => {
     const expected = process.env.SYNC_API_KEY || '';
@@ -102,9 +128,10 @@ export function attachRelayServer(httpServer: http.Server) {
     });
 
     function onPeer(ws: any) {
-        if (peer && peer.readyState === WebSocket.OPEN) { try { peer.close(4000, 'replaced'); } catch { /* ignore */ } }
-        peer = ws;
-        console.log('[FILE-RELAY] school server connected');
+        peers.add(ws);
+        // A school server that keeps reconnecting must not pile up sockets: drop the oldest beyond the limit.
+        while (peers.size > MAX_PEERS) { const old = peers.values().next().value; peers.delete(old); try { old.close(4000, 'replaced'); } catch { /* ignore */ } }
+        console.log(`[FILE-RELAY] school server connected (${peers.size} open)`);
         let alive = true;
         ws.on('pong', () => { alive = true; });
         const beat = setInterval(() => {
@@ -117,7 +144,7 @@ export function attachRelayServer(httpServer: http.Server) {
             if (!Buffer.isBuffer(data) || data.length < 5) return;
             const type = data[0], id = data.readUInt32BE(1), payload = data.subarray(5);
             const p = pending.get(id);
-            if (!p) return;
+            if (!p) { ws._strayAt = Date.now(); return; }   // answer data for a request that is already gone
             if (type === RES_HEAD) {
                 clearTimeout(p.timer);
                 try {
@@ -141,10 +168,10 @@ export function attachRelayServer(httpServer: http.Server) {
 
         ws.on('close', () => {
             clearInterval(beat);
-            if (peer === ws) {
-                peer = null;
-                console.log('[FILE-RELAY] school server disconnected');
-                for (const id of [...pending.keys()]) failPending(id, 502, 'The school server went offline. Try again in a moment.');
+            if (peers.delete(ws)) {
+                console.log(`[FILE-RELAY] school server disconnected (${peers.size} open)`);
+                // Only the requests that were on this socket are lost; the others carry on.
+                for (const [id, p] of [...pending]) if (p.ws === ws) failPending(id, 502, 'The school server went offline. Try again in a moment.');
             }
         });
         ws.on('error', () => { /* close follows */ });
@@ -158,10 +185,10 @@ export function relayForward(req: any, res: any, opts: { path: string; headers: 
         res.end('<p style="font-family:sans-serif">File Management is not available right now: the school server is not connected. Try again later.</p>');
         return;
     }
-    const ws = peer;
+    const ws = pickPeer();
     const id = nextId++ >>> 0 || nextId++;
     const timer = setTimeout(() => failPending(id, 504, 'File Management took too long to answer.'), HEAD_TIMEOUT_MS);
-    pending.set(id, { res, started: false, timer });
+    pending.set(id, { res, started: false, timer, ws });
     ws.send(frame(REQ_HEAD, id, JSON.stringify({ method: req.method, path: opts.path, headers: opts.headers })));
     pump(ws, req, REQ_BODY, id, () => { if (ws.readyState === WebSocket.OPEN) ws.send(frame(REQ_END, id)); });
     req.on('aborted', () => { if (pending.has(id) && ws.readyState === WebSocket.OPEN) ws.send(frame(ABORT, id)); pending.delete(id); });
@@ -176,6 +203,7 @@ export function relayForward(req: any, res: any, opts: { path: string; headers: 
 /** School server: keep one outbound socket to the online backend and answer its file requests from the local file app. */
 export function startRelayClient() {
     if (process.env.FILE_RELAY_CLIENT !== 'on') return;
+    const count = Math.min(Math.max(Math.trunc(Number(process.env.FILE_RELAY_CONNECTIONS)) || 3, 1), MAX_PEERS);
     const key = process.env.SYNC_API_KEY || '';
     const target = new URL(process.env.FILE_RELAY_TARGET || 'http://127.0.0.1:8081');
     let url = process.env.FILE_RELAY_URL || '';
@@ -185,7 +213,8 @@ export function startRelayClient() {
     }
     if (!key || !url) { console.warn('[FILE-RELAY] client not started: SYNC_API_KEY and REMOTE_SYNC_URL (or FILE_RELAY_URL) are needed'); return; }
 
-    let delay = 2000;
+    const run = (slot: number) => {
+    let delay = 2000 + slot * 700;   // staggered, so the sockets do not all retry in the same instant
     const connect = () => {
         const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${key}` }, handshakeTimeout: 10000, maxPayload: 8 * 1024 * 1024 });
         const local = new Map<number, http.ClientRequest>();
@@ -195,7 +224,7 @@ export function startRelayClient() {
         ws.on('open', () => {
             delay = 2000;
             lastPing = Date.now();
-            console.log('[FILE-RELAY] connected to the online server');
+            if (slot === 0) console.log('[FILE-RELAY] connected to the online server');
             watchdog = setInterval(() => { if (Date.now() - lastPing > 70000) ws.terminate(); }, 10000);
         });
         ws.on('ping', () => { lastPing = Date.now(); });
@@ -240,11 +269,13 @@ export function startRelayClient() {
             if (watchdog) clearInterval(watchdog);
             for (const lr of local.values()) lr.destroy();
             local.clear();
-            console.log(`[FILE-RELAY] disconnected; retrying in ${Math.round(delay / 1000)}s`);
+            if (slot === 0) console.log(`[FILE-RELAY] disconnected; retrying in ${Math.round(delay / 1000)}s`);
             setTimeout(connect, delay);
             delay = Math.min(delay * 2, 30000);
         });
         ws.on('error', () => { /* close follows */ });
     };
     connect();
+    };
+    for (let slot = 0; slot < count; slot++) run(slot);
 }
