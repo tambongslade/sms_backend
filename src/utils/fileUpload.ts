@@ -93,7 +93,8 @@ export const getFileUrl = (req: any, filename: string, photoType?: PhotoType): s
     const protocol = req.protocol;
     const host = req.get('host');
 
-    if (photoType === PhotoType.STUDENT) {
+    // Student pictures that an older upload saved in the users folder keep their user- name.
+    if (photoType === PhotoType.STUDENT && !filename.startsWith('user-')) {
         return `${protocol}://${host}/uploads/students/${filename}`;
     }
     if (photoType === PhotoType.USER) {
@@ -119,7 +120,9 @@ export const getLocalFilePath = (filename: string, photoType?: PhotoType): strin
 
     if (photoType === PhotoType.STUDENT || filename.startsWith('student-')) {
         const filePath = path.join(STUDENT_PHOTOS_DIR, filename);
-        return fs.existsSync(filePath) ? filePath : path.join(DEFAULT_PHOTOS_DIR, 'default-student.jpg');
+        if (fs.existsSync(filePath)) return filePath;
+        const userPath = path.join(USER_PHOTOS_DIR, filename); // older uploads saved a student picture as user-*
+        return fs.existsSync(userPath) ? userPath : path.join(DEFAULT_PHOTOS_DIR, 'default-student.jpg');
     }
 
     if (photoType === PhotoType.USER || filename.startsWith('user-')) {

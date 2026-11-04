@@ -34,6 +34,7 @@ const SILHOUETTE = 'data:image/svg+xml;base64,' + Buffer.from(
 
 const STUDENT_PHOTOS_DIR = path.join(process.cwd(), 'uploads', 'students');
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+const USER_PHOTOS_DIR = path.join(process.cwd(), 'uploads', 'users');
 
 const cache: { template?: string; logo?: string } = {};
 function assets() {
@@ -54,7 +55,7 @@ function assets() {
 export function studentPhoto(filename: string | null): string {
     if (!filename) return SILHOUETTE;
     const base = path.basename(filename); // stored values are file names; strip any path
-    for (const dir of [STUDENT_PHOTOS_DIR, UPLOAD_DIR]) {
+    for (const dir of [STUDENT_PHOTOS_DIR, USER_PHOTOS_DIR, UPLOAD_DIR]) {
         const p = path.join(dir, base);
         try {
             if (fs.existsSync(p)) {

@@ -499,6 +499,13 @@ export class DatabaseSyncer {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) return;
 
     try {
+      // pg_get_serial_sequence() raises an error (not NULL) for a table without an "id" column.
+      const hasId: any[] = await prisma.$queryRawUnsafe(
+        `SELECT 1 FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = '${tableName}' AND column_name = 'id'`
+      );
+      if (!hasId.length) return;
+
       const seqRow: any[] = await prisma.$queryRawUnsafe(
         `SELECT pg_get_serial_sequence('"${tableName}"', 'id') AS seq`
       );
