@@ -1,6 +1,7 @@
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { recordPhotoDeletion } from './photoDeletions';
 
 // Define the upload directory structure
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
@@ -156,6 +157,8 @@ export const deletePhotoFile = (filename: string): boolean => {
         if (fs.existsSync(filePath)) {
             try {
                 fs.unlinkSync(filePath);
+                // So the photo sync removes it from the other server as well.
+                recordPhotoDeletion(filename);
                 return true;
             } catch (error) {
                 console.error(`Error deleting file ${filePath}:`, error);

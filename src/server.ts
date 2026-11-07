@@ -7,6 +7,7 @@ import { AddressInfo } from 'net';
 import { SyncService } from './sync/sync-service';
 import { initRealtime } from './realtime/socket';
 import { attachRelayServer, startRelayClient } from './filemanagement/relay';
+import { startPhotoSync } from './sync/photo-sync';
 import { seedChatChannels } from './scripts/seedChatChannels';
 import { warmUp } from './api/v1/services/aiAssistant/ollamaClient';
 
@@ -65,6 +66,8 @@ function startServer(port: number) {
             syncService.initialize().catch(console.error);
             // School server: keep the outbound socket to the online server for File Management (FILE_RELAY_CLIENT=on)
             startRelayClient();
+            // Photo files follow the photo names the data sync carries (needs REMOTE_SYNC_URL; PHOTO_SYNC=off disables)
+            startPhotoSync();
             // Seed department / subject chat channels (idempotent, but there is
             // no reason for every worker to race on it)
             seedChatChannels().catch(err => console.error('seedChatChannels failed:', err));

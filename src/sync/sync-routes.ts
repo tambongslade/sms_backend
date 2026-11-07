@@ -4,6 +4,7 @@ import { DatabaseSyncer } from './database-syncer';
 import prisma from '../config/db';
 import { getTableStats } from './sync-stats';
 import { getOutboxStatus, isOutboxEnabled, pruneOutbox } from './outbox';
+import { attachPhotoSyncRoutes } from './photo-sync';
 
 const router = Router();
 const syncManager = new SyncManager();
@@ -28,6 +29,9 @@ function requireSyncAuth(req: Request, res: Response, next: NextFunction) {
   }
   next();
 }
+
+// Photo files: the database sync only carries the photo names (see photo-sync.ts)
+attachPhotoSyncRoutes(router, requireSyncAuth);
 
 // Manual sync trigger
 router.post('/sync/trigger', requireSyncAuth, async (req: Request, res: Response) => {
