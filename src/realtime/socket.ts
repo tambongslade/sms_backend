@@ -5,6 +5,7 @@ import type { Server as HttpServer } from 'http';
 import jwt from 'jsonwebtoken';
 import prisma from '../config/db';
 import { isTokenBlacklisted } from '../api/v1/services/tokenBlacklistService';
+import { getAllowedOrigins } from '../config/allowedOrigins';
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
 if (!JWT_SECRET) {
@@ -196,11 +197,7 @@ export function getIO(): SocketIOServer | null {
 export function initRealtime(httpServer: HttpServer): SocketIOServer {
     const io = new SocketIOServer(httpServer, {
         cors: {
-            origin: process.env.ALLOWED_ORIGINS?.split(',') || [
-                'http://localhost:3000',
-                'http://localhost:3001',
-                'https://sms.sniperbuisnesscenter.com',
-            ],
+            origin: getAllowedOrigins(),
             credentials: true,
             methods: ['GET', 'POST'],
         },

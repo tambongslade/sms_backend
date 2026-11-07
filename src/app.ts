@@ -10,6 +10,7 @@ import { convertCamelToSnakeCase, convertSnakeToCamelCase } from './api/v1/middl
 import syncRoutes from './sync/sync-routes';
 import apiV1Routes from './api/v1/routes/index';
 import fileManagementRoutes from './api/v1/routes/fileManagementRoutes';
+import { getAllowedOrigins } from './config/allowedOrigins';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -25,12 +26,7 @@ app.use(
 
 // Enable CORS for all routes - flexible configuration for development and production
 app.use(cors({
-    origin: process.env.ALLOWED_ORIGINS?.split(',') || [
-        'http://localhost:3000',
-        'http://localhost:3001',
-        'https://sms.sniperbuisnesscenter.com',
-        // Add more origins as needed for production
-    ],
+    origin: getAllowedOrigins(),
     credentials: true, // Allow credentials (cookies, authorization headers)
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
