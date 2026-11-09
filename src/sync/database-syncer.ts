@@ -3,6 +3,7 @@ import { SyncResult, SyncConflict, ConflictResolution, RemoteRecord, DeferredRec
 import { ConflictResolver } from './conflict-resolver';
 import { ApiClient } from './api-client';
 import * as crypto from 'crypto';
+import { applyFeeEffects, feeEffectOf, movesFeeTotal, receiptsTotal } from './fee-totals';
 
 export class DatabaseSyncer {
   private conflictResolver: ConflictResolver;
@@ -288,7 +289,7 @@ export class DatabaseSyncer {
 
         if (!localRecord) {
           // New record - insert. The remote record is a flat Prisma row.
-          await this.insertRecord(model, remoteRecord);
+          await this.insertRecord(model, remoteRecord, tableName);
           result.recordsProcessed++;
 
         } else {
@@ -300,7 +301,7 @@ export class DatabaseSyncer {
             result.conflicts.push(resolution);
 
             if (resolution.resolution !== ConflictResolution.MANUAL) {
-              await this.applyResolution(model, resolution);
+              await this.applyResolution(model, resolution, tableName);
               result.recordsProcessed++;
             }
           } else {
@@ -315,7 +316,7 @@ export class DatabaseSyncer {
                 `[SYNC] Skipping stale pull ${tableName}[${localRecord.id}]: local updated_at ${localRecord.updated_at?.toISOString?.() ?? localRecord.updated_at} > remote ${remoteRecord.updated_at}`
               );
             } else {
-              await this.updateRecord(model, String(localRecord.id), remoteRecord);
+              await this.updateRecord(model, String(localRecord.id), remoteRecord, tableName);
               result.recordsProcessed++;
             }
           }
@@ -530,20 +531,40 @@ export class DatabaseSyncer {
     }
   }
 
-  private async insertRecord(model: any, data: any) {
+  private async insertRecord(model: any, data: any, tableName?: string) {
     // Preserve server_id and checksum from the remote payload so
     // getLocalChanges can later filter out records that originated remotely
     // (echo-loop prevention). The Prisma middleware in db.ts sees server_id
     // is already present and won't overwrite it.
+    if (tableName === 'SchoolFees' || (tableName && movesFeeTotal(tableName))) {
+      // A fee's paid total is kept by each server from its own receipts (see fee-totals.ts).
+      await prisma.$transaction(async (tx: any) => {
+        const row = { ...data };
+        if (tableName === 'SchoolFees' && Number.isFinite(Number(row.id))) {
+          row.amount_paid = await receiptsTotal(tx, Number(row.id));
+        }
+        const created = await tx[this.modelKey(tableName)].create({ data: row });
+        if (tableName !== 'SchoolFees') await applyFeeEffects(tx, null, feeEffectOf(tableName, created));
+      });
+      return;
+    }
     await model.create({ data });
   }
 
-  private async updateRecord(model: any, id: string, data: any) {
+  private async updateRecord(model: any, id: string, data: any, tableName?: string) {
     // Never carry the incoming id into the update. Where the row was matched
     // by natural key the peer's id belongs to a different row on this node,
     // and writing it would renumber the primary key onto a value another row
     // may already hold. The id to keep is the one being updated.
     const { id: _incomingId, ...rest } = data;
+
+    if (tableName === 'SchoolFees') {
+      // The peer's paid total is its own count and may be out of date: never copy it over ours.
+      delete (rest as any).amount_paid;
+    } else if (tableName && movesFeeTotal(tableName)) {
+      await this.updateMovingFeeTotal(tableName, parseInt(id), rest);
+      return;
+    }
 
     await model.update({
       where: { id: parseInt(id) },
@@ -551,7 +572,28 @@ export class DatabaseSyncer {
     });
   }
 
-  private async applyResolution(model: any, resolution: SyncConflict) {
+  /** Updates a payment or refund and moves its fee's paid total by what changed, in one transaction. */
+  private async updateMovingFeeTotal(tableName: string, id: number, data: any) {
+    await prisma.$transaction(async (tx: any) => {
+      const delegate = tx[this.modelKey(tableName)];
+      const before = await delegate.findUnique({ where: { id } });
+      const after = await delegate.update({ where: { id }, data });
+      await applyFeeEffects(tx, feeEffectOf(tableName, before), feeEffectOf(tableName, after));
+    });
+  }
+
+  private modelKey(tableName: string): string {
+    return tableName.charAt(0).toLowerCase() + tableName.slice(1);
+  }
+
+  private async applyResolution(model: any, resolution: SyncConflict, tableName?: string) {
+    if (tableName === 'SchoolFees' && resolution.field === 'amount_paid') return; // see updateRecord
+    if (tableName && movesFeeTotal(tableName)) {
+      await this.updateMovingFeeTotal(tableName, parseInt(resolution.recordId), {
+        [resolution.field]: resolution.resolvedValue
+      });
+      return;
+    }
     await model.update({
       where: { id: parseInt(resolution.recordId) },
       data: {
@@ -594,9 +636,9 @@ export class DatabaseSyncer {
           );
           return;
         }
-        await this.updateRecord(model, String(existing.id), record);
+        await this.updateRecord(model, String(existing.id), record, tableName);
       } else {
-        await this.insertRecord(model, record);
+        await this.insertRecord(model, record, tableName);
       }
     } catch (error: any) {
       // Logged short, not raw: Prisma embeds a multi-line source excerpt in
