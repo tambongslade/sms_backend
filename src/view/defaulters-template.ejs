@@ -68,6 +68,9 @@
         page-break-after: always;
     }
     .subclass-page:last-child { page-break-after: auto; }
+    /* A student's row (name, matricule, amounts) never splits across two pages. */
+    tr { page-break-inside: avoid; break-inside: avoid; }
+    thead { display: table-header-group; }
 
     .subclass-header {
         margin: 4px 0 6px 0;
@@ -187,7 +190,7 @@
                 <div class="value"><%= fmt(totalDefaulters) %></div>
             </div>
             <div class="item">
-                <div class="label">Total Outstanding (FCFA)</div>
+                <div class="label"><% if (installmentLabel) { %>Total Remaining by <%= installmentLabel %> (FCFA)<% } else { %>Total Outstanding (FCFA)<% } %></div>
                 <div class="value"><%= fmt(totalOutstanding) %></div>
             </div>
             <div class="item">
@@ -206,7 +209,6 @@
                     <div class="title"><%= page.className %> &middot; <%= page.subClassName %></div>
                     <div class="meta">
                         <%= page.students.length %> defaulter<%= page.students.length === 1 ? '' : 's' %>
-                        &middot; Outstanding: <%= fmt(page.totalOutstanding) %> FCFA
                     </div>
                 </div>
 
@@ -218,8 +220,8 @@
                                 <th style="width: 34%;">Name</th>
                                 <th style="width: 10%;" class="center">Status</th>
                                 <th style="width: 15%;" class="num">Total Paid (FCFA)</th>
-                                <th style="width: 18%;" class="num"><%= installmentLabel %> Expected (FCFA)</th>
-                                <th style="width: 19%;" class="num"><%= installmentLabel %> Remaining (FCFA)</th>
+                                <th style="width: 18%;" class="num">Expected Paid by <%= installmentLabel %> (FCFA)</th>
+                                <th style="width: 19%;" class="num">Remaining to Pay by <%= installmentLabel %> (FCFA)</th>
                             <% } else { %>
                                 <th style="width: 4%;" class="center">#</th>
                                 <th style="width: 28%;">Name</th>
@@ -251,8 +253,8 @@
                                 </td>
                                 <td class="num"><%= fmt(s.totalPaid) %></td>
                                 <% if (installment) { %>
-                                    <td class="num"><%= fmt(inst ? inst.expected : 0) %></td>
-                                    <td class="num"><%= fmt(inst ? inst.outstanding : 0) %></td>
+                                    <td class="num"><%= fmt(inst ? inst.cumulativeExpected : 0) %></td>
+                                    <td class="num"><%= fmt(inst ? inst.cumulativeOutstanding : 0) %></td>
                                 <% } else { %>
                                     <td class="num"><%= fmt(s.installments && s.installments.first ? s.installments.first.outstanding : 0) %></td>
                                     <td class="num"><%= fmt(s.installments && s.installments.second ? s.installments.second.outstanding : 0) %></td>

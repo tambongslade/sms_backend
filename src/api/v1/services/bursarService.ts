@@ -792,6 +792,8 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
         isNewStudent: boolean;
         outstanding: number;
         totalPaid: number;
+        /** What the student is billed for the year, all fee rows together. */
+        totalExpected: number;
         // Registration (new/old-student fee + miscellaneous) plus the 1st/2nd/3rd
         // term fee for the enrollment's class -- the schedule payments get applied
         // against FIFO (registration first, then term 1/2/3) to derive per-installment
@@ -812,6 +814,7 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
         if (existing) {
             existing.outstanding += balance;
             existing.totalPaid += row.amount_paid || 0;
+            existing.totalExpected += row.amount_expected || 0;
             if (row.due_date && (!existing.oldestDueDate || row.due_date < existing.oldestDueDate)) {
                 existing.oldestDueDate = row.due_date;
             }
@@ -833,6 +836,7 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
             isNewStudent: student?.is_new_student ?? true,
             outstanding: balance,
             totalPaid: row.amount_paid || 0,
+            totalExpected: row.amount_expected || 0,
             schedule: {
                 registration: (row.is_new_student
                     ? (enrollment?.class?.new_student_fee || 0)
@@ -857,23 +861,42 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
     // 1st term's fee, then the 2nd, then the 3rd. What's left of the class
     // schedule after that is what's still owed on each installment.
     const installmentBreakdown = (d: DefaulterAgg) => {
-        const { registration, first, second, third } = d.schedule;
+        let { registration, first, second, third } = d.schedule;
+        // The installments must add up to what this student is actually billed. Where the bill
+        // differs from the class schedule (a fee set by hand, a deduction), the extra goes on
+        // registration and a reduction comes off the last installments first.
+        let diff = d.totalExpected - (registration + first + second + third);
+        if (diff > 0) {
+            registration += diff;
+        } else if (diff < 0) {
+            const take = (amount: number) => { const t = Math.min(amount, -diff); diff += t; return amount - t; };
+            third = take(third);
+            second = take(second);
+            first = take(first);
+            registration = take(registration);
+        }
         const paidToRegistration = Math.min(d.totalPaid, registration);
         const paidToFirst = Math.min(Math.max(d.totalPaid - registration, 0), first);
         const paidToSecond = Math.min(Math.max(d.totalPaid - registration - first, 0), second);
         const paidToThird = Math.min(Math.max(d.totalPaid - registration - first - second, 0), third);
+        // What the student should have paid in all by each installment (registration and the
+        // earlier installments included), and how much of that is still missing.
+        const dueBy = (total: number) => ({
+            cumulativeExpected: total,
+            cumulativeOutstanding: Math.max(total - d.totalPaid, 0),
+        });
         return {
             registration: { expected: registration, paid: paidToRegistration, outstanding: Math.max(registration - paidToRegistration, 0) },
-            first: { expected: first, paid: paidToFirst, outstanding: Math.max(first - paidToFirst, 0) },
-            second: { expected: second, paid: paidToSecond, outstanding: Math.max(second - paidToSecond, 0) },
-            third: { expected: third, paid: paidToThird, outstanding: Math.max(third - paidToThird, 0) },
+            first: { expected: first, paid: paidToFirst, outstanding: Math.max(first - paidToFirst, 0), ...dueBy(registration + first) },
+            second: { expected: second, paid: paidToSecond, outstanding: Math.max(second - paidToSecond, 0), ...dueBy(registration + first + second) },
+            third: { expected: third, paid: paidToThird, outstanding: Math.max(third - paidToThird, 0), ...dueBy(registration + first + second + third) },
         };
     };
 
     let defaultersForList = defaulters;
     if (options.installment) {
         defaultersForList = defaulters.filter(
-            d => installmentBreakdown(d)[options.installment!].outstanding > 0
+            d => installmentBreakdown(d)[options.installment!].cumulativeOutstanding > 0
         );
     }
 
@@ -1033,6 +1056,11 @@ export async function generateDefaultersReportPdf(
         students: any[];
     }
     const pageMap = new Map<string, SubclassPage>();
+    // Filtered to one installment, the amounts summed are the report's "Remaining to pay by"
+    // column, so the totals add up to what the table shows; otherwise the year's balance.
+    const rowOwing = (s: any): number => options.installment
+        ? (s.installments?.[options.installment]?.cumulativeOutstanding || 0)
+        : (s.outstandingAmount || 0);
     for (const s of report.students) {
         const key = `${s.classId ?? `n:${s.className}`}::${s.subClassId ?? `n:${s.subClassName}`}`;
         let page = pageMap.get(key);
@@ -1049,7 +1077,7 @@ export async function generateDefaultersReportPdf(
             pageMap.set(key, page);
         }
         page.students.push(s);
-        page.totalOutstanding += s.outstandingAmount || 0;
+        page.totalOutstanding += rowOwing(s);
         page.totalPaid += s.totalPaid || 0;
     }
     const pages = Array.from(pageMap.values());
@@ -1058,7 +1086,9 @@ export async function generateDefaultersReportPdf(
     const html = ejs.render(template, {
         academicYearName,
         totalDefaulters: report.totalDefaulters,
-        totalOutstanding: report.totalOutstanding,
+        totalOutstanding: options.installment
+            ? report.students.reduce((sum: number, s: any) => sum + rowOwing(s), 0)
+            : report.totalOutstanding,
         pages,
         installment: options.installment || null,
         documentTitle: `Fees Defaulters Report ${academicYearName}`,
@@ -1169,7 +1199,7 @@ export async function generateFeeDefaulterLettersPdf(
             ...s,
             // Amount quoted in the letter: the chosen installment's balance when
             // one was picked, else the student's total outstanding balance.
-            displayAmount: options.installment ? s.installments[options.installment].outstanding : s.outstandingAmount,
+            displayAmount: options.installment ? s.installments[options.installment].cumulativeOutstanding : s.outstandingAmount,
         }))
         .sort((a: any, b: any) => {
             const byClass = a.className.localeCompare(b.className, undefined, { numeric: true, sensitivity: 'base' });
