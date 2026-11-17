@@ -156,3 +156,25 @@ export const exportControlFeeReports = async (req: Request, res: Response) => {
         });
     }
 };
+
+// PUT /control-fees/payments/:id - correct a payment within 10 minutes of recording it (only by whoever recorded it).
+export const updateControlPayment = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ success: false, error: 'Invalid payment id' });
+        const userId = (req as any).user?.id;
+        if (!userId) return res.status(401).json({ success: false, error: 'Not signed in' });
+        const { amount, payment_date, payment_method, receipt_number } = req.body || {};
+        const payment = await controlFeeService.updateControlPayment(id, userId, { amount, payment_date, payment_method, receipt_number });
+        res.json({ success: true, data: payment });
+    } catch (error: any) {
+        if (error instanceof controlFeeService.ControlPaymentEditError) {
+            return res.status(error.status).json({ success: false, error: error.message });
+        }
+        if (String(error?.message || '').includes('Invalid payment method')) {
+            return res.status(400).json({ success: false, error: error.message });
+        }
+        console.error('Error updating control payment:', error);
+        res.status(500).json({ success: false, error: error?.message || 'Failed to update payment' });
+    }
+};

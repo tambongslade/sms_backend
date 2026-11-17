@@ -1,5 +1,5 @@
 // src/api/v1/services/controlFeeService.ts
-import prisma, { ControlSchoolFees, ControlPaymentTransaction, PaymentMethod } from '../../../config/db';
+import prisma, { Prisma, ControlSchoolFees, ControlPaymentTransaction, PaymentMethod } from '../../../config/db';
 import { normalizePaymentMethod } from '../../../utils/paymentMethod';
 import { getAcademicYearId, getStudentSubclassByStudentAndYear } from '../../../utils/academicYear';
 import { shouldPayNewStudentFees, getStudentStatus, StudentStatus } from '../../../utils/studentStatus';
@@ -1240,4 +1240,71 @@ export async function createControlFeeForNewEnrollment(enrollmentId: number): Pr
     }
 
     return createOrUpdateControlFeeForEnrollment(enrollmentId, classId);
+}
+/** How long after recording a control payment the person who recorded it may still correct it. */
+export const CONTROL_PAYMENT_EDIT_WINDOW_MS = 10 * 60 * 1000;
+
+export class ControlPaymentEditError extends Error {
+    constructor(message: string, public status: number) {
+        super(message);
+    }
+}
+
+/**
+ * Corrects a control payment (amount, receipt date, method, receipt number) within 10 minutes of recording it,
+ * by the user who recorded it. The running total on the student's ControlSchoolFees moves by the change in amount,
+ * in the same transaction, and the previous values are kept in the payment's notes.
+ */
+export async function updateControlPayment(
+    paymentId: number,
+    userId: number,
+    changes: { amount?: number; payment_date?: string; payment_method?: string; receipt_number?: string | null },
+): Promise<ControlPaymentTransaction> {
+    return prisma.$transaction(async (tx) => {
+        const payment = await tx.controlPaymentTransaction.findUnique({ where: { id: paymentId } });
+        if (!payment) throw new ControlPaymentEditError('Payment not found', 404);
+        if (payment.recorded_by_id !== userId) {
+            throw new ControlPaymentEditError('Only the person who recorded this payment can correct it.', 403);
+        }
+        if (Date.now() - payment.created_at.getTime() > CONTROL_PAYMENT_EDIT_WINDOW_MS) {
+            throw new ControlPaymentEditError('This payment can no longer be changed: payments can only be corrected within 10 minutes of being recorded.', 403);
+        }
+
+        const data: Prisma.ControlPaymentTransactionUpdateInput = {};
+        const before: string[] = [];
+        if (changes.amount !== undefined) {
+            const amount = Number(changes.amount);
+            if (!Number.isFinite(amount) || amount <= 0) throw new ControlPaymentEditError('Amount must be greater than 0.', 400);
+            if (amount !== payment.amount) { data.amount = amount; before.push(`amount ${payment.amount}`); }
+        }
+        if (changes.payment_date !== undefined) {
+            const date = new Date(changes.payment_date);
+            if (isNaN(date.getTime())) throw new ControlPaymentEditError('Invalid payment date.', 400);
+            if (date.getTime() !== payment.payment_date.getTime()) {
+                data.payment_date = date;
+                before.push(`date ${payment.payment_date.toISOString().slice(0, 10)}`);
+            }
+        }
+        if (changes.payment_method !== undefined) {
+            const method = normalizePaymentMethod(changes.payment_method);
+            if (method !== payment.payment_method) { data.payment_method = method; before.push(`method ${payment.payment_method}`); }
+        }
+        if (changes.receipt_number !== undefined) {
+            const receipt = (changes.receipt_number || '').trim() || null;
+            if (receipt !== payment.receipt_number) { data.receipt_number = receipt; before.push(`receipt ${payment.receipt_number || '-'}`); }
+        }
+        if (before.length === 0) return payment;
+
+        const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+        data.notes = [payment.notes, `Corrected ${stamp} UTC (was: ${before.join(', ')})`].filter(Boolean).join('\n');
+
+        const updated = await tx.controlPaymentTransaction.update({ where: { id: paymentId }, data });
+        if (data.amount !== undefined) {
+            await tx.controlSchoolFees.update({
+                where: { id: payment.control_fee_id },
+                data: { amount_paid: { increment: (data.amount as number) - payment.amount } },
+            });
+        }
+        return updated;
+    });
 }

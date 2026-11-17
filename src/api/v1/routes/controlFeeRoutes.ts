@@ -15,6 +15,9 @@ const CONTROL_READ = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'CONTROLLER'];
 // Must precede the parameterised /:controlFeeId/payments route below.
 router.post('/payments', authenticate, authorize(CONTROL_WRITE), controlFeeController.recordControlPayment);
 
+// PUT /control-fees/payments/:id - Correct a payment within 10 minutes of recording it (only whoever recorded it).
+router.put('/payments/:id', authenticate, authorize(CONTROL_WRITE), controlFeeController.updateControlPayment);
+
 // GET /control-fees/export - Export control payments. Must precede /:id.
 router.get('/export', authenticate, authorize(CONTROL_READ), controlFeeController.exportControlFeeReports);
 
