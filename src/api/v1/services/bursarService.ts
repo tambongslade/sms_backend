@@ -11,6 +11,7 @@ import path from 'path';
 import * as PuppeteerManager from '../../../utils/puppeteerManager';
 import { ensureSchoolFeeForEnrollment } from './feeService';
 import { getOutstandingSummary, getPaymentMethodTotals, ACTIVE_FEE_ROW_WHERE, summarizeBalances } from './feeOutstandingService';
+import { splitInstallments, installmentCount } from '../../../utils/installments';
 
 // Types for bursar operations
 export interface ParentContactInput {
@@ -860,38 +861,9 @@ export async function getDefaultersReport(options: DefaultersReportOptions = {})
     // Registration (new/old-student fee + miscellaneous) is paid first, then the
     // 1st term's fee, then the 2nd, then the 3rd. What's left of the class
     // schedule after that is what's still owed on each installment.
-    const installmentBreakdown = (d: DefaulterAgg) => {
-        let { registration, first, second, third } = d.schedule;
-        // The installments must add up to what this student is actually billed. Where the bill
-        // differs from the class schedule (a fee set by hand, a deduction), the extra goes on
-        // registration and a reduction comes off the last installments first.
-        let diff = d.totalExpected - (registration + first + second + third);
-        if (diff > 0) {
-            registration += diff;
-        } else if (diff < 0) {
-            const take = (amount: number) => { const t = Math.min(amount, -diff); diff += t; return amount - t; };
-            third = take(third);
-            second = take(second);
-            first = take(first);
-            registration = take(registration);
-        }
-        const paidToRegistration = Math.min(d.totalPaid, registration);
-        const paidToFirst = Math.min(Math.max(d.totalPaid - registration, 0), first);
-        const paidToSecond = Math.min(Math.max(d.totalPaid - registration - first, 0), second);
-        const paidToThird = Math.min(Math.max(d.totalPaid - registration - first - second, 0), third);
-        // What the student should have paid in all by each installment (registration and the
-        // earlier installments included), and how much of that is still missing.
-        const dueBy = (total: number) => ({
-            cumulativeExpected: total,
-            cumulativeOutstanding: Math.max(total - d.totalPaid, 0),
-        });
-        return {
-            registration: { expected: registration, paid: paidToRegistration, outstanding: Math.max(registration - paidToRegistration, 0) },
-            first: { expected: first, paid: paidToFirst, outstanding: Math.max(first - paidToFirst, 0), ...dueBy(registration + first) },
-            second: { expected: second, paid: paidToSecond, outstanding: Math.max(second - paidToSecond, 0), ...dueBy(registration + first + second) },
-            third: { expected: third, paid: paidToThird, outstanding: Math.max(third - paidToThird, 0), ...dueBy(registration + first + second + third) },
-        };
-    };
+    // Same split everywhere: see utils/installments.ts (Form 5 / Upper Sixth pay in 2 installments).
+    const installmentBreakdown = (d: DefaulterAgg) =>
+        splitInstallments(d.schedule, d.totalExpected, d.totalPaid, installmentCount(d.className));
 
     let defaultersForList = defaulters;
     if (options.installment) {
