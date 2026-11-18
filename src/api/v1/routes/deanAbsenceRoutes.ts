@@ -19,8 +19,9 @@ import { getDeanSubClassIds } from '../services/teacherPeriodAttendanceService';
 import * as disciplineService from '../services/disciplineService';
 
 const router = Router();
-const ROLES = ['DEAN_OF_DISCIPLINE'];
-const SEE_ALL = ['SUPER_MANAGER', 'MANAGER'];
+// The Discipline Coordinator oversees every sector.
+const ROLES = ['DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR'];
+const SEE_ALL = ['SUPER_MANAGER', 'MANAGER', 'DISCIPLINE_COORDINATOR'];
 
 const fail = (res: Response, e: unknown, status = 500) =>
     res.status(status).json({ success: false, error: (e as Error)?.message || String(e) });

@@ -234,9 +234,15 @@ router.get('/student/:id/fees', ...guard, async (req: Request, res: Response) =>
 // ---- Fee Defaulters for discipline staff: only the sub-classes they are assigned to ----
 // Assignments are the DISCIPLINE_MASTER RoleAssignment rows for the year (Deans who
 // also act as DM have theirs there too). No assignment = nothing to show.
-const FEE_DEFAULTER_VIEWERS = ['DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER', 'DEAN_OF_DISCIPLINE'];
+// The Discipline Coordinator oversees every class, so sees them all.
+const FEE_DEFAULTER_VIEWERS = ['DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR'];
 
-async function assignedSubClassIds(userId: number, yearId: number): Promise<number[]> {
+async function assignedSubClassIds(req: Request, yearId: number): Promise<number[]> {
+    const user: any = (req as any).user;
+    const userId: number = user.id;
+    if ((user.role || []).includes('DISCIPLINE_COORDINATOR')) {
+        return (await prisma.subClass.findMany({ select: { id: true } })).map(s => s.id);
+    }
     const rows = await prisma.roleAssignment.findMany({
         where: { user_id: userId, role_type: 'DISCIPLINE_MASTER', academic_year_id: yearId, sub_class_id: { not: null } },
         select: { sub_class_id: true },
@@ -248,7 +254,7 @@ router.get('/fee-defaulters/sub-classes', authenticate, authorize(FEE_DEFAULTER_
     try {
         const yearId = await yearIdFrom(req);
         if (!yearId) return res.json({ success: true, data: [] });
-        const ids = await assignedSubClassIds((req as any).user.id, yearId);
+        const ids = await assignedSubClassIds(req, yearId);
         if (ids.length === 0) return res.json({ success: true, data: [] });
         const subs = await prisma.subClass.findMany({
             where: { id: { in: ids } },
@@ -274,7 +280,7 @@ router.get('/fee-defaulters', authenticate, authorize(FEE_DEFAULTER_VIEWERS), as
         const installment = inst === 'first' || inst === 'second' || inst === 'third' ? inst : undefined;
         const yearId = await yearIdFrom(req);
         if (!yearId) return res.json({ success: true, data: { installment: installment || 'all', totalDefaulters: 0, totalOutstanding: 0, students: [] } });
-        const ids = await assignedSubClassIds((req as any).user.id, yearId);
+        const ids = await assignedSubClassIds(req, yearId);
         if (!ids.includes(subClassId)) {
             return res.status(403).json({ success: false, error: 'You are not assigned to this class' });
         }
