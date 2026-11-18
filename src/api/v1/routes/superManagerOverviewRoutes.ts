@@ -39,5 +39,7 @@ router.get('/gce-registration', authorize(OVERVIEW_ROLES), overview.getGceRegist
 const STATISTICS_ROLES = [...OVERVIEW_ROLES, 'VICE_PRINCIPAL', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR'];
 router.get('/statistics-report',     authorize(STATISTICS_ROLES), statisticsReport.getStatisticsReport);
 router.get('/statistics-report/pdf', authorize(STATISTICS_ROLES), statisticsReport.exportStatisticsReportPdf);
+router.get('/statistics-report/sub-class/:id', authorize(STATISTICS_ROLES), statisticsReport.getSubClassStudentStats);
+router.get('/statistics-report/student/:id/absences', authorize(STATISTICS_ROLES), statisticsReport.getStudentAbsenceRecords);
 
 export default router;

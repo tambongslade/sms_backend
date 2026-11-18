@@ -107,6 +107,15 @@ export interface FinancialPoiRow {
 // DISTINCT students marked present (or late) at least once in the range, out
 // of that class's Enrollment; Absence is the complement (enrollment minus
 // present), not a count of ABSENT marks, so the two always sum to Enrollment.
+export interface SubClassAttendanceRow {
+    subClassId: number;
+    subClassName: string;
+    enrollment: number;
+    present: number;
+    absence: number;
+    percentagePresent: number;
+}
+
 export interface ClassAttendanceRow {
     classId: number;
     className: string;
@@ -114,6 +123,8 @@ export interface ClassAttendanceRow {
     present: number;
     absence: number;
     percentagePresent: number;
+    // Same figures per sub-class (Statistics page: click a class to see them).
+    subClasses: SubClassAttendanceRow[];
 }
 
 export interface StatisticsReportData {
@@ -463,7 +474,7 @@ async function getClassAttendanceSection(
 ): Promise<ClassAttendanceRow[]> {
     if (!yearId) return [];
 
-    const [classes, enrollmentCounts, rollCallEntries] = await Promise.all([
+    const [classes, enrollmentCounts, rollCallEntries, subClassCounts, subClassNames] = await Promise.all([
         prisma.class.findMany({ select: { id: true, name: true } }),
         prisma.enrollment.groupBy({
             by: ['class_id'],
@@ -476,11 +487,43 @@ async function getClassAttendanceSection(
                 enrollment: { student: { status: { not: 'WITHDRAWN' } } },
                 status: { in: ['PRESENT', 'LATE'] },
             },
-            select: { enrollment_id: true, enrollment: { select: { class_id: true } } },
+            select: { enrollment_id: true, enrollment: { select: { class_id: true, sub_class_id: true } } },
         }),
+        prisma.enrollment.groupBy({
+            by: ['class_id', 'sub_class_id'],
+            where: { academic_year_id: yearId, student: { status: { not: 'WITHDRAWN' } } },
+            _count: { _all: true },
+        }),
+        prisma.subClass.findMany({ select: { id: true, name: true } }),
     ]);
 
     const enrollmentByClass = new Map(enrollmentCounts.map((e) => [e.class_id, e._count._all]));
+
+    // The same headcount per sub-class, for the drop-down under each class.
+    const subName = new Map(subClassNames.map((s) => [s.id, s.name]));
+    const presentBySub = new Map<string, Set<number>>();
+    for (const entry of rollCallEntries) {
+        const key = `${entry.enrollment?.class_id}|${entry.enrollment?.sub_class_id ?? 'none'}`;
+        const set = presentBySub.get(key) ?? new Set<number>();
+        set.add(entry.enrollment_id);
+        presentBySub.set(key, set);
+    }
+    const subRowsByClass = new Map<number, SubClassAttendanceRow[]>();
+    for (const g of subClassCounts) {
+        if (g.class_id == null) continue;
+        const present = presentBySub.get(`${g.class_id}|${g.sub_class_id ?? 'none'}`)?.size ?? 0;
+        const enrollment = g._count._all;
+        const list = subRowsByClass.get(g.class_id) ?? [];
+        list.push({
+            subClassId: g.sub_class_id ?? 0,
+            subClassName: g.sub_class_id ? subName.get(g.sub_class_id) ?? '—' : 'Not placed',
+            enrollment,
+            present,
+            absence: Math.max(enrollment - present, 0),
+            percentagePresent: toPct(present, enrollment),
+        });
+        subRowsByClass.set(g.class_id, list);
+    }
 
     // Students present, headcount not roll-call-mark count -- a student
     // shows up once here whether they were marked present in 1 slot or all
@@ -509,6 +552,8 @@ async function getClassAttendanceSection(
                 present,
                 absence,
                 percentagePresent: toPct(present, enrollment),
+                subClasses: (subRowsByClass.get(c.id) ?? []).sort((a, b) =>
+                    a.subClassName.localeCompare(b.subClassName, undefined, { numeric: true })),
             };
         })
         .filter((r) => r.enrollment > 0 || r.present > 0)
@@ -956,4 +1001,192 @@ export async function generateStatisticsReportPdf(params: {
     } finally {
         try { await page.close(); } catch { /* noop */ }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Drill-downs for the Statistics page
+// ---------------------------------------------------------------------------
+
+const ROLL_CALL_SLOT_LABEL: Record<string, string> = {
+    SLOT_2: 'Roll call 1 (after period 2)',
+    SLOT_5: 'Roll call 2 (after period 5)',
+    SLOT_8: 'Roll call 3 (end of day)',
+};
+
+/** Period weight of each absence record, same rule as the Class Absences table. */
+async function absenceWeigher() {
+    const periodCounts = await prisma.period.groupBy({
+        by: ['period_set_id', 'day_of_week'],
+        where: { type: 'TEACHING' },
+        _count: { _all: true },
+    });
+    const byKey = new Map(periodCounts.map((r) => [`${r.period_set_id ?? 'null'}|${r.day_of_week}`, r._count._all]));
+    return (slot: 'SLOT_2' | 'SLOT_5' | 'SLOT_8' | null | undefined, periodSetId: number | null, createdAt: Date) => {
+        if (!slot) return 1;
+        const n = byKey.get(`${periodSetId ?? 'null'}|${dayOfWeekFromDate(createdAt)}`) ?? 8;
+        return slotPeriodWeight(slot, n);
+    };
+}
+
+export interface SubClassStudentStatsRow {
+    studentId: number;
+    studentName: string;
+    matricule: string | null;
+    rollCallsPresent: number;
+    rollCallsLate: number;
+    rollCallsAbsent: number;
+    classAbsences: number; // period-weighted, unexcused (same as the Class Absences table)
+    justifiedAbsences: number;
+    lateness: number;
+    sanctions: number;
+    attendancePercent: number | null; // present+late out of roll-call marks
+}
+
+/** One sub-class: every student with their discipline figures for the range. */
+export async function getSubClassStudentStats(params: { subClassId: number; academicYearId?: number; from: string; to: string }) {
+    const yearId = await getAcademicYearId(params.academicYearId);
+    if (!yearId) throw Object.assign(new Error('No academic year'), { statusCode: 400 });
+    const fromDate = parseDateOnly(params.from);
+    const toDate = endOfDay(params.to);
+    const subClass = await prisma.subClass.findUnique({
+        where: { id: params.subClassId },
+        select: { id: true, name: true, class: { select: { name: true, period_set_id: true } } },
+    });
+    if (!subClass) throw Object.assign(new Error('Sub-class not found'), { statusCode: 404 });
+
+    const enrollments = await prisma.enrollment.findMany({
+        where: { academic_year_id: yearId, sub_class_id: subClass.id, student: { status: { not: 'WITHDRAWN' } } },
+        select: { id: true, student: { select: { id: true, name: true, matricule: true } } },
+    });
+    const ids = enrollments.map((e) => e.id);
+    const [marks, absences, sanctions] = await Promise.all([
+        prisma.dMRollCallEntry.groupBy({
+            by: ['enrollment_id', 'status'],
+            where: { enrollment_id: { in: ids }, dm_roll_call: { academic_year_id: yearId, date: { gte: fromDate, lte: toDate } } },
+            _count: { _all: true },
+        }),
+        prisma.studentAbsence.findMany({
+            where: { enrollment_id: { in: ids }, created_at: { gte: fromDate, lte: toDate } },
+            select: {
+                enrollment_id: true,
+                absence_type: true,
+                is_excused: true,
+                created_at: true,
+                dm_roll_call_entries: { take: 1, select: { dm_roll_call: { select: { slot: true } } } },
+            },
+        }),
+        prisma.disciplinaryAction.groupBy({
+            by: ['enrollment_id'],
+            where: { enrollment_id: { in: ids }, created_at: { gte: fromDate, lte: toDate } },
+            _count: { _all: true },
+        }),
+    ]);
+    const weigh = await absenceWeigher();
+    const stats = new Map<number, Omit<SubClassStudentStatsRow, 'studentId' | 'studentName' | 'matricule' | 'attendancePercent'>>();
+    const get = (id: number) => {
+        let s = stats.get(id);
+        if (!s) {
+            s = { rollCallsPresent: 0, rollCallsLate: 0, rollCallsAbsent: 0, classAbsences: 0, justifiedAbsences: 0, lateness: 0, sanctions: 0 };
+            stats.set(id, s);
+        }
+        return s;
+    };
+    for (const m of marks) {
+        const s = get(m.enrollment_id);
+        if (m.status === 'PRESENT') s.rollCallsPresent += m._count._all;
+        else if (m.status === 'LATE') s.rollCallsLate += m._count._all;
+        else if (m.status === 'ABSENT') s.rollCallsAbsent += m._count._all;
+    }
+    for (const a of absences) {
+        const s = get(a.enrollment_id);
+        if (a.absence_type === 'MORNING_LATENESS') {
+            if (!a.is_excused) s.lateness += 1;
+            continue;
+        }
+        const w = weigh(a.dm_roll_call_entries[0]?.dm_roll_call?.slot, subClass.class.period_set_id, a.created_at);
+        if (a.is_excused) s.justifiedAbsences += w;
+        else s.classAbsences += w;
+    }
+    for (const g of sanctions) get(g.enrollment_id).sanctions += g._count._all;
+
+    const students: SubClassStudentStatsRow[] = enrollments
+        .map((e) => {
+            const s = get(e.id);
+            const marksTotal = s.rollCallsPresent + s.rollCallsLate + s.rollCallsAbsent;
+            return {
+                studentId: e.student.id,
+                studentName: e.student.name,
+                matricule: e.student.matricule,
+                ...s,
+                attendancePercent: marksTotal ? toPct(s.rollCallsPresent + s.rollCallsLate, marksTotal) : null,
+            };
+        })
+        .sort((a, b) => a.studentName.localeCompare(b.studentName));
+    return {
+        range: { from: params.from, to: params.to },
+        subClass: { id: subClass.id, name: subClass.name, className: subClass.class.name },
+        students,
+    };
+}
+
+/** One student's absence records in the range: when each was recorded and by whom. */
+export async function getStudentAbsenceRecords(params: { studentId: number; academicYearId?: number; from: string; to: string; type?: 'CLASS_ABSENCE' | 'MORNING_LATENESS' }) {
+    const yearId = await getAcademicYearId(params.academicYearId);
+    if (!yearId) throw Object.assign(new Error('No academic year'), { statusCode: 400 });
+    const enrollment = await prisma.enrollment.findFirst({
+        where: { student_id: params.studentId, academic_year_id: yearId },
+        select: {
+            id: true,
+            student: { select: { id: true, name: true, matricule: true } },
+            sub_class: { select: { name: true, class: { select: { name: true, period_set_id: true } } } },
+        },
+    });
+    if (!enrollment) throw Object.assign(new Error('Student not enrolled this year'), { statusCode: 404 });
+    const rows = await prisma.studentAbsence.findMany({
+        where: {
+            enrollment_id: enrollment.id,
+            absence_type: params.type ?? 'CLASS_ABSENCE',
+            created_at: { gte: parseDateOnly(params.from), lte: endOfDay(params.to) },
+        },
+        include: {
+            assigned_by: { select: { name: true } },
+            excused_by: { select: { name: true } },
+            teacher_period: { select: { subject: { select: { name: true } }, period: { select: { name: true, start_time: true, end_time: true } } } },
+            dm_roll_call_entries: { take: 1, select: { dm_roll_call: { select: { date: true, slot: true } } } },
+            teacher_roll_call_entries: { take: 1, select: { teacher_roll_call: { select: { date: true } } } },
+        },
+        orderBy: { created_at: 'desc' },
+    });
+    const weigh = await absenceWeigher();
+    const periodSetId = enrollment.sub_class?.class?.period_set_id ?? null;
+    const records = rows.map((a) => {
+        const dm = a.dm_roll_call_entries[0]?.dm_roll_call;
+        const tr = a.teacher_roll_call_entries[0]?.teacher_roll_call;
+        const p = a.teacher_period?.period;
+        return {
+            id: a.id,
+            date: toISODate(dm?.date ?? tr?.date ?? a.created_at),
+            recordedAt: a.created_at.toISOString(),
+            recordedBy: a.assigned_by?.name ?? null,
+            source: dm ? ROLL_CALL_SLOT_LABEL[dm.slot] ?? dm.slot : tr ? 'Teacher roll call' : 'Recorded directly',
+            period: p ? `${p.name} (${p.start_time}-${p.end_time})` : null,
+            subject: a.teacher_period?.subject?.name ?? null,
+            periods: a.absence_type === 'CLASS_ABSENCE' ? weigh(dm?.slot, periodSetId, a.created_at) : 1,
+            justified: a.is_excused,
+            justifiedBy: a.excused_by?.name ?? null,
+            justifiedAt: a.excused_at ? a.excused_at.toISOString() : null,
+            reason: a.excuse_reason,
+        };
+    });
+    return {
+        range: { from: params.from, to: params.to },
+        student: {
+            id: enrollment.student.id,
+            name: enrollment.student.name,
+            matricule: enrollment.student.matricule,
+            className: enrollment.sub_class?.class?.name ?? '—',
+            subClassName: enrollment.sub_class?.name ?? '—',
+        },
+        records,
+    };
 }

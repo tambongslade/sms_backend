@@ -64,3 +64,45 @@ export const exportStatisticsReportPdf = async (req: Request, res: Response): Pr
         res.status(error.statusCode || 500).json({ success: false, error: error.message });
     }
 };
+
+/**
+ * GET /statistics-report/sub-class/:id?from=&to=
+ * One sub-class's students with their discipline figures for the range.
+ */
+export const getSubClassStudentStats = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { academicYearId, from, to } = parseParams(req);
+        const subClassId = Number(req.params.id);
+        if (!Number.isInteger(subClassId) || subClassId <= 0) {
+            res.status(400).json({ success: false, error: 'Invalid sub-class' });
+            return;
+        }
+        const data = await statisticsReportService.getSubClassStudentStats({ subClassId, academicYearId, from, to });
+        res.json({ success: true, data });
+    } catch (error: any) {
+        console.error('Error building sub-class statistics:', error);
+        res.status(error.statusCode || 500).json({ success: false, error: error.message });
+    }
+};
+
+/**
+ * GET /statistics-report/student/:id/absences?from=&to=[&type=MORNING_LATENESS]
+ * One student's absence records in the range, with when and by whom each was recorded.
+ */
+export const getStudentAbsenceRecords = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { academicYearId, from, to } = parseParams(req);
+        const studentId = Number(req.params.id);
+        if (!Number.isInteger(studentId) || studentId <= 0) {
+            res.status(400).json({ success: false, error: 'Invalid student' });
+            return;
+        }
+        const t = String((req.finalQuery as any)?.type || '');
+        const type = t === 'MORNING_LATENESS' ? 'MORNING_LATENESS' : 'CLASS_ABSENCE';
+        const data = await statisticsReportService.getStudentAbsenceRecords({ studentId, academicYearId, from, to, type });
+        res.json({ success: true, data });
+    } catch (error: any) {
+        console.error('Error loading student absence records:', error);
+        res.status(error.statusCode || 500).json({ success: false, error: error.message });
+    }
+};
