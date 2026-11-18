@@ -1,4 +1,4 @@
-// Camera menu (Super Manager only). See cameraController for how streams are authorised.
+// Camera menu (CAMERA_ROLES in cameraController). See cameraController for how streams are authorised.
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import * as camera from '../controllers/cameraController';

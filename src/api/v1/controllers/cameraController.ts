@@ -1,4 +1,4 @@
-// Camera menu: live CCTV for the Super Manager.
+// Camera menu: live CCTV for the school's leadership (CAMERA_ROLES).
 //
 // A browser cannot send an Authorization header when it opens a WebSocket, so the page
 // first asks for a stream ticket (a JWT valid for 2 minutes, good only for camera streams)
@@ -18,11 +18,15 @@ const TICKET_PURPOSE = 'camera-stream';
 const TICKET_TTL_SECONDS = 120;
 const STREAM_PATTERN = /^cam(\d{1,2})(_hd)?$/;
 
-const isSuperManager = (roles: unknown) => Array.isArray(roles) && roles.includes('SUPER_MANAGER');
+// Who may watch. Checked here rather than with authorize(): authorize() lets every
+// MANAGER through anything, and this list must stay exactly what the school chose.
+export const CAMERA_ROLES = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_DISCIPLINE'];
+
+const mayWatch = (roles: unknown) => Array.isArray(roles) && roles.some(r => CAMERA_ROLES.includes(r));
 
 /** GET /cameras: the channels to show. */
 export const listCameras = (req: Request, res: Response) => {
-    if (!isSuperManager((req as any).user?.role)) {
+    if (!mayWatch((req as any).user?.role)) {
         return res.status(403).json({ success: false, error: "You don't have permission to perform this action." });
     }
     res.json({ success: true, data: CAMERAS });
@@ -31,7 +35,7 @@ export const listCameras = (req: Request, res: Response) => {
 /** GET /cameras/stream-ticket: a short-lived ticket to open camera streams. */
 export const getStreamTicket = (req: Request, res: Response) => {
     const user = (req as any).user;
-    if (!isSuperManager(user?.role)) {
+    if (!mayWatch(user?.role)) {
         return res.status(403).json({ success: false, error: "You don't have permission to perform this action." });
     }
     const ticket = jwt.sign({ id: user.id, purpose: TICKET_PURPOSE }, JWT_SECRET, { expiresIn: TICKET_TTL_SECONDS });
@@ -61,7 +65,7 @@ export const authorizeStream = async (req: Request, res: Response) => {
             select: { status: true, user_roles: { select: { role: true } } },
         });
         if (!user || user.status !== 'ACTIVE') return res.status(401).end();
-        if (!user.user_roles.some(r => r.role === 'SUPER_MANAGER')) return res.status(403).end();
+        if (!mayWatch(user.user_roles.map(r => r.role as string))) return res.status(403).end();
 
         return res.status(204).end();
     } catch {
