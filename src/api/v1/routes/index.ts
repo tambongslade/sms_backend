@@ -226,7 +226,7 @@ router.use('/leave', leaveRequestRoutes);
 // Super Manager read-only overview / metrics endpoints for dashboards & charts
 router.use('/super-manager/overview', superManagerOverviewRoutes);
 
-// Live CCTV (Super Manager, Manager, Principal, Vice Principal, Dean of Discipline)
+// Live CCTV (CAMERA_ROLES in cameraController)
 router.use('/cameras', cameraRoutes);
 
 export default router;

@@ -20,7 +20,7 @@ const STREAM_PATTERN = /^cam(\d{1,2})(_hd)?$/;
 
 // Who may watch. Checked here rather than with authorize(): authorize() lets every
 // MANAGER through anything, and this list must stay exactly what the school chose.
-export const CAMERA_ROLES = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_DISCIPLINE'];
+export const CAMERA_ROLES = ['SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR'];
 
 const mayWatch = (roles: unknown) => Array.isArray(roles) && roles.some(r => CAMERA_ROLES.includes(r));
 
