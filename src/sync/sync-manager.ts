@@ -139,6 +139,10 @@ export const SYNC_TABLES: string[] = [
     'TeacherRollCallEntry',
     // -> TeacherPeriod, AcademicYear, User
     'TeacherPeriodAttendance',
+    // -> User (Discipline Coordinator: administrators assiduity + duty roster)
+    'AdminAttendanceMember',
+    'AdminAttendance',
+    'DutyRosterEntry',
 
     // ---- Payroll / HR ----
     // -> AcademicYear, User

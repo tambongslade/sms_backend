@@ -141,6 +141,10 @@ model User {
   dm_roll_calls_recorded              DMRollCall[]                @relation("DMRollCallRecordedBy")
   teacher_roll_calls_recorded         TeacherRollCall[]           @relation("TeacherRollCallRecordedBy")
   teacher_period_attendances_recorded TeacherPeriodAttendance[]   @relation("TeacherPeriodAttendanceRecordedBy")
+  admin_attendance_member             AdminAttendanceMember?      @relation("AdminAttendanceMemberUser")
+  admin_attendances                   AdminAttendance[]           @relation("AdminAttendanceUser")
+  admin_attendances_recorded          AdminAttendance[]           @relation("AdminAttendanceRecordedBy")
+  duty_roster_entries_created         DutyRosterEntry[]           @relation("DutyRosterCreatedBy")
   seized_items_seized                 SeizedItem[]                @relation("SeizedItemSeizedBy")
   seized_items_in_custody             SeizedItem[]                @relation("SeizedItemCustodian")
   seized_items_released_to            SeizedItem[]                @relation("SeizedItemReleasedTo")
@@ -3082,4 +3086,88 @@ model MarkEditGrant {
   used_at              DateTime?
 
   @@index([exam_sequence_id, sub_class_subject_id, used_at])
+}
+
+// ---------- Administrators' assiduity (Discipline Coordinator) ----------
+// Who is on the assiduity list. Users holding an administrator role (DM, deans,
+// nurse, bursar, secretary, VP) are on it automatically; a row here adds anyone
+// else (lab attendant, technician, ...), sets the post shown on the report, or
+// takes someone off the list (included = false).
+model AdminAttendanceMember {
+  id         Int      @id @default(autoincrement())
+  user_id    Int      @unique
+  post       String?
+  included   Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  server_id  String?
+  checksum   String?
+
+  user User @relation("AdminAttendanceMemberUser", fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+// One administrator on one day: present / late (with arrival time) / absent.
+model AdminAttendance {
+  id             Int                   @id @default(autoincrement())
+  user_id        Int
+  date           DateTime
+  status         AdminAttendanceStatus
+  arrival_time   String? // "HH:MM", required when LATE
+  note           String?
+  // Cleared entries are kept as removed (sync does not carry deletions to the peer).
+  removed        Boolean               @default(false)
+  recorded_by_id Int
+  created_at     DateTime              @default(now())
+  updated_at     DateTime              @updatedAt
+  server_id      String?
+  checksum       String?
+
+  user        User @relation("AdminAttendanceUser", fields: [user_id], references: [id], onDelete: Cascade)
+  recorded_by User @relation("AdminAttendanceRecordedBy", fields: [recorded_by_id], references: [id])
+
+  @@unique([user_id, date])
+  @@index([date])
+}
+
+enum AdminAttendanceStatus {
+  PRESENT
+  LATE
+  ABSENT
+}
+
+// ---------- Discipline duty roster (Discipline Coordinator) ----------
+// One row of the monthly duty roster. `section` says which table of the roster
+// it belongs to; the other columns are used as that table needs them.
+model DutyRosterEntry {
+  id            Int               @id @default(autoincrement())
+  month         String // "YYYY-MM"
+  section       DutyRosterSection
+  sort_order    Int               @default(0)
+  week          Int?
+  date          DateTime?
+  time_label    String?
+  zone          String?
+  position      String?
+  class_label   String?
+  activity      String?
+  assignee_ids  String? // comma-separated User ids
+  assignee_note String? // names of people not in the system
+  // Rows taken off the roster are kept as removed (sync does not carry deletions).
+  removed       Boolean           @default(false)
+  created_by_id Int
+  created_at    DateTime          @default(now())
+  updated_at    DateTime          @updatedAt
+  server_id     String?
+  checksum      String?
+
+  created_by User @relation("DutyRosterCreatedBy", fields: [created_by_id], references: [id])
+
+  @@index([month, section])
+}
+
+enum DutyRosterSection {
+  SATURDAY_CONTROL
+  PREPS_CONTROL
+  COORDINATORS
+  ZONES
 }

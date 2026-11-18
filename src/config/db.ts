@@ -59,6 +59,7 @@ const SYNCED_MODELS = new Set([
     // failed on its foreign key, which cascaded to fees, payments and marks.
     'Student', 'PeriodSet', 'Term', 'Period', 'SubClassSubject',
     'ExamSequence', 'TeacherPeriod', 'ParentStudent', 'SchoolFees',
+    'AdminAttendanceMember', 'AdminAttendance', 'DutyRosterEntry',
 ]);
 
 // Push-on-write queue (SYNC_OUTBOX=on): the tables are created from code, see sync/outbox.ts.
