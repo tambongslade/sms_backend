@@ -182,6 +182,7 @@
         <div class="header">
             <h1>Fees Defaulters Report<% if (installmentLabel) { %> &mdash; <%= installmentLabel %><% } %></h1>
             <div class="subtitle">Academic Year <%= academicYearName %></div>
+            <% if (typeof classesLabel !== 'undefined' && classesLabel) { %><div class="subtitle"><%= classesLabel %></div><% } %>
         </div>
 
         <div class="summary">

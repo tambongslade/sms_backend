@@ -717,6 +717,8 @@ export interface DefaultersReportOptions {
     // them FIFO (1st term's amount first, then 2nd, then 3rd/remainder) --
     // same rule superManagerOverviewService.ts uses for its collection chart.
     installment?: 'first' | 'second' | 'third';
+    // PDF only: print just these classes (Fee Defaulters > choose classes to print).
+    classIds?: number[];
 }
 
 export async function getDefaultersReport(options: DefaultersReportOptions = {}): Promise<any> {
@@ -1008,6 +1010,10 @@ export async function generateDefaultersReportPdf(
     options: DefaultersReportOptions = {}
 ): Promise<{ buffer: Buffer; filename: string }> {
     const report = await getDefaultersReport(options);
+    const wantedClasses = options.classIds?.length ? new Set(options.classIds) : null;
+    const students: any[] = wantedClasses
+        ? report.students.filter((s: any) => s.classId != null && wantedClasses.has(s.classId))
+        : report.students;
 
     const yearId = options.academicYearId || (await getCurrentAcademicYear())?.id;
     const year = yearId
@@ -1033,7 +1039,7 @@ export async function generateDefaultersReportPdf(
     const rowOwing = (s: any): number => options.installment
         ? (s.installments?.[options.installment]?.cumulativeOutstanding || 0)
         : (s.outstandingAmount || 0);
-    for (const s of report.students) {
+    for (const s of students) {
         const key = `${s.classId ?? `n:${s.className}`}::${s.subClassId ?? `n:${s.subClassName}`}`;
         let page = pageMap.get(key);
         if (!page) {
@@ -1057,12 +1063,15 @@ export async function generateDefaultersReportPdf(
     const template = loadDefaultersTemplate();
     const html = ejs.render(template, {
         academicYearName,
-        totalDefaulters: report.totalDefaulters,
-        totalOutstanding: options.installment
-            ? report.students.reduce((sum: number, s: any) => sum + rowOwing(s), 0)
+        totalDefaulters: wantedClasses ? students.length : report.totalDefaulters,
+        totalOutstanding: options.installment || wantedClasses
+            ? students.reduce((sum: number, s: any) => sum + rowOwing(s), 0)
             : report.totalOutstanding,
         pages,
         installment: options.installment || null,
+        classesLabel: wantedClasses
+            ? `Classes: ${Array.from(new Set(pages.map(p => p.className))).join(', ') || 'none with defaulters'}`
+            : '',
         documentTitle: `Fees Defaulters Report ${academicYearName}`,
         schoolLogo: loadDefaultersLogoDataUri(),
         schoolName: "ST STEPHEN'S INTERNATIONAL COLLEGE",

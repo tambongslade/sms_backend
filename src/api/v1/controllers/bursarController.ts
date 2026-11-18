@@ -477,7 +477,8 @@ export const exportDefaultersReportPdf = async (req: Request, res: Response): Pr
             classId,
             subClassId,
             includeDetails,
-            installment
+            installment,
+            classIds
         } = req.query as Record<string, string | undefined>;
 
         const toNumber = (v: string | undefined) => {
@@ -490,7 +491,14 @@ export const exportDefaultersReportPdf = async (req: Request, res: Response): Pr
             ? installment
             : undefined;
 
+        // ?classIds=3,5,8 prints only those classes; absent/empty prints every class.
+        const parsedClassIds = (classIds || '')
+            .split(',')
+            .map(v => Number(v.trim()))
+            .filter(n => Number.isInteger(n) && n > 0);
+
         const { buffer, filename } = await bursarService.generateDefaultersReportPdf({
+            classIds: parsedClassIds.length ? parsedClassIds : undefined,
             academicYearId: toNumber(academicYearId),
             minimumAmount: toNumber(minimumAmount),
             classId: toNumber(classId),
