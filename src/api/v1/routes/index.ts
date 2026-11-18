@@ -58,6 +58,7 @@ import salaryRoutes from './salaryRoutes';
 import reamStockRoutes from './reamStockRoutes';
 import taskRoutes from './taskRoutes';
 import superManagerOverviewRoutes from './superManagerOverviewRoutes';
+import cameraRoutes from './cameraRoutes';
 import aiRoutes from './aiRoutes';
 import staffLoanRoutes from './staffLoanRoutes';
 import leaveRequestRoutes from './leaveRequestRoutes';
@@ -224,5 +225,8 @@ router.use('/leave', leaveRequestRoutes);
 
 // Super Manager read-only overview / metrics endpoints for dashboards & charts
 router.use('/super-manager/overview', superManagerOverviewRoutes);
+
+// Live CCTV (Super Manager only)
+router.use('/cameras', cameraRoutes);
 
 export default router;
