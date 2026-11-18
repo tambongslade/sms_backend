@@ -4,6 +4,8 @@
  *   GET /discipline-profiles/recent                 students with the most recent disciplinary actions
  *   GET /discipline-profiles/sub-class/:id          students of one sub-class with their discipline counts
  *   GET /discipline-profiles/student/:id/fees       outstanding fees for the current installment
+ *   GET /discipline-profiles/fee-defaulters/sub-classes              the caller's assigned sub-classes
+ *   GET /discipline-profiles/fee-defaulters?subClassId=&installment=  defaulters of one of them
  *
  * All take ?academicYearId= (default: the current year).
  */
@@ -13,6 +15,7 @@ import { authenticate, authorize } from '../middleware/auth.middleware';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
 import { ACTIVE_FEE_ROW_WHERE } from '../services/feeOutstandingService';
 import { currentInstallment, installmentCount, splitInstallments } from '../../../utils/installments';
+import { getDefaultersReport } from '../services/bursarService';
 
 const router = Router();
 
@@ -219,6 +222,72 @@ router.get('/student/:id/fees', ...guard, async (req: Request, res: Response) =>
                     dueByThen: split[current.next.key].cumulativeExpected,
                     outstanding: split[current.next.key].cumulativeOutstanding,
                 },
+            },
+        });
+    } catch (error) {
+        fail(res, error);
+    }
+});
+
+// ---- Fee Defaulters for discipline staff: only the sub-classes they are assigned to ----
+// Assignments are the DISCIPLINE_MASTER RoleAssignment rows for the year (Deans who
+// also act as DM have theirs there too). No assignment = nothing to show.
+const FEE_DEFAULTER_VIEWERS = ['DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER', 'DEAN_OF_DISCIPLINE'];
+
+async function assignedSubClassIds(userId: number, yearId: number): Promise<number[]> {
+    const rows = await prisma.roleAssignment.findMany({
+        where: { user_id: userId, role_type: 'DISCIPLINE_MASTER', academic_year_id: yearId, sub_class_id: { not: null } },
+        select: { sub_class_id: true },
+    });
+    return Array.from(new Set(rows.map(r => r.sub_class_id as number)));
+}
+
+router.get('/fee-defaulters/sub-classes', authenticate, authorize(FEE_DEFAULTER_VIEWERS), async (req: Request, res: Response) => {
+    try {
+        const yearId = await yearIdFrom(req);
+        if (!yearId) return res.json({ success: true, data: [] });
+        const ids = await assignedSubClassIds((req as any).user.id, yearId);
+        if (ids.length === 0) return res.json({ success: true, data: [] });
+        const subs = await prisma.subClass.findMany({
+            where: { id: { in: ids } },
+            select: { id: true, name: true, class: { select: { id: true, name: true } } },
+        });
+        const data = subs
+            .map(sc => ({ id: sc.id, name: sc.name, classId: sc.class?.id ?? null, className: sc.class?.name || '' }))
+            .sort((a, b) => a.className.localeCompare(b.className, undefined, { numeric: true })
+                || a.name.localeCompare(b.name, undefined, { numeric: true }));
+        res.json({ success: true, data });
+    } catch (error) {
+        fail(res, error);
+    }
+});
+
+router.get('/fee-defaulters', authenticate, authorize(FEE_DEFAULTER_VIEWERS), async (req: Request, res: Response) => {
+    try {
+        const subClassId = Number(req.query.subClassId);
+        if (!Number.isInteger(subClassId) || subClassId <= 0) {
+            return res.status(400).json({ success: false, error: 'subClassId is required' });
+        }
+        const inst = String(req.query.installment || '');
+        const installment = inst === 'first' || inst === 'second' || inst === 'third' ? inst : undefined;
+        const yearId = await yearIdFrom(req);
+        if (!yearId) return res.json({ success: true, data: { installment: installment || 'all', totalDefaulters: 0, totalOutstanding: 0, students: [] } });
+        const ids = await assignedSubClassIds((req as any).user.id, yearId);
+        if (!ids.includes(subClassId)) {
+            return res.status(403).json({ success: false, error: 'You are not assigned to this class' });
+        }
+        const report = await getDefaultersReport({ academicYearId: yearId, subClassId, installment, includeDetails: true });
+        const students = (report.students || []).filter((s: any) => s.subClassId === subClassId);
+        const owing = (s: any) => installment
+            ? (s.installments?.[installment]?.cumulativeOutstanding ?? 0)
+            : (s.outstandingAmount || 0);
+        res.json({
+            success: true,
+            data: {
+                installment: installment || 'all',
+                totalDefaulters: students.length,
+                totalOutstanding: students.reduce((n: number, s: any) => n + owing(s), 0),
+                students,
             },
         });
     } catch (error) {
