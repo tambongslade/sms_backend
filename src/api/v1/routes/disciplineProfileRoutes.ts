@@ -6,6 +6,7 @@
  *   GET /discipline-profiles/student/:id/fees       outstanding fees for the current installment
  *   GET /discipline-profiles/fee-defaulters/sub-classes              the caller's assigned sub-classes
  *   GET /discipline-profiles/fee-defaulters?subClassId=&installment=  defaulters of one of them
+ *   GET /discipline-profiles/roll-call-fees?subClassId=               what each student owes, for the Roll Call page
  *
  * All take ?academicYearId= (default: the current year).
  */
@@ -14,7 +15,8 @@ import prisma from '../../../config/db';
 import { authenticate, authorize } from '../middleware/auth.middleware';
 import { getCurrentAcademicYear } from '../../../utils/academicYear';
 import { ACTIVE_FEE_ROW_WHERE } from '../services/feeOutstandingService';
-import { currentInstallment, installmentCount, splitInstallments } from '../../../utils/installments';
+import { currentInstallment, installmentCount, schoolDay, splitInstallments } from '../../../utils/installments';
+import { validateDMSubClassAccess } from '../middleware/disciplineAuth.middleware';
 import { getDefaultersReport } from '../services/bursarService';
 
 const router = Router();
@@ -290,6 +292,44 @@ router.get('/fee-defaulters', authenticate, authorize(FEE_DEFAULTER_VIEWERS), as
                 students,
             },
         });
+    } catch (error) {
+        fail(res, error);
+    }
+});
+
+// ---- Roll Call: amount each student still owes ----
+// Same figures as the Fee Defaulters menu (getDefaultersReport, "Remaining" by the
+// installment). The 2nd installment applies until 30 Dec; from 31 Dec of the
+// academic year's first calendar year it is the 3rd. Form 5 / Upper Sixth pay in
+// two installments, so their 3rd is simply the whole year.
+const ROLL_CALL_VIEWERS = [
+    'SUPER_MANAGER', 'MANAGER', 'PRINCIPAL', 'VICE_PRINCIPAL', 'DEAN_OF_DISCIPLINE', 'DISCIPLINE_COORDINATOR',
+    'DISCIPLINE_MASTER', 'SENIOR_DISCIPLINE_MASTER',
+];
+
+export function rollCallInstallment(yearStart: Date | null, today: Date = new Date()): 'second' | 'third' {
+    const startYear = yearStart ? Number(schoolDay(yearStart).slice(0, 4)) : Number(schoolDay(today).slice(0, 4));
+    return schoolDay(today) >= `${startYear}-12-31` ? 'third' : 'second';
+}
+
+router.get('/roll-call-fees', authenticate, authorize(ROLL_CALL_VIEWERS), validateDMSubClassAccess, async (req: Request, res: Response) => {
+    try {
+        const subClassId = Number(req.query.subClassId ?? req.query.sub_class_id);
+        if (!Number.isInteger(subClassId) || subClassId <= 0) {
+            return res.status(400).json({ success: false, error: 'subClassId is required' });
+        }
+        const yearId = await yearIdFrom(req);
+        if (!yearId) return res.json({ success: true, data: { installment: null, owing: {} } });
+        const year = await prisma.academicYear.findUnique({ where: { id: yearId }, select: { start_date: true } });
+        const installment = rollCallInstallment(year?.start_date ?? null);
+        const report = await getDefaultersReport({ academicYearId: yearId, subClassId, installment });
+        const owing: Record<number, number> = {};
+        for (const st of report.students || []) {
+            if (st.subClassId !== subClassId) continue;
+            const amount = st.installments?.[installment]?.cumulativeOutstanding ?? 0;
+            if (amount > 0) owing[st.studentId] = amount;
+        }
+        res.json({ success: true, data: { installment, owing } });
     } catch (error) {
         fail(res, error);
     }
