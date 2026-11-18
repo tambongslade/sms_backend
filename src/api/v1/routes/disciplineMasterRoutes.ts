@@ -1,4 +1,5 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
+import prisma from '../../../config/db';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorize } from '../middleware/auth.middleware';
 import * as disciplineMasterController from '../controllers/disciplineMasterController';
@@ -17,6 +18,28 @@ const TEACHER_ATTENDANCE_ROLES = [
 
 // Apply authentication to all routes
 router.use(authenticate);
+
+// Teachers Attendance Overview (+ its statistics): Super Managers and these accounts only,
+// matched by email so it works the same on the school and online servers.
+// Override with TEACHER_OVERVIEW_EMAILS=a@x,b@y. Mirrors the frontend menu rule.
+const TEACHER_OVERVIEW_EMAILS = (process.env.TEACHER_OVERVIEW_EMAILS || 'pewingh@gmail.com')
+    .split(',')
+    .map(e => e.trim().toLowerCase())
+    .filter(Boolean);
+const teacherOverviewAccess = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const user: any = (req as any).user;
+        const roles: string[] = user?.role || [];
+        if (roles.includes('SUPER_MANAGER')) return next();
+        if (user?.id) {
+            const row = await prisma.user.findUnique({ where: { id: user.id }, select: { email: true } });
+            if (row?.email && TEACHER_OVERVIEW_EMAILS.includes(row.email.trim().toLowerCase())) return next();
+        }
+        return res.status(403).json({ success: false, error: 'The Teachers Attendance Overview is not available for your account.' });
+    } catch (error: any) {
+        return res.status(500).json({ success: false, error: error?.message || 'Access check failed' });
+    }
+};
 
 /**
  * @route GET /api/v1/discipline-master/dashboard
@@ -136,11 +159,13 @@ router.post('/teacher-attendance',
 // Registered before '/:id' so 'overview' is not parsed as an attendance id.
 router.get('/teacher-attendance/overview',
     authorize(['DEAN_OF_DISCIPLINE']),
+    teacherOverviewAccess,
     teacherPeriodAttendanceController.weekOverview
 );
 // Period statistics for the overview (day / week / month, per class and per teacher).
 router.get('/teacher-attendance/stats',
     authorize(['DEAN_OF_DISCIPLINE']),
+    teacherOverviewAccess,
     teacherPeriodAttendanceController.periodStats
 );
 // Which sub-classes each Dean of Discipline is responsible for (drives their "My classes" table).
