@@ -567,3 +567,120 @@ export async function assertRecordEditableToday(id: number, roles: string[]): Pr
     const rec = await prisma.teacherPeriodAttendance.findUnique({ where: { id }, select: { date: true } });
     if (rec) assertTodayOnly(roles, rec.date);
 }
+
+// ---- Period statistics (Teachers Attendance Overview) -----------------------
+// For the day, the Monday-Sunday week and the calendar month around `anchor`:
+// how many timetabled periods (teaching slots with a teacher) had to be taught,
+// and how many were recorded present / late / absent, not recorded yet (due) or
+// still to come -- per sub-class and per teacher. Days outside the year's
+// teaching terms, and holiday terms (school-wide or for that class), don't count.
+// Read-only, built from the same timetable + attendance as getWeekOverview.
+
+export interface PeriodCounts {
+    scheduled: number;
+    present: number;
+    late: number;
+    absent: number;
+    not_recorded: number;
+    upcoming: number;
+}
+
+const emptyCounts = (): PeriodCounts => ({ scheduled: 0, present: 0, late: 0, absent: 0, not_recorded: 0, upcoming: 0 });
+const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+
+export async function getPeriodStats(opts: { anchor: Date | string; academic_year_id?: number }) {
+    const yearId = opts.academic_year_id ?? (await getAcademicYearId());
+    if (!yearId) throw new Error('No current academic year is set');
+
+    const anchor = normalizeDate(opts.anchor);
+    const back = (anchor.getUTCDay() + 6) % 7; // Mon=0 ... Sun=6
+    const weekStart = new Date(anchor.getTime() - back * 86400000);
+    const weekEnd = new Date(weekStart.getTime() + 6 * 86400000);
+    const monthStart = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 1));
+    const monthEnd = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + 1, 0));
+    const from = weekStart < monthStart ? weekStart : monthStart;
+    const to = weekEnd > monthEnd ? weekEnd : monthEnd;
+
+    const [timetable, attendances, terms] = await Promise.all([
+        getFullSchoolTimetable(yearId),
+        prisma.teacherPeriodAttendance.findMany({
+            where: { academic_year_id: yearId, date: { gte: from, lte: to } },
+            select: { teacher_period_id: true, date: true, status: true },
+        }),
+        prisma.term.findMany({
+            where: { academic_year_id: yearId },
+            select: { start_date: true, end_date: true, is_holiday: true, term_classes: { select: { class_id: true } } },
+        }),
+    ]);
+
+    const span = (t: { start_date: Date | null; end_date: Date | null }) =>
+        t.start_date && t.end_date ? { from: isoDay(normalizeDate(t.start_date)), to: isoDay(normalizeDate(t.end_date)) } : null;
+    const teaching = terms.filter((t) => !t.is_holiday).map(span).filter(Boolean) as { from: string; to: string }[];
+    const holidays = terms
+        .filter((t) => t.is_holiday)
+        .map((t) => ({ range: span(t), classIds: t.term_classes.map((c) => c.class_id) }))
+        .filter((h) => h.range) as { range: { from: string; to: string }; classIds: number[] }[];
+    const isSchoolDay = (date: string, classId: number) => {
+        if (teaching.length && !teaching.some((r) => date >= r.from && date <= r.to)) return false;
+        return !holidays.some((h) => date >= h.range.from && date <= h.range.to && (h.classIds.length === 0 || h.classIds.includes(classId)));
+    };
+
+    const statusByKey = new Map<string, string>();
+    for (const a of attendances) statusByKey.set(`${a.teacher_period_id}|${isoDay(a.date)}`, a.status);
+
+    // Teaching slots with a teacher, grouped by weekday.
+    type Slot = { id: number; teacherId: number; teacherName: string; subClassId: number; classId: number };
+    const slotsByDay = new Map<string, Slot[]>();
+    const subClassInfo = new Map<number, { id: number; name: string; class_name: string }>();
+    for (const block of timetable.subclasses) {
+        subClassInfo.set(block.subClass.id, { id: block.subClass.id, name: block.subClass.name, class_name: block.subClass.className });
+        for (const s of block.slots) {
+            if (s.periodType && s.periodType !== 'TEACHING') continue;
+            if (!s.teacherId) continue;
+            const list = slotsByDay.get(s.day) ?? [];
+            list.push({ id: s.id, teacherId: s.teacherId, teacherName: s.teacherName || '', subClassId: block.subClass.id, classId: block.subClass.classId });
+            slotsByDay.set(s.day, list);
+        }
+    }
+
+    const today = new Date(Date.now() + 60 * 60 * 1000).toISOString().slice(0, 10); // Cameroon (UTC+1) date
+
+    const build = (start: Date, end: Date) => {
+        const totals = emptyCounts();
+        const bySub = new Map<number, PeriodCounts>();
+        const byTeacher = new Map<number, PeriodCounts & { name: string }>();
+        for (let d = start.getTime(); d <= end.getTime(); d += 86400000) {
+            const date = new Date(d);
+            const iso = isoDay(date);
+            for (const slot of slotsByDay.get(dayOfWeekFromDate(date)) ?? []) {
+                if (!isSchoolDay(iso, slot.classId)) continue;
+                const status = statusByKey.get(`${slot.id}|${iso}`);
+                const field: keyof PeriodCounts = status === 'PRESENT' ? 'present' : status === 'LATE' ? 'late' : status === 'ABSENT' ? 'absent'
+                    : iso <= today ? 'not_recorded' : 'upcoming';
+                const sub = bySub.get(slot.subClassId) ?? emptyCounts();
+                const tch = byTeacher.get(slot.teacherId) ?? { ...emptyCounts(), name: slot.teacherName };
+                for (const c of [totals, sub, tch]) { c.scheduled += 1; c[field] += 1; }
+                bySub.set(slot.subClassId, sub);
+                byTeacher.set(slot.teacherId, tch);
+            }
+        }
+        return {
+            from: isoDay(start),
+            to: isoDay(end),
+            totals,
+            by_sub_class: Array.from(bySub.entries()).map(([id, c]) => ({ ...subClassInfo.get(id)!, ...c })),
+            by_teacher: Array.from(byTeacher.entries())
+                .map(([id, c]) => ({ id, ...c }))
+                .sort((a, b) => a.name.localeCompare(b.name)),
+        };
+    };
+
+    return {
+        academic_year_id: yearId,
+        anchor: isoDay(anchor),
+        today,
+        day: build(anchor, anchor),
+        week: build(weekStart, weekEnd),
+        month: build(monthStart, monthEnd),
+    };
+}

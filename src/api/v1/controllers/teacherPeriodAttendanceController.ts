@@ -234,6 +234,26 @@ export const weekOverview = async (req: Request, res: Response): Promise<any> =>
     }
 };
 
+// GET /discipline-master/teacher-attendance/stats?date=YYYY-MM-DD[&academicYearId=]
+// Periods to be taught vs recorded for the day / week / month around the date,
+// per sub-class and per teacher.
+export const periodStats = async (req: Request, res: Response): Promise<any> => {
+    try {
+        if (!req.user) return res.status(401).json({ success: false, error: 'Unauthenticated' });
+        const q = (req.finalQuery ?? req.query) as any;
+        const anchor = parseDate(q.date) ?? new Date();
+        const academicYearId = q.academic_year_id ? parseInt(q.academic_year_id, 10) : undefined;
+        const data = await svc.getPeriodStats({
+            anchor,
+            academic_year_id: Number.isFinite(academicYearId as number) ? (academicYearId as number) : undefined,
+        });
+        return res.json({ success: true, data });
+    } catch (err: any) {
+        console.error('Error building teacher-attendance stats:', err);
+        return res.status(400).json({ success: false, error: err.message });
+    }
+};
+
 // GET /discipline-master/teacher-attendance/deans[?academicYearId=]
 // Deans of Discipline with the sub-classes assigned to each (for the assignment screen).
 export const listDeans = async (req: Request, res: Response): Promise<any> => {

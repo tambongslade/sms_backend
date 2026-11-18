@@ -138,6 +138,11 @@ router.get('/teacher-attendance/overview',
     authorize(['DEAN_OF_DISCIPLINE']),
     teacherPeriodAttendanceController.weekOverview
 );
+// Period statistics for the overview (day / week / month, per class and per teacher).
+router.get('/teacher-attendance/stats',
+    authorize(['DEAN_OF_DISCIPLINE']),
+    teacherPeriodAttendanceController.periodStats
+);
 // Which sub-classes each Dean of Discipline is responsible for (drives their "My classes" table).
 // Managed by Manager / Super Manager (they pass authorize() automatically) and the roles below.
 router.get('/teacher-attendance/deans',
